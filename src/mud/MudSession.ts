@@ -416,6 +416,13 @@ export class MudSession {
      *  about to emit itself. */
     scriptEchoDeferred = false;
 
+    /** Set by ScriptingAPI alongside {@link scriptEchoDeferred}: where a command
+     *  echoed while a trigger runs is queued, so it is drawn after the line the
+     *  trigger fired on — in line with that trigger's `echo()` output — rather
+     *  than above it (mudlet-web#452). The buffer already has it in the right
+     *  place; only the 'message' event waits. */
+    deferCommandEcho: ((styled: string) => void) | null = null;
+
     /**
      * Host::send's echo stage: print a command the player (or an item acting
      * for them) sent, under the showSentText mode. `wantPrint` is the per-call
@@ -514,6 +521,13 @@ export class MudSession {
             // The file log needs to know too: desktop logs the prompt line
             // again with the command on it, not the command as a line of its
             // own (mudlet-web#357).
+            // Inside a trigger the line that fired has not been drawn yet, so
+            // the echo waits for flushDeferredEcho, which draws it after that
+            // line — where desktop's printCommand puts it (mudlet-web#452).
+            if (this.scriptEchoDeferred && this.deferCommandEcho) {
+                this.deferCommandEcho(styled);
+                return;
+            }
             this.events.emit('message', styled, 'echo', Date.now(), false, joinedTo);
         }
     }

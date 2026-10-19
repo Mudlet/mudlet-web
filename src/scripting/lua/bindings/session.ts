@@ -227,6 +227,10 @@ export function installSessionBindings(
     // the sending profile's name as the final arg; args are limited to
     // string/number/boolean/nil. The channel itself is constructed by the
     // runtime and handed in, since it needs the runtime's event emitter.
+    // The other tabs handle it on a later task, where desktop has run every
+    // other profile's handlers before this returns — a known divergence
+    // (e2e/knownDivergences.ts, mudlet-web#453): one tab cannot run another's
+    // Lua synchronously.
     lua.global.set('raiseGlobalEvent', (event: unknown, ...args: unknown[]) => {
         if (typeof event !== 'string' || event.length === 0) {
             throw new Error('raiseGlobalEvent: missing argument #1 (eventName as a string expected!)');

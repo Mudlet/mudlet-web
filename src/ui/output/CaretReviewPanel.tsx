@@ -3,6 +3,7 @@ import type React from 'react';
 import type { MudSession } from '../../mud/MudSession';
 import { useProfileField } from '../../storage';
 import { handleLinkNavKeydown } from './linkNavigation';
+import { isOutputBlock } from './outputRows';
 import {
     matchCaretToggle,
     outputLineElements,
@@ -89,26 +90,39 @@ export function CaretReviewPanel({
         }
         scroll.scrollTop = scroll.scrollHeight; // start at the newest line
 
+        // Lines arrive and leave as rows inside scrollback blocks, and as whole
+        // blocks (outputRows.ts), so the observer watches the subtree and only
+        // looks at what was added to or taken from the scroller or a block.
+        const rowsOf = (n: Node): HTMLElement[] => {
+            if (!(n instanceof HTMLElement)) return [];
+            if (n.classList.contains('output-msg')) return [n];
+            return isOutputBlock(n) ? outputLineElements(n) : [];
+        };
         const observer = new MutationObserver((mutations) => {
             const stick = isNearBottom(scroll);
             for (const m of mutations) {
+                const target = m.target;
+                if (target !== mainOutput && !(target instanceof HTMLElement && isOutputBlock(target))) continue;
                 m.addedNodes.forEach((n) => {
-                    if (n instanceof HTMLElement && n.classList.contains('output-msg')) {
-                        const clone = cloneOutputLine(n);
-                        cloneByOrig.set(n, clone);
+                    for (const row of rowsOf(n)) {
+                        // A new block's row is reported twice: once with the
+                        // block, once added to it.
+                        if (cloneByOrig.has(row) || !row.isConnected) continue;
+                        const clone = cloneOutputLine(row);
+                        cloneByOrig.set(row, clone);
                         scroll.appendChild(clone);
                     }
                 });
                 m.removedNodes.forEach((n) => {
-                    if (n instanceof HTMLElement) {
-                        const clone = cloneByOrig.get(n);
-                        if (clone) { clone.remove(); cloneByOrig.delete(n); }
+                    for (const row of rowsOf(n)) {
+                        const clone = cloneByOrig.get(row);
+                        if (clone) { clone.remove(); cloneByOrig.delete(row); }
                     }
                 });
             }
             if (stick) scroll.scrollTop = scroll.scrollHeight;
         });
-        observer.observe(mainOutput, { childList: true });
+        observer.observe(mainOutput, { childList: true, subtree: true });
 
         // Capture-phase so we settle Escape and link-nav before the
         // document-level main-output link handler (whose Ctrl+] would otherwise

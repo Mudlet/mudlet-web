@@ -680,9 +680,9 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('ioprint',            '(...)',                     'Print to the developer console (Mudlet prints to stdout; in the browser the closest analogue is the devtools console).'),
     fn('getProfileTabNumber', '([name]) → number',        'Tab index of a profile. mudlet is a single-profile web app, so this always returns 1.'),
     fn('getProfiles',         '() → {[name]=info}',        'Table keyed by profile name, one entry per configured connection: { host, port, loaded, connected, description }. loaded = open in some tab (each profile lives in its own browser tab); connected = connected to its game (live for this tab, last-announced for others). Cross-tab via Web Locks + a BroadcastChannel.'),
-    fn('loadProfile',         '(name) → true | nil, err',  'Open the named profile in a new browser tab and connect to it (each profile lives in its own tab). The calling profile stays open. Returns nil plus a message for an unknown name, a profile that is already open, or a blocked popup. Needs a user gesture, so it works from a key/button/alias but a browser may block it from a trigger.'),
+    fn('loadProfile',         '(name) → true | nil, err',  'Open the named profile in a new browser tab and connect to it (each profile lives in its own tab). The calling profile stays open. Returns nil plus a message for an unknown name, a profile that is already open, or a blocked popup. A browser opens one tab per click/key press, so a second loadProfile in the same alias, or any from a trigger, is blocked; a blocked call leaves an "Open profile" link in the main window that opens it on click.'),
     fn('closeProfile',        '(name) → true | nil, err',  'Close the named open profile — this one, or one open in another tab — disconnecting it and returning its tab to the connection screen. Returns nil plus a message when no open profile has that name.'),
-    fn('setActiveProfile',    '(name) → true | false, err', 'Bring an open profile to the front (name matched case-insensitively). false plus a message for an empty name, a profile that does not exist, or one that is not loaded. A page cannot switch browser tabs, so for a profile open in another tab this answers true without switching.'),
+    fn('setActiveProfile',    '(name) → true | false, err', 'Bring an open profile to the front (name matched case-insensitively). false plus a message for an empty name, a profile that does not exist, or one that is not loaded. A page cannot switch browser tabs, so for a profile open in another tab this returns false and that tab flashes its title instead.'),
     variable('SESSION',       'The id of this profile\'s session — 1 (a browser tab holds one profile)'),
     variable('SCRIPT_NAME',   'Name of the interpreter: "Global Lua Session Interpreter"'),
     variable('SCRIPT_ID',     'Id of the interpreter: -1'),
@@ -693,7 +693,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('removeFileWatch',    '(path) → bool',       'Stop watching a path previously registered with addFileWatch. Returns false if the path was not watched.'),
     // Events
     fn('raiseEvent',                    '(name, ...)',       'Fire a named event'),
-    fn('raiseGlobalEvent',              '(name, ...) → true', 'Fire an event in every OTHER open profile (browser tab), not this one. Args: string/number/boolean/nil; the sending profile name is appended as the last argument.'),
+    fn('raiseGlobalEvent',              '(name, ...) → true', 'Fire an event in every OTHER open profile (browser tab), not this one. Args: string/number/boolean/nil; the sending profile name is appended as the last argument. Delivered a moment later, not before this returns: wait for a reply event rather than reading a value the other profile sets on the next line.'),
     fn('registerAnonymousEventHandler', '(name, fn) → id',  'Register an event handler, returns an ID'),
     fn('killAnonymousEventHandler',     '(id) → bool',       'Remove an event handler by ID'),
     // Formatting

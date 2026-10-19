@@ -225,8 +225,38 @@ type InboundItem =
 
 /** Lines a slice of a large read hands the pipeline at a time. */
 const INBOUND_SLICE_LINES = 32;
-/** How long a slice runs before the event loop gets a turn. */
+/** How long a slice runs before the event loop gets a turn while the user
+ *  has input waiting (where the browser can tell — isInputPending). */
 const INBOUND_SLICE_BUDGET_MS = 12;
+/** How long a slice runs before the event loop gets a turn regardless: what
+ *  timers and input wait at most during a flood.
+ *
+ *  Not the 12 ms it was. Every turn the event loop gets is a chance for the
+ *  browser to render, and a frame costs layout and paint over the console
+ *  however few lines it adds, so a 2000-line burst yielding every 12 ms paid
+ *  for a frame roughly every slice — a long burst into a long scrollback took
+ *  five times as long as one handled whole (#457). 50 ms is the long-task
+ *  threshold: the page still answers within a frame or three, and a burst
+ *  pays for a quarter of the frames. */
+const INBOUND_READ_BUDGET_MS = 50;
+
+/** Chromium's `navigator.scheduling.isInputPending()`: true when a key press
+ *  or click is queued behind the running task. False wherever it is missing. */
+function inputPending(): boolean {
+    const scheduling = (globalThis.navigator as { scheduling?: { isInputPending?: () => boolean } } | undefined)?.scheduling;
+    try {
+        return scheduling?.isInputPending?.() === true;
+    } catch {
+        return false;
+    }
+}
+
+/** Whether a slice that has run `elapsed` ms should give the event loop its
+ *  turn. Exported for the tests. */
+export function inboundSliceDue(elapsed: number, hasInput: () => boolean = inputPending): boolean {
+    if (elapsed >= INBOUND_READ_BUDGET_MS) return true;
+    return elapsed >= INBOUND_SLICE_BUDGET_MS && hasInput();
+}
 
 /** Where the `n`th line of `data` ends (just past its `\n`), or its length. */
 function afterLines(data: string, n: number): number {
@@ -342,6 +372,14 @@ export class MudClient {
      *  the several signals that can prove the game leg is up all funnel through
      *  {@link markEstablished}, and only the first of them counts. */
     private gameEstablished = false;
+    /** Fires while the game has been silent for {@link IDLE_PROBE_MS}; see
+     *  {@link probeIdleConnection}. */
+    private idleProbe: ReturnType<typeof setTimeout> | null = null;
+    /** `performance.now()` of the last game frame on the current socket. */
+    private lastInboundAt = 0;
+    /** True once the server has sent a telnet command (any IAC) on the current
+     *  socket — only then is an `IAC NOP` probe something it knows to ignore. */
+    private telnetSeen = false;
 
     commandEcho: boolean;
     private readonly mspParser = new MspParser();
@@ -685,6 +723,8 @@ export class MudClient {
         // Redialling re-runs the handshake, so the previous verdict is stale.
         this.tlsResolved = false;
         this.gameEstablished = false;
+        this.telnetSeen = false;
+        this.stopIdleProbe();
         if (this.tlsDeadline !== null) {
             clearTimeout(this.tlsDeadline);
             this.tlsDeadline = null;
@@ -721,7 +761,9 @@ export class MudClient {
                     // …and for the same reason it proves the game leg is up,
                     // which is the fallback for a proxy too old to say so.
                     this.markEstablished();
+                    this.lastInboundAt = receivedAt;
                     const decodedData = bytesToLatin1(new Uint8Array(event.data));
+                    if (!this.telnetSeen && decodedData.includes('\xff')) this.telnetSeen = true;
                     if (debugTelnetEnabled()) logTelnetNegotiation('raw', decodedData);
                     this.inbound.push({ kind: 'read', data: decodedData, receivedAt });
                     this.pumpInbound();
@@ -760,6 +802,7 @@ export class MudClient {
                 this.pendingTelnet = "";
                 this.negotiator.clearMspNegotiated();
                 this.cancelCharacterModeDetection();
+                this.stopIdleProbe();
             };
 
             this.socket.onopen = (event: Event) => {
@@ -822,6 +865,8 @@ export class MudClient {
     private markEstablished(): void {
         if (this.gameEstablished) return;
         this.gameEstablished = true;
+        this.lastInboundAt = performance.now();
+        this.armIdleProbe(IDLE_PROBE_MS);
         this.eventBus.emit('client.connect');
         this.eventBus.emit('client.established');
     }
@@ -972,7 +1017,56 @@ export class MudClient {
         this.pendingTelnet = '';
         this.negotiator.clearMspNegotiated();
         this.cancelCharacterModeDetection();
+        this.stopIdleProbe();
         this.latencyStartedAt = null;
+    }
+
+    private armIdleProbe(delay: number): void {
+        this.stopIdleProbe();
+        this.idleProbe = setTimeout(() => {
+            this.idleProbe = null;
+            this.probeIdleConnection();
+        }, delay);
+    }
+
+    private stopIdleProbe(): void {
+        if (this.idleProbe !== null) {
+            clearTimeout(this.idleProbe);
+            this.idleProbe = null;
+        }
+    }
+
+    /** Make a long-silent connection prove it is still there (issue #454). A
+     *  game host that dies without closing leaves the WebSocket looking healthy
+     *  — through a proxy the browser's leg really is — so nothing ever closes,
+     *  nothing reconnects, and the player's next command goes into the dead
+     *  socket. An `IAC NOP` costs the game nothing (telnet servers discard it),
+     *  but it puts bytes on every leg: a peer that has come back answers them
+     *  with a reset, one that is gone fails their retransmission, and either
+     *  way the socket errors and closes, which is the ordinary disconnect and
+     *  auto-reconnect path. It also keeps a NAT from forgetting a quiet flow.
+     *
+     *  This is the client's own check, for a direct `ws(s)://` endpoint or a
+     *  proxy without TCP keepalive. The bundled proxy keeps that watch on the
+     *  game socket itself (`proxy/gameSocket.ts`) and finds a dead peer in about
+     *  70 s — before this probe's first NOP, which would otherwise hold off its
+     *  keepalive by leaving data unacknowledged. */
+    private probeIdleConnection(): void {
+        const socket = this.socket;
+        if (!socket || socket.readyState !== WebSocket.OPEN || !this.gameEstablished) return;
+        const idle = performance.now() - this.lastInboundAt;
+        if (idle < IDLE_PROBE_MS) {
+            this.armIdleProbe(IDLE_PROBE_MS - idle);
+            return;
+        }
+        if (this.telnetSeen) {
+            try {
+                this.sendBytes(GMCP_IAC + TELNET_NOP);
+            } catch (error) {
+                console.error('Error sending idle probe:', error);
+            }
+        }
+        this.armIdleProbe(IDLE_PROBE_MS);
     }
 
     /** Raise the disconnect, then hand over the text the final flush left in
@@ -1416,13 +1510,14 @@ export class MudClient {
     // one go held the page (input, timers, painting) for seconds (#435).
     // Socket reads are queued here instead and run in slices: a few dozen
     // lines at a time, giving the event loop a turn once a slice has taken
-    // INBOUND_SLICE_BUDGET_MS. Nothing changes order — the queue is the one
-    // way in, so lines, prompts, GMCP and what triggers send stay exactly in
-    // stream order — and a pause only ever falls between whole lines, with no
-    // partial line, held wrap line or half a telnet sequence pending: a point
-    // a read could have ended at anyway, so what runs in a pause is only what
-    // could run between two reads. Anything that has to see the stream up to
-    // date (close, disconnect, connect, feedTelnet, a replay) drains the queue
+    // INBOUND_READ_BUDGET_MS (INBOUND_SLICE_BUDGET_MS with input waiting).
+    // Nothing changes order — the queue is the one way in, so lines,
+    // prompts, GMCP and what triggers send stay exactly in stream order —
+    // and a pause only ever falls between whole lines, with no partial line,
+    // held wrap line or half a telnet sequence pending: a point a read could
+    // have ended at anyway, so what runs in a pause is only what could run
+    // between two reads. Anything that has to see the stream up to date
+    // (close, disconnect, connect, feedTelnet, a replay) drains the queue
     // first. A read of no more than INBOUND_SLICE_LINES lines — any ordinary
     // one — is still handled whole before onmessage returns.
     private readonly inbound: InboundItem[] = [];
@@ -1525,7 +1620,7 @@ export class MudClient {
                 console.error('Error during data processing:', processingError);
             }
             if (slice && queue.length > 0 && this.pendingTelnet === '' && this.assembler.idle
-                && performance.now() - started >= INBOUND_SLICE_BUDGET_MS) {
+                && inboundSliceDue(performance.now() - started)) {
                 return false;
             }
         }
@@ -1706,6 +1801,14 @@ export class MudClient {
  *  greet — but bounded, because on some proxies a rejected certificate produces
  *  no error and no close at all, so silence is the only symptom there is. */
 const TLS_HANDSHAKE_TIMEOUT_MS = 12_000;
+
+/** How long the game may stay silent before the client probes the connection
+ *  with an `IAC NOP` (and again each time as long again passes). Past the
+ *  ~70 s the bundled proxy's keepalive takes, so the two don't overlap. */
+export const IDLE_PROBE_MS = 120_000;
+
+/** Telnet NOP (RFC 854). */
+const TELNET_NOP = '\xf1';
 
 /** How long ECHO+SGA must survive a submitted input line before it counts as
  *  character-at-a-time rather than a password mask — `cTelnet`'s

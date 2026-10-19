@@ -5,7 +5,8 @@ type PresenceMsg =
     | { t: 'state'; id: string; connected: boolean }
     | { t: 'query' }
     | { t: 'bye'; id: string }
-    | { t: 'close'; id: string };
+    | { t: 'close'; id: string }
+    | { t: 'attention'; id: string };
 
 /**
  * Cross-tab view of which profiles are open and which are connected — backs
@@ -32,7 +33,10 @@ type PresenceMsg =
  *
  * The same channel carries `closeProfile(name)` for a profile open in another
  * tab: the caller broadcasts `close` with the target's id and the tab owning it
- * closes itself through {@link onCloseRequested}.
+ * closes itself through {@link onCloseRequested}. `setActiveProfile(name)` for
+ * a profile open in another tab sends `attention` the same way: a page cannot
+ * bring another tab forward, so the owning tab flags itself instead
+ * ({@link onAttentionRequested}).
  */
 export class ProfilesPresence {
     private channel: BroadcastChannel | null = null;
@@ -43,6 +47,9 @@ export class ProfilesPresence {
     private readonly remoteConnected = new Map<string, boolean>();
     /** Called when another tab asks this profile to close (`closeProfile`). */
     onCloseRequested: (() => void) | null = null;
+    /** Called when another tab asks this profile to come to the front
+     *  (`setActiveProfile`). */
+    onAttentionRequested: (() => void) | null = null;
 
     constructor(
         private readonly ownId: string,
@@ -87,6 +94,14 @@ export class ProfilesPresence {
         return true;
     }
 
+    /** Ask the tab that has profile `id` open to draw the user's attention to
+     *  itself. False when there is no channel to carry the request. */
+    requestAttention(id: string): boolean {
+        if (!this.channel) return false;
+        this.channel.postMessage({ t: 'attention', id } satisfies PresenceMsg);
+        return true;
+    }
+
     /** Connected state for a profile id: own → live, others → last announced
      *  (false when never announced). Callers gate this on `loaded` so a crashed
      *  tab's stale "connected" can't outlive its lock. */
@@ -100,6 +115,10 @@ export class ProfilesPresence {
         if (m.t === 'bye') { this.remoteConnected.delete(m.id); return; }
         if (m.t === 'close') {
             if (m.id === this.ownId) this.onCloseRequested?.();
+            return;
+        }
+        if (m.t === 'attention') {
+            if (m.id === this.ownId) this.onAttentionRequested?.();
             return;
         }
         if (m.t === 'state' && m.id !== this.ownId) {

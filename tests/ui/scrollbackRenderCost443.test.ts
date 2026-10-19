@@ -67,11 +67,14 @@ describe('mudlet-web#443: scrollback rendering cost', () => {
         expect(wrapper.scrollTop).toBe(400);
     });
 
-    it('scrollback rows off screen skip rendering, as flat children of the scroller', () => {
-        const rule = /\.output-wrapper\s*>\s*\.output-msg\s*\{([^}]*)\}/.exec(appCss);
+    it('scrollback off screen skips rendering, a block of rows at a time (#457)', () => {
+        // Not on every row: tens of thousands of rows tracked for visibility
+        // each frame became the largest cost in it (#457).
+        expect(appCss).not.toMatch(/\.output-wrapper\s*>\s*\.output-msg\s*\{[^}]*content-visibility/);
+        const rule = /\.output-block:not\(\.output-block--open\)\s*\{([^}]*)\}/.exec(appCss);
         expect(rule).not.toBeNull();
         expect(rule![1]).toMatch(/content-visibility:\s*auto/);
-        // A remembered height, so a wrapped row does not collapse off screen.
+        // A remembered height, so a block of wrapped rows does not collapse off screen.
         expect(rule![1]).toMatch(/contain-intrinsic-block-size:\s*auto\b/);
     });
 });

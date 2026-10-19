@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { findNewestCurrentXml, isMudletProfileVfs, opensAsLinkedProfile, readNewestParseableXml, type VfsReader } from '../../src/import/mudletLink';
+import { strFromU8, strToU8 } from 'fflate';
+import { findNewestCurrentXml, isMudletProfileVfs, opensAsLinkedProfile, readNewestParseableXml, type LinkedVfsReader } from '../../src/import/mudletLink';
 
 // A minimal in-memory VfsReader. `files` maps a relative path to its mtime (ms);
-// `contents` optionally maps a path to file text. Directories are inferred.
-function mockVfs(files: Record<string, number>, contents: Record<string, string> = {}): VfsReader {
+// `contents` optionally maps a path to file text or bytes. Directories are inferred.
+function mockVfs(files: Record<string, number>, contents: Record<string, string | Uint8Array> = {}): LinkedVfsReader {
     const paths = Object.keys(files);
     return {
         exists: (p) => paths.includes(p) || paths.some(f => f.startsWith(`${p}/`)),
@@ -12,7 +13,8 @@ function mockVfs(files: Record<string, number>, contents: Record<string, string>
             return [...new Set(paths.filter(f => f.startsWith(prefix)).map(f => f.slice(prefix.length).split('/')[0]))];
         },
         stat: (p) => (p in files ? { mtime: new Date(files[p]) } : null),
-        readFile: (p) => contents[p] ?? '',
+        readFile: (p) => { const c = contents[p] ?? ''; return typeof c === 'string' ? c : strFromU8(c); },
+        readBinaryFile: (p) => { const c = contents[p] ?? ''; return typeof c === 'string' ? strToU8(c) : c; },
     };
 }
 

@@ -1,8 +1,17 @@
 import { useAppStore } from '../storage/appStore';
 import { PROFILE_DATA_PATH, type PersistedProfileData } from '../storage/profileVfsData';
-import type { PackageManifest } from '../storage/schema';
+import type { MudConnection, PackageManifest, ProfileSettings } from '../storage/schema';
 import { parseMudletProfile } from './mudletHost';
-import { buildPackageManifests } from './mudletProfileImport';
+import {
+    buildPackageManifests,
+    DESKTOP_HISTORY_FILE,
+    parseSslTsl,
+    readDesktopProfileFiles,
+    type DesktopProfileFiles,
+} from './mudletProfileImport';
+import { decodeProfileData, encodeProfileData } from './qtProfileData';
+import { canonicalServerEncoding, savedServerEncoding } from '../mud/protocol/charset';
+import { DEFAULT_HISTORY_SAVE_SIZE, historyStorageKey, loadHistory, MAX_HISTORY, saveHistory } from '../ui/commandHistory';
 
 // Link mode (read-only, phase 1): a profile whose VFS is a *linked Mudlet folder*
 // loads its settings/automation/variables/packages from the newest current/*.xml
@@ -18,6 +27,12 @@ export interface VfsReader {
     readdir(path: string): string[];
     stat(path: string): { mtime: Date } | null;
     readFile(path: string): string;
+}
+
+/** A {@link VfsReader} that also reads bytes — what a linked folder's
+ *  desktop profile-data files need (they are not text; see qtProfileData.ts). */
+export interface LinkedVfsReader extends VfsReader {
+    readBinaryFile(path: string): Uint8Array;
 }
 
 /** current/*.xml paths (relative to the profile root) ordered newest-first.
@@ -134,14 +149,24 @@ function readSidecar(vfs: VfsReader): Partial<PersistedProfileData> {
  * VFS isn't a Mudlet profile (caller falls back to the normal profile.json load).
  * `installedAt` stamps the package manifests (pass an ISO timestamp).
  */
-export function loadMudletLinkedProfile(vfs: VfsReader, connectionId: string, installedAt: string): boolean {
+export function loadMudletLinkedProfile(vfs: LinkedVfsReader, connectionId: string, installedAt: string): boolean {
     const found = readNewestParseableXml(vfs);
     if (!found) return false;
 
     const data = parseMudletProfile(found.xml);
     const sidecar = readSidecar(vfs);
+    const desktop = readLinkedDesktopFiles(vfs, data.connection.tls);
     const packages = linkedPackageManifests(vfs, data.installedPackages, sidecar.packages ?? [], installedAt);
     const vars = data.variables.variables;
+    // The desktop `encoding` file over both the XML settings and the sidecar:
+    // desktop's Host reads it on every load, and this client writes its own
+    // change back to it (see desktopProfileFileUpdates), so the file is the
+    // current value. A file naming an encoding Mudlet Web cannot decode (or
+    // none) still wins — the profile reads as UTF-8 — rather than letting the
+    // sidecar's older choice stand and be written back over desktop's.
+    const profile: Partial<ProfileSettings> = { ...data.settings, ...(sidecar.profile ?? {}) };
+    if (desktop.serverEncoding) profile.serverEncoding = desktop.serverEncoding;
+    else if (readRootFile(vfs, 'encoding') !== undefined) delete profile.serverEncoding;
 
     useAppStore.getState().hydrateConnectionData(connectionId, {
         // Automation + settings + variables are authoritative from the XML.
@@ -154,8 +179,8 @@ export function loadMudletLinkedProfile(vfs: VfsReader, connectionId: string, in
         packages,
         variables: { saveList: vars.map(v => v.name), values: vars, hidden: data.variables.hidden },
         // XML settings as the base; Mudlet Web-only profile fields (mapper, font source,
-        // mapViewStates, …) from the sidecar win where set.
-        profile: { ...data.settings, ...(sidecar.profile ?? {}) },
+        // mapViewStates, …) from the sidecar win where set; the encoding file over both.
+        profile,
         // Pure Mudlet Web-only UI/layout slices come entirely from the sidecar.
         windowHints: sidecar.windowHints,
         dockExtents: sidecar.dockExtents,
@@ -163,5 +188,143 @@ export function loadMudletLinkedProfile(vfs: VfsReader, connectionId: string, in
         modalBounds: sidecar.modalBounds,
         layoutSnapshot: sidecar.layoutSnapshot,
     });
+    applyLinkedConnectionFiles(vfs, connectionId, desktop);
+    const size = useAppStore.getState().connectionProfile[connectionId]?.config?.commandLineHistorySaveSize;
+    mergeLinkedCommandHistory(vfs, connectionId, typeof size === 'number' && Number.isFinite(size) ? size : DEFAULT_HISTORY_SAVE_SIZE);
     return true;
+}
+
+// ── desktop profile-data files (issue #450) ──────────────────────────────────
+//
+// Desktop keeps `encoding`, `ssl_tsl`, `login` and `password` in files of their
+// own at the profile root, and the main command line's history in
+// `command_history_main`. A linked folder reads them in place, with the same
+// reader the import uses, every time the profile opens — so a change made on
+// desktop shows up here. Changes made here to the encoding, TLS and character
+// name are written back in desktop's format, as the save itself is (see
+// ScriptingEngine.writeBackLinkedProfile). The password and the history are
+// read only: the password goes to the encrypted vault once, at link time, and
+// the folder's copy is left alone; the history would race a desktop Mudlet
+// running on the same folder, which rewrites it on exit.
+
+/** A root file's bytes from a linked VFS, or undefined when it is absent or
+ *  unreadable. */
+function readRootFile(vfs: LinkedVfsReader, name: string): Uint8Array | undefined {
+    try {
+        return vfs.exists(name) ? vfs.readBinaryFile(name) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/** {@link readDesktopProfileFiles} over a linked folder's root. */
+export function readLinkedDesktopFiles(vfs: LinkedVfsReader, saveTls?: boolean): DesktopProfileFiles {
+    return readDesktopProfileFiles(name => readRootFile(vfs, name), saveTls);
+}
+
+/**
+ * Bring the connection record in line with the folder's `ssl_tsl` and `login`
+ * files. Only what the folder says: a missing `login` file leaves a character
+ * name set here alone, while an emptied one clears it, as on desktop.
+ */
+function applyLinkedConnectionFiles(vfs: LinkedVfsReader, connectionId: string, desktop: DesktopProfileFiles): void {
+    const state = useAppStore.getState();
+    const conn = state.connections.find(c => c.id === connectionId);
+    if (!conn) return;
+    const patch: { tls?: boolean; charLoginAccount?: string } = {};
+    // The ws(s):// scheme decides TLS for a websocket connection.
+    if (conn.mode === 'mud' && desktop.tls !== undefined && desktop.tls !== (conn.tls ?? false)) patch.tls = desktop.tls;
+    if (readRootFile(vfs, 'login') !== undefined && (desktop.login ?? '') !== (conn.charLoginAccount ?? '')) {
+        patch.charLoginAccount = desktop.login;
+    }
+    if (Object.keys(patch).length) state.patchConnection(connectionId, patch);
+}
+
+/** Where the last-merged `command_history_main` modification time is kept. */
+export function linkedHistoryMarkerKey(connectionId: string): string {
+    return `${historyStorageKey(connectionId)}_desktop_mtime`;
+}
+
+/**
+ * Fold the folder's `command_history_main` into the command bar's history
+ * when the file has changed since it was last read: desktop's commands first
+ * (it was used since), then this client's own, one entry per command ignoring
+ * case. An unchanged file is skipped, so this client's history isn't
+ * reshuffled on every open.
+ */
+export function mergeLinkedCommandHistory(vfs: LinkedVfsReader, connectionId: string, saveSize: number = DEFAULT_HISTORY_SAVE_SIZE): void {
+    const bytes = readRootFile(vfs, DESKTOP_HISTORY_FILE);
+    if (!bytes) return;
+    const stamp = String(vfs.stat(DESKTOP_HISTORY_FILE)?.mtime?.getTime() ?? 0);
+    const markerKey = linkedHistoryMarkerKey(connectionId);
+    try {
+        if (localStorage.getItem(markerKey) === stamp) return;
+    } catch {
+        return;
+    }
+    const desktopHistory = readDesktopProfileFiles(n => (n === DESKTOP_HISTORY_FILE ? bytes : undefined)).commandHistory ?? [];
+    const key = historyStorageKey(connectionId);
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    for (const cmd of [...desktopHistory, ...loadHistory(key)]) {
+        const lower = cmd.toLowerCase();
+        if (seen.has(lower)) continue;
+        seen.add(lower);
+        merged.push(cmd);
+        if (merged.length >= MAX_HISTORY) break;
+    }
+    saveHistory(merged, key, saveSize);
+    try {
+        localStorage.setItem(markerKey, stamp);
+    } catch {
+        // Storage full or disabled: the merge simply runs again next open.
+    }
+}
+
+/** Whether a connection-record change touches what a linked folder's
+ *  profile-data files mirror (TLS, the character name), so a save must write
+ *  them back. Nothing for a profile that is not a linked folder. */
+export function linkedConnectionFilesChanged(
+    conn: Pick<MudConnection, 'mudletLinked' | 'mode' | 'tls' | 'charLoginAccount'> | undefined,
+    prev: Pick<MudConnection, 'mudletLinked' | 'mode' | 'tls' | 'charLoginAccount'> | undefined,
+): boolean {
+    if (!conn?.mudletLinked || !prev || conn === prev) return false;
+    return conn.tls !== prev.tls || conn.charLoginAccount !== prev.charLoginAccount || conn.mode !== prev.mode;
+}
+
+/** The settings a linked folder's profile-data files mirror. */
+export interface DesktopProfileFileValues {
+    serverEncoding?: string;
+    /** Undefined for a connection where TLS isn't the profile's to say (websocket). */
+    tls?: boolean;
+    login?: string;
+}
+
+/**
+ * The profile-data files to write so a linked folder says what `want` does, in
+ * desktop's format, keyed by name. Only files whose value differs are listed —
+ * an unchanged file is not rewritten under a desktop Mudlet that may be
+ * running on the same folder — and none is created to say what its absence
+ * already means (no encoding chosen, TLS off, no character name). Never the
+ * password.
+ */
+export function desktopProfileFileUpdates(vfs: LinkedVfsReader, want: DesktopProfileFileValues): Record<string, Uint8Array> {
+    const out: Record<string, Uint8Array> = {};
+    const current = (name: string) => {
+        const bytes = readRootFile(vfs, name);
+        return bytes === undefined ? undefined : decodeProfileData(bytes).trim();
+    };
+    if (want.serverEncoding) {
+        const name = savedServerEncoding(want.serverEncoding);
+        const have = current('encoding');
+        const same = have !== undefined
+            && (canonicalServerEncoding(have) ?? have) === (canonicalServerEncoding(name) ?? name);
+        if (!same) out.encoding = encodeProfileData(name);
+    }
+    if (want.tls !== undefined) {
+        const have = parseSslTsl(current('ssl_tsl'));
+        if ((have ?? false) !== want.tls) out.ssl_tsl = encodeProfileData(want.tls ? '2' : '0');
+    }
+    if ((current('login') ?? '') !== (want.login ?? '')) out.login = encodeProfileData(want.login ?? '');
+    return out;
 }
