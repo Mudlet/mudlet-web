@@ -2453,17 +2453,13 @@ export class ScriptingEngine implements EngineHost {
      * script log and handed back to Lua for Mudlet's (ok, err) contract.
      */
     installPackageFromVfsPath(path: string): InstallOutcome {
-        // Before anything else, the path included. A profile save is not over
-        // when saveProfile() returns — the VFS flush that makes it durable is
-        // still running — and an install that wrote through the middle of one
-        // would interleave with it. So it is put off and answers true there and
-        // then, which is why an EMPTY path answers true while a save runs and
-        // its own complaint when none does: the postponement is at the head,
-        // above every check.
-        if (this.profileSaveInFlight) {
-            this.postponedInstalls.push(path);
-            return { ok: true, error: null };
-        }
+        // Before anything else, the path included: a script's install waits
+        // out a profile save that is running and then gives its real answer
+        // (TLuaInterpreter::installPackage's waitOutAProfileSave). Putting it
+        // off and answering true there and then told a script an install had
+        // happened that had not even been tried, and a failing one was only
+        // ever said on the console once the save was over.
+        this.waitOutProfileSave();
         const vfs = this.vfs;
         if (!vfs) {
             const error = 'no profile VFS available';
@@ -3331,22 +3327,20 @@ export class ScriptingEngine implements EngineHost {
      * Same batching as toggleTriggerByName: one set() collapses N matches into
      * a single subscription tick (and a single TimerEngine.loadPerm rebuild).
      */
-    /** Whether the flush that makes a profile save durable is still running.
-     *  An install asked for during one is put off rather than interleaved. */
+    /** Whether a profile save still counts as running: a second save is
+     *  refused, and so is an uninstall, as Host::currentlySavingProfile()
+     *  makes them. */
     private profileSaveInFlight = false;
-    /** Paths handed to installPackage while a save was running, in order. */
-    private readonly postponedInstalls: string[] = [];
+    /** Which save the scheduled end below belongs to, so the end of one that
+     *  was waited out cannot cut a later save short. */
+    private profileSaveGeneration = 0;
 
     /**
-     * Hold installs until the save's flush has settled, then carry out the ones
-     * that arrived meanwhile.
-     *
-     * The postponed install already answered true to its caller, so there is no
-     * return value left for a failure to travel back on — saying it on the main
-     * console is all that remains, quiet caller or not.
+     * Mark a profile save as running until the next pass of the event loop.
      */
     markProfileSaveInFlight(): void {
         this.profileSaveInFlight = true;
+        const generation = ++this.profileSaveGeneration;
         // Scheduled on the TIMER ENGINE rather than a plain setTimeout, because
         // a spec never gives the browser its thread back: pumpEvents() stands in
         // for the event loop by firing Mudlet Web's own due timers in a synchronous
@@ -3359,16 +3353,23 @@ export class ScriptingEngine implements EngineHost {
         // the write it just started. Tying it to the VFS flush instead — the
         // durability step — is unbounded, and held installs for good.
         this.timerEngine.addTemp(0, () => {
-            this.profileSaveInFlight = false;
-            while (this.postponedInstalls.length > 0) {
-                const path = this.postponedInstalls.shift()!;
-                const outcome = this.installPackageFromVfsPath(path);
-                // The postponed install already answered true to its caller, so
-                // there is no return value left for the failure to travel back
-                // on. Saying it on the main console is all that remains.
-                if (!outcome.ok) this.api.postInfo(`Package install failed — ${outcome.error}`);
-            }
+            if (generation === this.profileSaveGeneration) this.profileSaveInFlight = false;
         });
+    }
+
+    /**
+     * Host::waitForProfileSave for a script's install: desktop runs the event
+     * loop until the save's writes are done, delivering nothing but the save's
+     * own completions. Mudlet Web's save has already written everything by the
+     * time it counts as running (the VFS flush that follows only makes it
+     * durable, and later writes join it), so what is left to wait for is the
+     * window itself - ended here and now, so nothing else gets to run in the
+     * middle of the waiting script either.
+     */
+    private waitOutProfileSave(): void {
+        if (!this.profileSaveInFlight) return;
+        this.profileSaveInFlight = false;
+        this.profileSaveGeneration++;
     }
 
     private saveAfterPackageChangePending = false;

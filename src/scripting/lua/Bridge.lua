@@ -10126,6 +10126,9 @@ do
         end
     end
 
+    -- Other.lua's URL-aware installPackage() hands anything that is not a
+    -- string straight to this one, for the C++ getVerifiedString to name.
+    installPackage    = guardName(installPackage,    "installPackage",    "package location path and file name")
     uninstallPackage  = guardName(uninstallPackage,  "uninstallPackage",  "package name")
     installModule     = guardName(installModule,     "installModule",     "module location")
     uninstallModule   = guardName(uninstallModule,   "uninstallModule",   "module name")
