@@ -2286,6 +2286,16 @@ export class ScriptingAPI {
                 this.patchConfigBag('inputLineStrictUnixEndings', on);
                 return true;
             }
+            // Host::mUSE_IRE_DRIVER_BUGFIX, which cTelnet::gotPrompt reads on
+            // every prompt. Pushed at the session as well as persisted, for the
+            // same reason: left to ProfileSession's next render, a prompt fed
+            // in the same chunk as the setConfig kept its leading line feed.
+            case 'fixUnnecessaryLinebreaks': {
+                const on = configBool(value);
+                this.session.setFixUnnecessaryLinebreaks(on);
+                this.patchConfigBag('fixUnnecessaryLinebreaks', on);
+                return true;
+            }
             // Only the value it already has: see getConfig
             case 'lazyCaptureGlobals': return !configBool(value);
             // Mudlet Host::mUndoServerWrap — rejoin the lines the game wrapped
