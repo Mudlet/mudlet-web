@@ -3132,12 +3132,12 @@ end
 -- Mudlet packages do.
 function wait(...)
     if select('#', ...) ~= 1 then
-        error("Wait: wrong number of arguments", 0)
+        error("wait: wrong number of arguments", 0)
     end
     local raw = ...
     local msec = __mudlet_int(raw)
     if msec == nil then
-        error("Wait: bad argument #1 type (sleep time in msec as number expected, got "
+        error("wait: bad argument #1 type (sleep time in msec as number expected, got "
             .. type(raw) .. "!)", 2)
     end
     local deadline = __mudlet_uptime_ms() + math.max(0, msec)
@@ -3183,7 +3183,7 @@ function connectToServer(host, port, save)
     if port ~= nil then
         local num = __mudlet_int(port)
         if num == nil then
-            error("connectToServer: bad argument #2 type (port number as number is optional, got "
+            error("connectToServer: bad argument #2 type (port number {default = 23} as number is optional, got "
                 .. type(port) .. "!)", 2)
         end
         port = num
@@ -3192,6 +3192,12 @@ function connectToServer(host, port, save)
                 .. " given, if supplied it must be in range 1 to 65535,"
                 .. " {defaults to 23 if not provided}"
         end
+    end
+    -- The save flag is vetted before anything is written or dialled
+    -- (getVerifiedBool), so a wrong type leaves the url and port files alone.
+    if save ~= nil and type(save) ~= 'boolean' then
+        error("connectToServer: bad argument #3 type (save host name and port number as boolean is optional, got "
+            .. type(save) .. "!)", 2)
     end
     return __mudlet_connectToServer(host, port, save)
 end
@@ -9934,19 +9940,20 @@ end
 
 -- ── send / raiseGlobalEvent argument contracts ─────────────────────────────
 do
-    -- Mudlet registers send() from its C++ sendRaw(), which is the name its
-    -- own complaints use — so a script grepping for the message finds the same
-    -- text it would on the desktop.
+    -- Mudlet registers send() from its C++ sendRaw(), but its complaints are
+    -- named "send" (not __func__), so they name the function a script called.
+    -- The second argument, once given, has to be a boolean - even nil is
+    -- refused (getVerifiedBool behind a lua_gettop() > 1 check).
     local _rawSend = send
     function send(...)
         local n = select('#', ...)
         local text, echo = ...
         if type(text) ~= 'string' and type(text) ~= 'number' then
-            error("sendRaw: bad argument #1 type (command as string expected, got "
+            error("send: bad argument #1 type (command as string expected, got "
                 .. (n < 1 and 'no value' or type(text)) .. "!)", 2)
         end
-        if n > 1 and echo ~= nil and type(echo) ~= 'boolean' then
-            error("sendRaw: bad argument #2 type (show on screen as boolean is optional, got "
+        if n > 1 and type(echo) ~= 'boolean' then
+            error("send: bad argument #2 type (showOnScreen as boolean is optional, got "
                 .. type(echo) .. "!)", 2)
         end
         return _rawSend(...)
@@ -9964,7 +9971,7 @@ do
     local _rawRaiseGlobalEvent = raiseGlobalEvent
     function raiseGlobalEvent(...)
         if select('#', ...) < 1 then
-            error("raiseGlobalEvent: missing argument #1 (eventName as string expected!)", 2)
+            error("raiseGlobalEvent: missing argument #1 (eventName as, probably, a string expected!)", 2)
         end
         local n = select('#', ...)
         local args = { ... }
@@ -9972,8 +9979,8 @@ do
             local v = args[i]
             local t = type(v)
             if t ~= 'string' and t ~= 'number' and t ~= 'boolean' and t ~= 'nil' then
-                error("raiseGlobalEvent: bad argument type #" .. i
-                    .. " (boolean, number, string or nil expected, got " .. t .. "!)", 2)
+                error("raiseGlobalEvent: bad argument #" .. i
+                    .. " type (boolean, number, string or nil expected, got a " .. t .. "!)", 2)
             end
             if i == 1 then
                 if t == 'number' then
@@ -10751,22 +10758,25 @@ end
 function spawn(...)
     local n = select('#', ...)
     local argv = {...}
+    -- Every message carries a "spawn: " prefix, and is raised bare (no
+    -- position), as TForkedProcess::startProcess pushes its own string.
     if n < 2 then
-        error("Need read function and process name as parameters.", 0)
+        error("spawn: need read function and process name as parameters.", 0)
     end
     if type(argv[1]) ~= 'function' then
-        error("Need read function as first parameter.", 0)
+        error("spawn: need read function as first parameter.", 0)
     end
-    -- luaL_checkstring on every argument from the program name onwards, which is
+    -- lua_isstring on every argument from the program name onwards, which is
     -- why a number is accepted here: Lua coerces it, so Mudlet does too.
     for i = 2, n do
         local t = type(argv[i])
         if t ~= 'string' and t ~= 'number' then
-            error("bad argument #" .. i .. " to 'spawn' (string expected, got " .. t .. ")", 0)
+            error("spawn: bad argument #" .. i .. " type (" .. (i == 2 and "process name" or "process argument")
+                .. " as string expected, got " .. t .. "!)", 0)
         end
     end
     local cwd = (type(getMudletHomeDir) == 'function' and getMudletHomeDir()) or "/"
-    error("Failed to start process '" .. tostring(argv[2]) .. "': the web client cannot start"
+    error("spawn: Failed to start process '" .. tostring(argv[2]) .. "': the web client cannot start"
         .. " processes. Working directory: '" .. tostring(cwd) .. "'. PATH: ''", 0)
 end
 
