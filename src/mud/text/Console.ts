@@ -673,8 +673,12 @@ export class Console {
      * when there's no current line to insert into (caller falls back to an echo).
      * Mid-buffer multi-line inserts update the buffer model fully; the
      * incremental renderer redraws the affected line(s) lazily.
+     *
+     * `split` false keeps every `\n` in the line as a character, the way a
+     * trigger's insertText does on desktop (TConsoleModel::insertText in
+     * trigger mode only inserts); a later wrapLine() splits it there.
      */
-    insertText(text: string, state?: FormatStateSnapshot): boolean {
+    insertText(text: string, state?: FormatStateSnapshot, split = true): boolean {
         const idx = this.cursor;
         const onPartial = this.onPartialLine;
         const cur = this.currentBuffer();
@@ -693,7 +697,7 @@ export class Console {
         } else {
             cur.insert(col, text, state);
         }
-        if (!text.includes('\n')) {
+        if (!split || !text.includes('\n')) {
             this.cursorCol = col;
             return true;
         }
@@ -741,6 +745,12 @@ export class Console {
         this.cursorIdx = target;
         if (!keepHorizontal) this.cursorCol = 0;
         return target !== idx;
+    }
+
+    /** The line number `buffer` is stored at, or -1 when it is not in the
+     *  buffer (any more). */
+    lineIndexOf(buffer: AnsiAwareBuffer): number {
+        return this.history.lastIndexOf(buffer);
     }
 
     /**
@@ -1053,7 +1063,7 @@ export class Console {
      * (wrapping off) only repaints the line, so pre-wrap rendering shows its
      * `\n`. Returns false when `lineNumber` names no stored line.
      */
-    wrapLine(lineNumber: number, wrapAt = 0, indent = 0, hangingIndent = 0): boolean {
+    wrapLine(lineNumber: number, wrapAt = 0, indent = 0, hangingIndent = 0, stopAt = Infinity): boolean {
         if (!Number.isFinite(lineNumber)) return false;
         const idx = Math.trunc(lineNumber);
         if (idx < 0 || idx >= this.history.length) return false;
@@ -1063,7 +1073,11 @@ export class Console {
         // TBuffer::wrapLine re-wraps from the line it is given to the end of the
         // buffer, not that line alone: every later line that has outgrown the
         // width — one echoed while wrapping was off, say — is split as well.
-        for (let i = idx; i < this.history.length; i++) {
+        // Up to `stopAt` (exclusive) when given: a line a trigger pass is still
+        // running on is left whole, with everything after it, and is wrapped
+        // when its pass ends.
+        let end = Math.min(this.history.length, stopAt);
+        for (let i = idx; i < end; i++) {
             const buf = this.history[i];
             const lines = wrapBuffer(buf, width, indent, hangingIndent);
             if (!lines) { if (i === idx) buf.rerender(); continue; }
@@ -1072,11 +1086,12 @@ export class Console {
             // The cursor tracked a line index that may have moved down.
             if (this.cursorIdx > i) this.cursorIdx += lines.length - 1;
             i += lines.length - 1;
+            end += lines.length - 1;
         }
         // The line still being built is the buffer's last line on desktop, so it
         // is in the range too; what it is split into above its last piece is
         // finished.
-        if (this.hasOpenLine && this.partial.length > 0) {
+        if (stopAt === Infinity && this.hasOpenLine && this.partial.length > 0) {
             const lines = wrapBuffer(this.partial, width, indent, hangingIndent);
             if (lines) {
                 for (let i = 0; i < lines.length - 1; i++) {

@@ -4275,8 +4275,15 @@ export class ScriptingAPI {
             // Back to the line the outer pass is still working on. Without this
             // the cursor is left on the line the nested feed appended, and
             // everything the outer pass does afterwards — selectString, the
-            // colour calls that follow it — lands on that line instead.
-            if (outerLine >= 0) this.mainConsole.moveTo(outerLine);
+            // colour calls that follow it — lands on that line instead. Found
+            // by the line itself where it can be: a nested pass that deleted or
+            // split a line above it has moved it, and desktop's pass follows
+            // its line (TBuffer keeps the enclosing passes' line numbers up to
+            // date), so what is at the old number is other text now.
+            const outer = this.lineColorLive[this.lineColorLive.length - 1];
+            const moved = outer ? this.mainConsole.lineIndexOf(outer) : -1;
+            if (moved >= 0) this.mainConsole.moveTo(moved);
+            else if (outerLine >= 0) this.mainConsole.moveTo(outerLine);
             // But echoes no longer land on it: TConsole::echo writes onto the
             // buffer's last line, which is now the open one after the fed
             // lines, so what the outer trigger echoes next follows them.
@@ -4295,6 +4302,36 @@ export class ScriptingAPI {
         // Clear the leading-newline latch so it can't leak onto a later echo
         // (timer/alias output) if this line's triggers never echoed.
         this.mainConsole.markCursorAtEnd(false);
+    }
+
+    /** Where the line the innermost trigger pass is running on is now, or -1
+     *  outside a pass (or once a trigger deleted it). Followed by the line
+     *  itself, as desktop's pass line number is kept up to date across a
+     *  deletion or a wrap above it. */
+    private passLineIndex(): number {
+        const live = this.lineColorLive[this.lineColorLive.length - 1];
+        return live && this.inTriggerPass(this.mainConsole) ? this.mainConsole.lineIndexOf(live) : -1;
+    }
+
+    /**
+     * Run `fn` with the cursor on the line the trigger pass is processing, and
+     * put the script's cursor back after. A trigger's own highlight paints the
+     * line being processed wherever the scripts before it left the cursor
+     * (TTrigger works on the engine's position, not the user cursor) — after
+     * one deleted a line above, say, which moves the pass line up.
+     */
+    onPassLine(fn: () => void): void {
+        const con = this.mainConsole;
+        const pass = this.passLineIndex();
+        const line = con.getLineNumber();
+        if (pass < 0 || pass === line) { fn(); return; }
+        const col = con.getCursorColumnRaw();
+        con.moveTo(pass);
+        try {
+            fn();
+        } finally {
+            con.moveTo(line, col);
+        }
     }
 
     /** The lines a network line is stored as once its triggers are done — see
@@ -4886,9 +4923,26 @@ export class ScriptingAPI {
         const isMain = !windowName || windowName === 'main';
         const [wrapAt, indent, hanging] = this.wrapSettings(windowName, con);
         // The line a trigger pass is on, whose original colours are kept.
-        const passLine = isMain && this.inTriggerPass(con) ? con.getLineNumber() : -1;
+        const passLine = isMain ? this.passLineIndex() : -1;
         const before = passLine >= 0 ? con.lineText(passLine) ?? '' : '';
-        if (!con.wrapLine(lineNumber, wrapAt, indent, hanging)) return false;
+        // A wrap from above leaves every line a pass is still running on, and
+        // what follows it, whole (TBuffer::wrapLine's wrapUpTo): split now, a
+        // colour trigger or highlight later in the pass would see only its
+        // first part. Each is wrapped when its own pass ends, and moves down
+        // with the lines split above it.
+        let stopAt = Infinity;
+        if (isMain && this.inTriggerPass(con)) {
+            for (const live of this.lineColorLive) {
+                const at = con.lineIndexOf(live);
+                if (at > lineNumber) stopAt = Math.min(stopAt, at);
+            }
+        }
+        const cursorLine = con.getLineNumber();
+        if (!con.wrapLine(lineNumber, wrapAt, indent, hanging, stopAt)) return false;
+        // The script's cursor stays at its line number, as desktop's
+        // mUserCursor does: after a split above it, what is there now is other
+        // text, while the pass itself follows its line down.
+        if (isMain && this.inTriggerPass(con) && lineNumber < cursorLine) con.moveTo(cursorLine);
         const pad = ' '.repeat(indent);
         const indented = indent > 0 && !before.startsWith(pad) && (con.lineText(passLine) ?? '').startsWith(pad);
         if (passLine >= 0 && lineNumber === passLine && indented) {
@@ -4897,11 +4951,6 @@ export class ScriptingAPI {
             // text it precedes.
             const first = this.snapshotColorAt(0);
             this.spliceLineColorSnapshot(0, 0, { ...first, text: pad });
-        } else if (passLine >= 0 && lineNumber < passLine) {
-            // Splitting a line above pushes the pass's line down, but the pass
-            // stays at its old line number, as desktop's does: what is there
-            // now is other text.
-            con.moveTo(passLine);
         }
         if (isMain) this.drainMain();
         else this.drainWindowConsole(windowName!, con);
@@ -5252,15 +5301,24 @@ export class ScriptingAPI {
             const line = con.getLineNumber();
             // Console.insertText splits on embedded '\n' into new history lines
             // (Mudlet #8945); for the single-line case it inserts in place.
-            con.insertText(text, state);
-            if (text.includes('\n')) this.rewrapInserted(con, windowName, line);
-            if (this.inTriggerProcessing && con === this.mainConsole && !text.includes('\n')) {
+            // In a trigger pass on the main console it only inserts, newlines
+            // and all, as TConsoleModel::insertText does in trigger mode: the
+            // pass's own line is split when it is wrapped after the pass, and
+            // any other line when a script calls wrapLine() on it.
+            const literal = this.inTriggerProcessing && con === this.mainConsole;
+            con.insertText(text, state, !literal);
+            if (!literal && text.includes('\n')) this.rewrapInserted(con, windowName, line);
+            if (literal) {
                 this.captureShiftHook?.(at, inserted.length);
                 // The colours have to move with the text for the same reason
                 // the captures do — the inserted characters are not the ones
                 // the server coloured, and a later colour trigger must not
-                // sweep them into its run.
-                this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text: inserted });
+                // sweep them into its run. Only text inserted into the line
+                // being processed moves them (spliceInsertIntoPreTriggerPassLine
+                // is for that line alone).
+                if (line === this.passLineIndex()) {
+                    this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text: inserted });
+                }
             }
             if (!this.inTriggerProcessing) con.getBuffer()?.rerender();
             return true;

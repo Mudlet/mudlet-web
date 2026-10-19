@@ -5655,14 +5655,18 @@ export class ScriptingEngine implements EngineHost {
             ...(fgColor ? { foreground: fgColor } : {}),
             ...(bgColor ? { background: bgColor } : {}),
         };
-        for (const { text, span } of highlightTargets(matches, matchStart, captureSpans, groupCount)) {
-            const ok = span
-                ? this.api.selectSection(span.start, span.length)
-                : this.api.selectString(text, 1) >= 0;
-            if (!ok) continue;
-            this.api.applyFormatToSelection(format);
-            this.api.deselect();
-        }
+        // On the line being processed, wherever an earlier trigger's script
+        // left the cursor.
+        this.api.onPassLine(() => {
+            for (const { text, span } of highlightTargets(matches, matchStart, captureSpans, groupCount)) {
+                const ok = span
+                    ? this.api.selectSection(span.start, span.length)
+                    : this.api.selectString(text, 1) >= 0;
+                if (!ok) continue;
+                this.api.applyFormatToSelection(format);
+                this.api.deselect();
+            }
+        });
     }
 
     private executePermKeybinding(binding: KeyNode): void {
