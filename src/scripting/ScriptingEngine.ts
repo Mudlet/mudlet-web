@@ -3302,6 +3302,40 @@ export class ScriptingEngine implements EngineHost {
         return '';
     }
 
+    /**
+     * The chunks of a package's items as they are removed, with the package
+     * that owned them, until the next pass of the event loop. Desktop takes a
+     * removed item out of the tree at once but frees it only once the pass
+     * that is running it is over, so code of the item that is still running -
+     * a trigger that uninstalled its own package, then placed a command - is
+     * still its package's.
+     */
+    private readonly removedChunkOwners = new Map<string, string>();
+
+    private rememberOwnersOfRemovedItems(packageName: string): void {
+        const s = useAppStore.getState();
+        const id = this.connectionId;
+        const kinds: [string, readonly { isGroup?: boolean; name: string; packageName?: string }[]][] = [
+            ['Script', s.connectionScripts[id] ?? []],
+            [ITEM_CHUNK_PREFIX.trigger, s.connectionTriggers[id] ?? []],
+            [ITEM_CHUNK_PREFIX.alias, s.connectionAliases[id] ?? []],
+            [ITEM_CHUNK_PREFIX.timer, s.connectionTimers[id] ?? []],
+            [ITEM_CHUNK_PREFIX.key, s.connectionKeybindings[id] ?? []],
+            [ITEM_CHUNK_PREFIX.button, s.connectionButtons[id] ?? []],
+        ];
+        const first = this.removedChunkOwners.size === 0;
+        for (const [prefix, items] of kinds) {
+            for (const item of items) {
+                if (!item.isGroup && item.packageName === packageName) {
+                    this.removedChunkOwners.set(`${prefix}: ${item.name}`, packageName);
+                }
+            }
+        }
+        if (first && this.removedChunkOwners.size > 0) {
+            this.timerEngine.addTemp(0, () => this.removedChunkOwners.clear());
+        }
+    }
+
     private ownersOfChunk(source: string): Set<string> {
         const owners = new Set<string>();
         const s = useAppStore.getState();
@@ -3331,6 +3365,10 @@ export class ScriptingEngine implements EngineHost {
                     if (inProfile.startsWith(`${name}/`)) owners.add(name);
                 }
             }
+        }
+        if (owners.size === 0) {
+            const removedOwner = this.removedChunkOwners.get(source);
+            if (removedOwner !== undefined) owners.add(removedOwner);
         }
         return owners;
     }
@@ -3382,6 +3420,7 @@ export class ScriptingEngine implements EngineHost {
         // archive's own config.lua on a reinstall — inside the package's own
         // load script as well — where desktop starts again from config.lua.
         this.packageInfoOverrides.delete(packageName);
+        this.rememberOwnersOfRemovedItems(packageName);
         useAppStore.getState().uninstallPackage(this.connectionId, packageName);
         this.api.addonCommands.removeOwnedBy(packageName);
         this.saveAfterPackageChange();
