@@ -3045,10 +3045,22 @@ end`,
     /**
      * True when a script-created (temp) alias/trigger with this id is live and of
      * the given type. Backs exists(id, "alias"/"trigger") for temp items, which
-     * don't live in the persisted store the way permanent items do.
+     * don't live in the persisted store the way permanent items do. A killed
+     * one waiting for the cleanup to free it is not live: desktop's exists(),
+     * isActive() and findItems() all skip an item marked for deletion.
      */
     tempItemExists(id: number, type: string): boolean {
-        return this.tempIds.get(id)?.type === type;
+        const entry = this.tempIds.get(id);
+        return entry?.type === type && !entry.dead;
+    }
+
+    /** How many temp items of `type` are killed and waiting for the cleanup.
+     *  Desktop's getProfileStats() still counts them — they stay in the item
+     *  tree until doCleanup() frees them — though not as active. */
+    killedTempItemCount(type: 'alias' | 'trigger'): number {
+        let n = 0;
+        for (const entry of this.tempIds.values()) if (entry.dead && entry.type === type) n++;
+        return n;
     }
 
     /** A live temp item of `type` carrying this Mudlet-supplied name — how

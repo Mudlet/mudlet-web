@@ -3621,8 +3621,9 @@ export class ScriptingEngine implements EngineHost {
             // triggers are tracked by the runtime; temp KEYS live in the key
             // engine, which owns their ids. Mudlet's exists() counts both.
             if (this.runtimes.lua?.tempItemExists(wanted, type)) return 1;
-            if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(wanted)) return 1;
-            if (type === 'timer' && this.api.timers.hasTemp(wanted)) return 1;
+            // A killed one waiting for the cleanup is not counted.
+            if ((type === 'key' || type === 'keybind') && this.api.keys.hasLiveTemp(wanted)) return 1;
+            if (type === 'timer' && this.api.timers.hasLiveTemp(wanted)) return 1;
             return 0;
         }
         const name = String(nameOrId);
@@ -3635,8 +3636,8 @@ export class ScriptingEngine implements EngineHost {
         if (/^\d+$/.test(name)) {
             const asId = Number(name);
             if (this.runtimes.lua?.tempItemExists(asId, type)) temps++;
-            else if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(asId)) temps++;
-            else if (type === 'timer' && this.api.timers.hasTemp(asId)) temps++;
+            else if ((type === 'key' || type === 'keybind') && this.api.keys.hasLiveTemp(asId)) temps++;
+            else if (type === 'timer' && this.api.timers.hasLiveTemp(asId)) temps++;
         } else if (type === 'trigger' || type === 'alias') {
             // tempComplexRegexTrigger takes a name of its own, so a temporary
             // item can share one with a permanent item and both must be counted.
@@ -3844,9 +3845,10 @@ export class ScriptingEngine implements EngineHost {
         // it. Same registries `existsByName` consults.
         const asId = /^\d+$/.test(name) ? Number(name) : null;
         if (asId !== null && (exact || name.length > 0)) {
+            // Not one killed and waiting for the cleanup, as exists().
             const isTemp = this.runtimes.lua?.tempItemExists(asId, type)
-                || (type === 'timer' && this.api.timers.hasTemp(asId))
-                || ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(asId));
+                || (type === 'timer' && this.api.timers.hasLiveTemp(asId))
+                || ((type === 'key' || type === 'keybind') && this.api.keys.hasLiveTemp(asId));
             if (isTemp && !out.includes(asId)) out.push(asId);
         }
         return out;
@@ -3902,16 +3904,20 @@ export class ScriptingEngine implements EngineHost {
         const keys = store.connectionKeybindings[cid] ?? [];
         const scripts = store.connectionScripts[cid] ?? [];
 
-        const tally = (list: BaseTreeNode[], tempCount: number, active = list.filter(i => !i.isGroup && i.enabled).length) => {
+        // `killed` temp items wait for the cleanup to free them: desktop still
+        // has them in its tree, so they count in total and temp, but not as
+        // active.
+        const tally = (list: BaseTreeNode[], tempCount: number, active = list.filter(i => !i.isGroup && i.enabled).length, killed = 0) => {
             const items = list.filter(i => !i.isGroup);
             return {
-                total: items.length + tempCount,
-                temp: tempCount,
+                total: items.length + tempCount + killed,
+                temp: tempCount + killed,
                 active: active + tempCount,
             };
         };
 
         const tempTriggers = this.triggerEngine.tempCount;
+        const killedTriggers = this.runtimes.lua?.killedTempItemCount?.('trigger') ?? 0;
         let patternsTotal = tempTriggers;
         let patternsActive = tempTriggers;
         for (const t of triggers) {
@@ -3922,7 +3928,7 @@ export class ScriptingEngine implements EngineHost {
         }
 
         return {
-            triggers: { ...tally(triggers, tempTriggers), patterns: { total: patternsTotal, active: patternsActive } },
+            triggers: { ...tally(triggers, tempTriggers, undefined, killedTriggers), patterns: { total: patternsTotal, active: patternsActive } },
             aliases: tally(aliases, this.aliasEngine.tempCount),
             // Mudlet counts a timer by the same state isActive reports.
             timers: tally(timers, this.timerEngine.tempCount, this.timerEngine.countPermActive(timers)),

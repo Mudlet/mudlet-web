@@ -150,8 +150,16 @@ export class KeyEngine {
         return this.temp.has(id) ? id : null;
     }
 
-    /** Whether a temp key with this id is live — backs exists(id, "key"). */
+    /** Whether a temp key with this id is present, killed or not. */
     hasTemp(id: number): boolean { return this.temp.has(id); }
+
+    /** Whether a temp key with this id is present and not killed — backs
+     *  exists(id, "key") and findItems(), which do not count a killed key
+     *  waiting for the cleanup to free it. */
+    hasLiveTemp(id: number): boolean {
+        const t = this.temp.get(id);
+        return !!t && !t.dead;
+    }
 
     /** Whether a live temp key is enabled — backs isActive(id, "key"). */
     isTempEnabled(id: number): boolean {

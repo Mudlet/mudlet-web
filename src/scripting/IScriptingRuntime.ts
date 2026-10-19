@@ -181,6 +181,8 @@ export interface IScriptingRuntime {
      * (unlike permanent items) don't live in the persisted store.
      */
     tempItemExists(id: number, type: string): boolean;
+    /** Temp items of `type` killed and not yet freed (getProfileStats). */
+    killedTempItemCount?(type: 'alias' | 'trigger'): number;
     /** A live temp item of `type` carrying this script-supplied name (Mudlet's
      *  tempComplexRegexTrigger is the one temp API that takes one), or null. */
     tempItemIdByName(name: string, type: string): number | null;
