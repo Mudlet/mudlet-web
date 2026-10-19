@@ -1732,6 +1732,11 @@ describe('engine tempCount — live session-scoped temp items', () => {
     const id = e.addTemp('KeyA', [], () => {});
     expect(e.tempCount).toBe(1);
     e.killKey(id);
+    // Held until the reap, as desktop's KeyUnit holds a killed key until its
+    // deferred cleanup — counted, but no longer active.
+    expect(e.tempCount).toBe(1);
+    expect(e.tempActiveCount).toBe(0);
+    e.reapKilled();
     expect(e.tempCount).toBe(0);
   });
 });

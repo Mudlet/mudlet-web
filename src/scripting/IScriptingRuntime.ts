@@ -164,6 +164,11 @@ export interface IScriptingRuntime {
      */
     dispatchSendRequest(text: string): boolean;
     /**
+     * One command's alias pass ended with an alias consuming it: spend a
+     * denyCurrentSend() raised there that no send spent (Host::send).
+     */
+    endAliasPass?(): void;
+    /**
      * Start a speedwalk between two rooms (Mudlet Host::startSpeedWalk): find
      * the path and hand it to the mapper package's `doSpeedWalk`. Driven by the
      * map's double-click-to-walk gesture via WindowManager.startSpeedWalk.
@@ -181,8 +186,9 @@ export interface IScriptingRuntime {
      * (unlike permanent items) don't live in the persisted store.
      */
     tempItemExists(id: number, type: string): boolean;
-    /** Temp items of `type` killed and not yet freed (getProfileStats). */
-    killedTempItemCount?(type: 'alias' | 'trigger'): number;
+    /** Killed temp items of `type` still waiting for the reap — counted by
+     *  getProfileStats, though exists() no longer sees them. */
+    deadTempItemCount(type: 'alias' | 'trigger'): number;
     /** A live temp item of `type` carrying this script-supplied name (Mudlet's
      *  tempComplexRegexTrigger is the one temp API that takes one), or null. */
     tempItemIdByName(name: string, type: string): number | null;

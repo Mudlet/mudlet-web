@@ -726,7 +726,8 @@ export class LuaRuntime implements IScriptingRuntime {
     /** Script-created temp aliases/triggers by id. `dead` marks one killed but
      *  not yet reaped: Mudlet frees a killed unit in the deferred cleanup it
      *  runs at the end of a line, not at the kill, so until then it is still
-     *  findable while no longer firing — `exists` says 1, `isActive` says 0, and
+     *  held while no longer firing — `exists` and `isActive` say 0 (desktop
+     *  skips an item pending deletion), getProfileStats counts it, and
      *  a second kill finds a corpse and answers false. {@link reapKilledTempItems}
      *  does the freeing. */
     private readonly tempIds = new Map<number, {
@@ -813,6 +814,7 @@ export class LuaRuntime implements IScriptingRuntime {
     }
 
     private _denyCurrentSend = false;
+    private _sendRequestDepth = 0;
 
     /** The read-only `/lua/` namespace: bundled Mudlet Lua, and in busted builds
      *  the spec corpus and its fixtures. Values are Latin-1 byte-strings. */
@@ -973,6 +975,7 @@ export class LuaRuntime implements IScriptingRuntime {
             releaseCb,
             emitEvent: (name, args) => this.emitEvent(name, args),
             pushNestedDispatchState: (parkCommand) => this.pushNestedDispatchState(parkCommand),
+            inDispatchPass: () => this.runningAliasScript || this.api.triggerPassActive,
             popNestedDispatchState: (depth) => this.popNestedDispatchState(depth),
             buildingCaptureTables: () => this.buildingCaptureTables(),
             vfs: this.vfs,
@@ -3050,14 +3053,17 @@ end`,
      * isActive() and findItems() all skip an item marked for deletion.
      */
     tempItemExists(id: number, type: string): boolean {
+        // A killed item waiting for the reap is not counted: Mudlet's exists()
+        // (and findItems/isActive with it) skips anything its unit has marked
+        // for deletion (`pendingDeletion`), though the unit still holds it.
         const entry = this.tempIds.get(id);
         return entry?.type === type && !entry.dead;
     }
 
-    /** How many temp items of `type` are killed and waiting for the cleanup.
-     *  Desktop's getProfileStats() still counts them — they stay in the item
-     *  tree until doCleanup() frees them — though not as active. */
-    killedTempItemCount(type: 'alias' | 'trigger'): number {
+    /** Killed temp items of `type` the reap has not freed yet. getProfileStats
+     *  still counts them, as desktop's assembleReport walks the unit's tree and
+     *  a killed item stays in it until the deferred cleanup. */
+    deadTempItemCount(type: 'alias' | 'trigger'): number {
         let n = 0;
         for (const entry of this.tempIds.values()) if (entry.dead && entry.type === type) n++;
         return n;
@@ -4480,7 +4486,7 @@ end`);
      * `command` is parked only for an alias script by default; feedTriggers
      * never parks it (see the binding).
      */
-    pushNestedDispatchState(parkCommand: boolean = this.runningAliasScript): number {
+    pushNestedDispatchState(parkCommand = this.runningAliasScript): number {
         if (this.inert) return -1;
         const api = this.lua.global.luaApi;
         const L = this.lua.global.address;
@@ -4491,7 +4497,9 @@ end`);
         const refs = NESTED_DISPATCH_GLOBALS.map(name => {
             // Only an alias script has its own `command` handed back. Anywhere
             // else it keeps the last command expanded, which packages such as
-            // Repeater read afterwards (TLuaInterpreter::expandAlias).
+            // Repeater read afterwards (TLuaInterpreter::expandAlias). A fed
+            // line never parks it: what the fed triggers expand is the last
+            // command sent, and the caller reads that (feedTriggers).
             if (name === 'command' && !parkCommand) return undefined;
             api.lua_pushstring(L, name);
             api.lua_rawget(L, LUA_GLOBALSINDEX);
@@ -5609,7 +5617,15 @@ end`);
     }
 
     dispatchSendRequest(text: string): boolean {
-        this.emitEvent('sysDataSendRequest', [text]);
+        // cTelnet::mSendRequestDispatchDepth: an alias pass run from inside a
+        // handler (one that denies the command and expands a replacement) must
+        // leave the deny for the command the handler is vetting.
+        this._sendRequestDepth++;
+        try {
+            this.emitEvent('sysDataSendRequest', [text]);
+        } finally {
+            this._sendRequestDepth--;
+        }
         if (!this._denyCurrentSend) return false;
         // Mudlet's Host::mAllowToSendCommand is consumed by the send it blocks,
         // never cleared ahead of the event (cTelnet::sendData puts it back only
@@ -5619,6 +5635,18 @@ end`);
         // denied the command about to go out had no effect at all.
         this._denyCurrentSend = false;
         return true;
+    }
+
+    /**
+     * The end of one command's alias pass that an alias consumed (Host::send).
+     * A deny raised there and never spent by a send of the alias's own would
+     * otherwise swallow whatever command comes next, so desktop puts
+     * mAllowToSendCommand back - unless the pass ran under a
+     * sysDataSendRequest handler, where the deny is meant for the command
+     * being handled.
+     */
+    endAliasPass(): void {
+        if (this._sendRequestDepth === 0) this._denyCurrentSend = false;
     }
 
     syncScriptHandlers(entries: ScriptHandlerEntry[]): void {

@@ -85,6 +85,7 @@ function stubVfs() {
     return {
         profilePath: PROFILE,
         exists: (p: string) => dirs.has(p) || files.has(p),
+        stat: (p: string) => (files.has(p) ? { type: 'file' } : dirs.has(p) ? { type: 'dir' } : null),
         mkdir: (p: string) => { dirs.add(p.replace(/\/$/, '')); },
         rmdir: (p: string) => {
             for (const d of [...dirs]) if (under(p, d)) dirs.delete(d);

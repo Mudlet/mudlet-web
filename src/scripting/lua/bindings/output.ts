@@ -9,7 +9,9 @@ import { unarmor } from '../byteArmor';
  * Colour channels are validated through the shared 0..255 coercion; Mudlet
  * silently no-ops on an out-of-range channel rather than raising.
  */
-export function installOutputBindings({ lua, api, pushNestedDispatchState, popNestedDispatchState }: BindingContext): void {
+export function installOutputBindings(
+    { lua, api, pushNestedDispatchState, popNestedDispatchState, inDispatchPass }: BindingContext,
+): void {
     // ── Output / format ───────────────────────────────────────────────────
     lua.global.set('fg',          (name: string)  => api.fg(name));
     lua.global.set('bg',          (name: string)  => api.bg(name));
@@ -30,14 +32,14 @@ export function installOutputBindings({ lua, api, pushNestedDispatchState, popNe
     // would not survive the wasmoon crossing as text. See byteArmor.ts.
     // Returns the refusal message, or nil when the text was fed.
     //
-    // During a trigger or alias pass this runs a whole trigger pass inside the
-    // calling script, whose fires replace `matches` and `multimatches`, so the
-    // caller's are parked and handed back — the very tables, so what it wrote
-    // into them survives (TLuaInterpreter::feedTriggers, upstream #10796).
-    // Not `command`: a fed trigger may expand a command, and the caller reads
-    // that back as the last command sent.
+    // Fed from an alias or trigger script, it runs a whole trigger pass inside
+    // that script, and the pass sets the capture globals for the scripts IT
+    // runs — so the caller's are parked for it and handed back, or the caller
+    // resumes with an emptied `matches` (TLuaInterpreter::feedTriggers). Not
+    // `command`: a fed trigger may expand one, and the caller reads that back
+    // as the last command sent. At the top level there is nothing to park.
     lua.global.set('feedTriggers', (data: string, utf8Encoded?: unknown) => {
-        const depth = api.inItemPass() ? pushNestedDispatchState(false) : -1;
+        const depth = inDispatchPass() ? pushNestedDispatchState(false) : -1;
         try {
             return api.feedTriggers(unarmor(String(data ?? '')), utf8Encoded !== false);
         } finally {

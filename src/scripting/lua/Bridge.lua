@@ -1020,11 +1020,12 @@ function getTimestamp(a, b)
     return v
 end
 
--- Mudlet reloadModule(name) answers with nothing whatsoever, installed or not.
--- The bare call is what drops wasmoon's nil: `return __reloadModule(name)` would
--- forward it as a value.
+-- Mudlet reloadModule(name) → true (plus what in the module does not work), or
+-- nil and why it was not reloaded (TLuaInterpreter::reloadModule's
+-- warnArgumentValue / pushInstallSucceeded). installOutcome is defined further
+-- down, so it is looked up when called.
 function reloadModule(name)
-    __reloadModule(name)
+    return __mudlet_install_outcome(__reloadModule(name))
 end
 
 -- Mudlet getModulePath(name) / getModulePriority(name) → the value, or
@@ -2333,6 +2334,67 @@ function getGridMode(areaId)
     return r
 end
 
+-- Mudlet getAreaGraph() → { areas = { [areaID] = {name, x, y, rooms, radius,
+-- pinned} }, links = { {from, to, exits}, ... } }: the areas as a graph, each
+-- placed in a world layout that is kept in the map's user data.
+function getAreaGraph()
+    local raw = __getAreaGraph()
+    local areas, links = {}, {}
+    local i = 0
+    while raw.areas[i] ~= nil do
+        local a = raw.areas[i]
+        areas[a.id] = { name = a.name, x = a.x, y = a.y, rooms = a.rooms, radius = a.radius, pinned = a.pinned }
+        i = i + 1
+    end
+    i = 0
+    while raw.links[i] ~= nil do
+        local l = raw.links[i]
+        links[#links + 1] = { from = l.from, to = l.to, exits = l.exits }
+        i = i + 1
+    end
+    return { areas = areas, links = links }
+end
+
+-- Mudlet setAreaGraphPosition(areaID, x, y) → true, pinning the area there;
+-- (nil, errMsg) for an unknown area or a coordinate out of range.
+function setAreaGraphPosition(areaId, x, y)
+    local r = __setAreaGraphPosition(areaId, x, y)
+    if r ~= true then return nil, r end
+    return true
+end
+
+-- Mudlet resetAreaGraphLayout([keepPinned]) → true, laying the areas out
+-- afresh, keeping the pinned ones where they are when asked.
+function resetAreaGraphLayout(keepPinned)
+    return __resetAreaGraphLayout(keepPinned == true)
+end
+
+-- Mudlet getMapEnvironmentKit(envID) → kit name, and whether the map names
+-- it (true) rather than it being guessed from the environment's colour.
+function getMapEnvironmentKit(environmentId)
+    local r = __getMapEnvironmentKit(environmentId)
+    return r[0], r[1]
+end
+
+-- Mudlet getMapEnvironmentKits() → { [envID] = kit } for the kits the map
+-- names, keyed by number as desktop's lua_pushnumber keys them.
+function getMapEnvironmentKits()
+    local kits = {}
+    for id, kit in pairs(__getMapEnvironmentKits()) do
+        kits[tonumber(id)] = kit
+    end
+    return kits
+end
+
+-- Mudlet setMapEnvironmentKit(envID [, kit]) → true; nil or "" clears the
+-- name. A kit it does not know, or saved kits that are not a JSON object, is
+-- (nil, errMsg) — warnArgumentValue's message alone.
+function setMapEnvironmentKit(environmentId, kit)
+    local r = __setMapEnvironmentKit(environmentId, kit)
+    if r ~= true then return nil, r end
+    return true
+end
+
 -- Mudlet getRoomName(id) → name string on success, (false, errMsg) on miss.
 function getRoomName(id)
     local n = __getRoomName(id)
@@ -3138,12 +3200,12 @@ end
 -- Mudlet packages do.
 function wait(...)
     if select('#', ...) ~= 1 then
-        error("Wait: wrong number of arguments", 0)
+        error("wait: wrong number of arguments", 0)
     end
     local raw = ...
     local msec = __mudlet_int(raw)
     if msec == nil then
-        error("Wait: bad argument #1 type (sleep time in msec as number expected, got "
+        error("wait: bad argument #1 type (sleep time in msec as number expected, got "
             .. type(raw) .. "!)", 2)
     end
     local deadline = __mudlet_uptime_ms() + math.max(0, msec)
@@ -3189,7 +3251,7 @@ function connectToServer(host, port, save)
     if port ~= nil then
         local num = __mudlet_int(port)
         if num == nil then
-            error("connectToServer: bad argument #2 type (port number as number is optional, got "
+            error("connectToServer: bad argument #2 type (port number {default = 23} as number is optional, got "
                 .. type(port) .. "!)", 2)
         end
         port = num
@@ -3198,6 +3260,12 @@ function connectToServer(host, port, save)
                 .. " given, if supplied it must be in range 1 to 65535,"
                 .. " {defaults to 23 if not provided}"
         end
+    end
+    -- The save flag is vetted before anything is written or dialled
+    -- (getVerifiedBool), so a wrong type leaves the url and port files alone.
+    if save ~= nil and type(save) ~= 'boolean' then
+        error("connectToServer: bad argument #3 type (save host name and port number as boolean is optional, got "
+            .. type(save) .. "!)", 2)
     end
     return __mudlet_connectToServer(host, port, save)
 end
@@ -3803,7 +3871,7 @@ function setAreaName(idOrName, newName)
     -- An area is reached by id or by name; a boolean names neither, and Mudlet
     -- raises rather than reporting it as an area that could not be found.
     if type(idOrName) ~= 'string' and __mudlet_num(idOrName) == nil then
-        error('setAreaName: bad argument #1 type (areaID as number or area name as string\n'
+        error('setAreaName: bad argument #1 type (areaID as number or area name as string '
             .. 'expected, got ' .. type(idOrName) .. '!)', 2)
     end
     local r = __setAreaName(idOrName, newName)
@@ -3859,6 +3927,8 @@ local function installOutcome(r)
     if r then return true end
     return nil
 end
+
+__mudlet_install_outcome = installOutcome
 
 function installPackage(path)
     return installOutcome(__installPackage(path))
@@ -4289,11 +4359,11 @@ end
 -- work here. No build suffix — desktop's PTB tag names a desktop build.
 do
     local MAJOR, MINOR, REVISION, BUILD = 5, 0, 0, ""
-    local STYLES = "   \"major\", \"minor\", \"revision\", \"build\", \"string\" or \"table\"."
+    local STYLES = "\"major\", \"minor\", \"revision\", \"build\", \"string\" or \"table\"."
     function getMudletVersion(...)
         local count = select('#', ...)
         if count > 1 then
-            error("getMudletVersion: only takes one (optional) argument:\n" .. STYLES, 2)
+            error("getMudletVersion: only takes one (optional) argument: " .. STYLES, 2)
         end
         local mode = ...
         if count == 0 or mode == nil then
@@ -4311,7 +4381,7 @@ do
             return string.format("%d.%d.%d", MAJOR, MINOR, REVISION)
         end
         if what:find("table", 1, true) then return MAJOR, MINOR, REVISION, BUILD end
-        error("getMudletVersion: takes one (optional) argument:\n" .. STYLES, 2)
+        error("getMudletVersion: takes one (optional) argument: " .. STYLES, 2)
     end
 end
 
@@ -4954,7 +5024,23 @@ end
 -- Returns true, as Mudlet does — even with no usable event name: desktop's
 -- TLuaInterpreter::raiseEvent hands whatever it got to Host::raiseEvent and
 -- answers true regardless (raiseEvent({}) and raiseEvent() included, #277).
-function raiseEvent(event, ...)
+local __mudlet_event_arg_types = { string = true, number = true, boolean = true, table = true, ['function'] = true, ['nil'] = true }
+function raiseEvent(...)
+    -- An event carries only what a handler can be handed: a thread or a
+    -- userdata raises, the name included. Every argument is vetted before any
+    -- is taken, as TLuaInterpreter::raiseEvent does, so the first bad one is
+    -- named and a refusal holds on to nothing.
+    for i = 1, select('#', ...) do
+        local t = type((select(i, ...)))
+        if not __mudlet_event_arg_types[t] then
+            error("raiseEvent: bad argument #" .. i
+                .. " type (string, number, boolean, table, function, or nil expected, got a " .. t .. "!)", 2)
+        end
+    end
+    return __mudlet_raise_event(...)
+end
+
+function __mudlet_raise_event(event, ...)
     if type(event) ~= 'string' or event == '' then return true end
     local argc = select('#', ...)
     -- Drop getMainWindowSize's cache on a script-raised resize too, as
@@ -5128,6 +5214,9 @@ end
 do
     local _raw = __mudlet_tempAlias
     function tempAlias(pattern, fn)
+        -- The pattern goes through checkStringArg: a table raises rather than
+        -- becoming an alias on its tostring() that nothing could ever match.
+        pattern = __mudlet_check_string(pattern, "tempAlias", 1, "regex-type pattern", true)
         -- An uncompilable script still makes an alias, one that never fires
         local compiled = __mudlet_to_fn(fn, "tempAlias", 2)
         return _raw(pattern, __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true)
@@ -5281,6 +5370,9 @@ do
         -- outright — nothing is added in either case. The engine runs the
         -- body, once, as it creates the script, and hands back what it raised
         -- (a non-string error object already described, as desktop does).
+        -- checkStringArg on the name and parent first: a table raises.
+        name = __mudlet_check_string(name, "permScript", 1, "script name", true)
+        parent = __mudlet_check_string(parent, "permScript", 2, "script parent name", true)
         code = __mudlet_check_lua_code(code, "permScript", 3)
         local id = __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), code),
@@ -5374,6 +5466,8 @@ do
         -- reportInvalidLuaCodeParam, so a missing or wrongly-typed pattern — and
         -- a body that will not compile — raises instead of being tostring()-ed
         -- into an alias that could never match (or a body of "999").
+        name = __mudlet_check_string(name, "permAlias", 1, "alias name", true)
+        parent = __mudlet_check_string(parent, "permAlias", 2, "alias group/parent", true)
         regex = __mudlet_check_string(regex, "permAlias", 3, "regex")
         code = __mudlet_check_lua_code(code, "permAlias", 4)
         return __mudlet_perm_result(
@@ -5390,7 +5484,10 @@ do
         -- Mudlet reads the interval with getVerifiedDouble and runs the body
         -- through reportInvalidLuaCodeParam before creating anything, so a
         -- missing interval or a body that won't compile raises rather than
-        -- leaving a dead timer in the tree.
+        -- leaving a dead timer in the tree. The name and parent come before
+        -- all of it, through checkStringArg.
+        name = __mudlet_check_string(name, "permTimer", 1, "timer name", true)
+        parent = __mudlet_check_string(parent, "permTimer", 2, "timer parent name", true)
         local delaySeconds = __mudlet_num(delay)
         if delaySeconds == nil then
             error("permTimer: bad argument #3 type (time in seconds as number expected, got "
@@ -5422,6 +5519,8 @@ end
 do
     local _raw = __mudlet_permKey
     function permKey(name, parent, a3, a4, a5)
+        name = __mudlet_check_string(name, "permKey", 1, "key name", true)
+        parent = __mudlet_check_string(parent, "permKey", 2, "key parent group", true)
         local modifier, key, code
         if a5 == nil then
             modifier, key, code = -1, a3, a4
@@ -6058,20 +6157,24 @@ do
             error(who .. ": bad argument #" .. (first + 1) .. " type (hints as table expected, got "
                 .. __mudlet_typename(hints, n >= first + 1) .. "!)", 3)
         end
+        -- A bad item is named by where the table walk met it, and the table by
+        -- its position (TLuaInterpreter::checkCommandsOrFunctionsTable and
+        -- checkHintsTable); the xEcho popups renumber the position when the
+        -- script left the window out.
         local nc, nh = 0, 0
-        for _, c in ipairs(cmds) do
-            if not isCommand(c) then
-                error(who .. ": bad argument #" .. first .. " type (commands/functions as table of strings"
-                    .. " and functions expected, got a " .. type(c) .. " in it!)", 3)
-            end
+        for _, c in pairs(cmds) do
             nc = nc + 1
-        end
-        for _, h in ipairs(hints) do
-            if __mudlet_str(h) == nil then
-                error(who .. ": bad argument #" .. (first + 1) .. " type (hints as table of strings expected,"
-                    .. " got a " .. type(h) .. " in it!)", 3)
+            if not isCommand(c) then
+                error(who .. ": bad item #" .. nc .. " in table argument #" .. first
+                    .. " in type (command as string or function expected, got " .. type(c) .. "!)", 3)
             end
+        end
+        for _, h in pairs(hints) do
             nh = nh + 1
+            if __mudlet_str(h) == nil then
+                error(who .. ": bad item #" .. nh .. " in table argument #" .. (first + 1)
+                    .. " in type (hint as string expected, got " .. type(h) .. "!)", 3)
+            end
         end
         return nc, nh
     end
@@ -8207,8 +8310,10 @@ do
     isActive = itemLookupGuard(isActive, "isActive")
     exists   = itemLookupGuard(exists, "exists")
 
-    -- Expiry counts: nil means "never expires"; anything non-numeric is a type
-    -- error, and a count below one could never fire so it is refused outright.
+    -- Expiry counts: nil means "never expires"; anything non-numeric raises, and
+    -- a count below one could never fire so it is refused with (nil, message)
+    -- before anything is built. The wording is TLuaInterpreterMudletObjects's,
+    -- a "value" error rather than a "type" one.
     -- `pos` is the argument position the expiry occupies for that function.
     -- Returns (errMsg, coercedValue): the caller substitutes the converted
     -- count back into the argument list so a "3" reaches the engine as 3.
@@ -8216,11 +8321,11 @@ do
         if value == nil then return nil, nil end
         local count = __mudlet_int(value)
         if count == nil then
-            error(funcName .. ": bad argument #" .. pos .. " type (expiration count as number"
-                .. " is optional, got " .. type(value) .. "!)", 3)
+            error(funcName .. ": bad argument #" .. pos .. " value (trigger expiration count must be"
+                .. " nil or a number, got " .. type(value) .. "!)", 3)
         end
         if count < 1 then
-            return funcName .. ": expiration count must be greater than zero, got " .. tostring(value)
+            return funcName .. ": trigger expiration count must be nil or greater than zero, got " .. tostring(count)
         end
         return nil, count
     end
@@ -8287,8 +8392,13 @@ do
     -- patterns list" (TLuaInterpreterMudletObjects.cpp:1199-1331). Carried
     -- through verbatim rather than tidied into one phrase, since the message is
     -- what a script author matches on.
+    --
+    -- Before any of that the name and parent are read with checkStringArg, so
+    -- a table for either raises rather than being tostring()-ed into the tree.
     local function permPatternGuard(fn, funcName, what)
         return function(name, parent, patterns, code)
+            name = __mudlet_check_string(name, funcName, 1, "trigger name", true)
+            parent = __mudlet_check_string(parent, funcName, 2, "trigger parent", true)
             if type(patterns) ~= 'table' then
                 error(funcName .. ": bad argument #3 type (" .. what .. " as table expected, got "
                     .. type(patterns) .. "!)", 2)
@@ -8306,6 +8416,8 @@ do
     do
         local _raw = permPromptTrigger
         permPromptTrigger = function(name, parent, code)
+            name = __mudlet_check_string(name, "permPromptTrigger", 1, "trigger name", true)
+            parent = __mudlet_check_string(parent, "permPromptTrigger", 2, "parent trigger name", true)
             return _raw(name, parent, __mudlet_check_lua_code(code, "permPromptTrigger", 3))
         end
     end
@@ -8339,11 +8451,17 @@ do
     -- set", which is how Mudlet tells them apart). Refusing those made the
     -- highlight and sound arguments unreachable — the code that reads them
     -- tests for a string, and no call carrying one ever got this far.
-    local COMPLEX_TRIGGER_FLAGS = {[4] = true, [7] = true, [8] = true, [12] = true, [13] = true, [14] = true}
+    local COMPLEX_TRIGGER_FLAGS = {[4] = true, [7] = true, [8] = true, [12] = true, [13] = true}
     local _rawTempComplexRegexTrigger = tempComplexRegexTrigger
+    --
+    -- The name and the pattern go through checkStringArg first, and the expiry
+    -- (#14) is refused like every other creator's — all before anything is
+    -- built, so a refusal does not use up a trigger ID.
     tempComplexRegexTrigger = function(...)
         local n = select('#', ...)
         local args = {...}
+        __mudlet_check_string(args[1], "tempComplexRegexTrigger", 1, "trigger name create or add to", n >= 1)
+        __mudlet_check_string(args[2], "tempComplexRegexTrigger", 2, "regex pattern to match", n >= 2)
         for i = 4, n do
             local v = args[i]
             if v ~= nil and COMPLEX_TRIGGER_FLAGS[i] then
@@ -8354,6 +8472,11 @@ do
                 end
                 args[i] = num
             end
+        end
+        if args[14] ~= nil then
+            local err, count = __mudlet_check_expiry(args[14], "tempComplexRegexTrigger", 14)
+            if err then return nil, err end
+            args[14] = count
         end
         return _rawTempComplexRegexTrigger(unpack(args, 1, n))
     end
@@ -8674,8 +8797,14 @@ do
     function setRoomArea(rooms, area)
         local ids
         if type(rooms) ~= 'table' and __mudlet_num(rooms) == nil then
-            error('setRoomArea: bad argument #1 type (roomID as number or table of roomIDs\n'
+            error('setRoomArea: bad argument #1 type (roomID as number or table of roomIDs '
                 .. 'expected, got ' .. type(rooms) .. '!)', 2)
+        end
+        -- The area is an id or a name, and anything else raises before any
+        -- room is moved (TLuaInterpreter::setRoomArea).
+        if type(area) ~= 'string' and __mudlet_num(area) == nil then
+            error('setRoomArea: bad argument #2 type (areaID as number or area name as string '
+                .. 'expected, got ' .. type(area) .. '!)', 2)
         end
         if type(rooms) == 'table' then
             local parts = {}
@@ -9010,8 +9139,18 @@ do
     getStopWatchBrokenDownTime = watchGuard(getStopWatchBrokenDownTime, "getStopWatchBrokenDownTime", ID_OR_NAME)
     deleteStopWatch            = watchGuard(deleteStopWatch, "deleteStopWatch",
         "stopwatchID as number or stopwatch name as string expected")
-    setStopWatchName           = watchGuard(setStopWatchName, "setStopWatchName",
-        "stopwatchID as number or current name as string expected")
+    -- setStopWatchName also reads the new name with checkStringArg, before
+    -- any watch is looked up, so a table raises rather than being tostring()-ed.
+    do
+        local guarded = watchGuard(setStopWatchName, "setStopWatchName",
+            "stopwatchID as number or current name as string expected")
+        setStopWatchName = function(...)
+            local subject, newName = ...
+            checkSubject(subject, "setStopWatchName", "stopwatchID as number or current name as string expected")
+            __mudlet_check_string(newName, "setStopWatchName", 2, "stopwatch new name", select('#', ...) >= 2)
+            return guarded(...)
+        end
+    end
 
     -- createStopWatch([name] | [autostart] [, autostart]) — the first argument is
     -- optional, but anything other than a name, an autostart flag or nil is a
@@ -9068,6 +9207,12 @@ do
     function expandAlias(...)
         local text = ...
         text = __mudlet_check_string(text, "expandAlias", 1, "text to parse", select('#', ...) >= 1)
+        -- A nil echo is the same as none, but anything else has to be a
+        -- boolean (getVerifiedBool): "yes" or 1 raises rather than echoing.
+        local echo = select(2, ...)
+        if echo ~= nil and type(echo) ~= 'boolean' then
+            error("expandAlias: bad argument #2 type (echo as boolean is optional, got " .. type(echo) .. "!)", 2)
+        end
         return _rawExpandAlias(text, select(2, ...))
     end
 end
@@ -9369,7 +9514,8 @@ do
             if path:sub(1, 1) ~= "/" then path = getMudletHomeDir() .. "/" .. path end
             local f = io.open(path, "r")
             if not f then
-                return nil, 'loadMap: the file "' .. path .. '" was not found'
+                -- Host::importMapFile's wording, on one line like every refusal
+                return nil, 'loadMap: bad argument #1 value (filename used: "' .. path .. '" was not found).'
             end
             xml = f:read("*a")
             f:close()
@@ -9961,19 +10107,20 @@ end
 
 -- ── send / raiseGlobalEvent argument contracts ─────────────────────────────
 do
-    -- Mudlet registers send() from its C++ sendRaw(), which is the name its
-    -- own complaints use — so a script grepping for the message finds the same
-    -- text it would on the desktop.
+    -- Mudlet registers send() from its C++ sendRaw(), but its complaints are
+    -- named "send" (not __func__), so they name the function a script called.
+    -- The second argument, once given, has to be a boolean - even nil is
+    -- refused (getVerifiedBool behind a lua_gettop() > 1 check).
     local _rawSend = send
     function send(...)
         local n = select('#', ...)
         local text, echo = ...
         if type(text) ~= 'string' and type(text) ~= 'number' then
-            error("sendRaw: bad argument #1 type (command as string expected, got "
+            error("send: bad argument #1 type (command as string expected, got "
                 .. (n < 1 and 'no value' or type(text)) .. "!)", 2)
         end
-        if n > 1 and echo ~= nil and type(echo) ~= 'boolean' then
-            error("sendRaw: bad argument #2 type (show on screen as boolean is optional, got "
+        if n > 1 and type(echo) ~= 'boolean' then
+            error("send: bad argument #2 type (showOnScreen as boolean is optional, got "
                 .. type(echo) .. "!)", 2)
         end
         return _rawSend(...)
@@ -9991,7 +10138,7 @@ do
     local _rawRaiseGlobalEvent = raiseGlobalEvent
     function raiseGlobalEvent(...)
         if select('#', ...) < 1 then
-            error("raiseGlobalEvent: missing argument #1 (eventName as string expected!)", 2)
+            error("raiseGlobalEvent: missing argument #1 (eventName as, probably, a string expected!)", 2)
         end
         local n = select('#', ...)
         local args = { ... }
@@ -9999,8 +10146,8 @@ do
             local v = args[i]
             local t = type(v)
             if t ~= 'string' and t ~= 'number' and t ~= 'boolean' and t ~= 'nil' then
-                error("raiseGlobalEvent: bad argument type #" .. i
-                    .. " (boolean, number, string or nil expected, got " .. t .. "!)", 2)
+                error("raiseGlobalEvent: bad argument #" .. i
+                    .. " type (boolean, number, string or nil expected, got a " .. t .. "!)", 2)
             end
             if i == 1 then
                 if t == 'number' then
@@ -10146,6 +10293,9 @@ do
         end
     end
 
+    -- Other.lua's URL-aware installPackage() hands anything that is not a
+    -- string straight to this one, for the C++ getVerifiedString to name.
+    installPackage    = guardName(installPackage,    "installPackage",    "package location path and file name")
     uninstallPackage  = guardName(uninstallPackage,  "uninstallPackage",  "package name")
     installModule     = guardName(installModule,     "installModule",     "module location")
     uninstallModule   = guardName(uninstallModule,   "uninstallModule",   "module name")
@@ -10207,15 +10357,20 @@ do
         return nil, started
     end
 
+    -- loadRawFile is desktop's older name for the same code, which refuses
+    -- under whichever name it was called by.
     local _rawLoadReplay = loadReplay
-    function loadReplay(fileName)
-        fileName = __mudlet_check_string(fileName, "loadReplay", 1, "replay file name")
-        if fileName == "" then
-            return nil, "a blank string is not a valid replay file name"
+    local function replayLoader(funcName)
+        return function(fileName)
+            fileName = __mudlet_check_string(fileName, funcName, 1, "replay file name")
+            if fileName == "" then
+                return nil, "a blank string is not a valid replay file name"
+            end
+            return _rawLoadReplay(fileName)
         end
-        return _rawLoadReplay(fileName)
     end
-    loadRawFile = loadReplay
+    loadReplay = replayLoader("loadReplay")
+    loadRawFile = replayLoader("loadRawFile")
 
     local _rawSetProfileIcon = setProfileIcon
     function setProfileIcon(path)
@@ -10778,22 +10933,25 @@ end
 function spawn(...)
     local n = select('#', ...)
     local argv = {...}
+    -- Every message carries a "spawn: " prefix, and is raised bare (no
+    -- position), as TForkedProcess::startProcess pushes its own string.
     if n < 2 then
-        error("Need read function and process name as parameters.", 0)
+        error("spawn: need read function and process name as parameters.", 0)
     end
     if type(argv[1]) ~= 'function' then
-        error("Need read function as first parameter.", 0)
+        error("spawn: need read function as first parameter.", 0)
     end
-    -- luaL_checkstring on every argument from the program name onwards, which is
+    -- lua_isstring on every argument from the program name onwards, which is
     -- why a number is accepted here: Lua coerces it, so Mudlet does too.
     for i = 2, n do
         local t = type(argv[i])
         if t ~= 'string' and t ~= 'number' then
-            error("bad argument #" .. i .. " to 'spawn' (string expected, got " .. t .. ")", 0)
+            error("spawn: bad argument #" .. i .. " type (" .. (i == 2 and "process name" or "process argument")
+                .. " as string expected, got " .. t .. "!)", 0)
         end
     end
     local cwd = (type(getMudletHomeDir) == 'function' and getMudletHomeDir()) or "/"
-    error("Failed to start process '" .. tostring(argv[2]) .. "': the web client cannot start"
+    error("spawn: Failed to start process '" .. tostring(argv[2]) .. "': the web client cannot start"
         .. " processes. Working directory: '" .. tostring(cwd) .. "'. PATH: ''", 0)
 end
 

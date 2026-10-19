@@ -57,6 +57,7 @@ import {
 import { isQtResourcePath, qtResourceUrl } from '../assets/qt-resources';
 import { ProfilesPresence } from './profilesPresence';
 import { MapStore } from '../map/MapStore';
+import { MAP_STYLES, DEFAULT_MAP_STYLE } from '../map/mapStyle';
 import { type EngineHost, type TempComplexTriggerSpec, NULL_ENGINE_HOST } from './EngineHost';
 import { BUNDLED_GAMES, findBundledGame } from '../mud/games/bundledGames';
 import { TAB_COMPLETION_LINES, tabCompletionPool } from '../ui/tabCompletion';
@@ -442,6 +443,12 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     // Qt's NoFontMerging strategy bit: draw symbols only with the chosen family
     // instead of falling back to another font for glyphs it lacks.
     mapSymbolFontOnlyUseSelected:   { type: 'bool', default: false },
+    // Host::mMapperStitchAreas: draw the areas an exit leads into beside the
+    // one in view. On unless a profile turns it off.
+    mapStitchAreas:                 { type: 'bool', default: true },
+    // The modern 3D mapper's style (Host::mapStyle), matched exactly as
+    // MapStyle::find does — see map/mapStyle.ts.
+    mapStyle:                       { type: 'str',  default: DEFAULT_MAP_STYLE, enum: MAP_STYLES },
     // Session-only on purpose, and Mudlet is the same: a UI package that sets
     // this and is then uninstalled must not leave the map button dead for good,
     // so every session starts back on "default".
@@ -520,13 +527,15 @@ const CONFIG_KEY_ALIASES: Record<string, string> = {
  *  rendering or mapper behaviour a build can be asked to try; Mudlet Web implements
  *  none of them, but the switches are ordinary profile state and scripts feature-
  *  test through them, so they are answered rather than refused. Grouped by the
- *  first two dot-segments, and at most one per group may be on. */
+ *  first two dot-segments, and at most one per group may be on. Kept sorted
+ *  in byte order, as desktop sorts the `experiment.list` it hands out, so the
+ *  members of a group sit together. */
 const VALID_EXPERIMENTS: readonly string[] = [
-    'experiment.rendering.originalish',
-    'experiment.rendering.more-transparent',
+    'experiment.3d-player-icon',
     'experiment.3dmap.modernmapper',
     'experiment.render-in-out-exits',
-    'experiment.3d-player-icon',
+    'experiment.rendering.more-transparent',
+    'experiment.rendering.originalish',
 ];
 
 /** Format an epoch-ms timestamp as Mudlet's `TBuffer::smTimeStampFormat`,
@@ -1583,7 +1592,8 @@ export class ScriptingAPI {
      *  - `connected` — the profile is connected to its game. Own tab: live; other
      *    tabs: their last-announced state (BroadcastChannel presence). Always
      *    false for a profile that isn't loaded.
-     *  - `description` — the connection record's free-text description.
+     *  - `description` — the connection record's free-text description, or the
+ *    blurb its bundled game ships with when it has none.
      * On a duplicate profile name, last-wins (a Lua table can't hold dup keys).
      */
     getProfiles(): Record<string, { host: string; port: string; loaded: boolean; connected?: boolean; description: string }> {
@@ -1603,7 +1613,10 @@ export class ScriptingAPI {
                 // loaded, too, so a crashed tab's stale presence can't outlive
                 // its (auto-released) lock.
                 ...(isLoaded ? { connected: this.presence.isConnected(conn.id) } : {}),
-                description: conn.description ?? '',
+                // As getProfileInformation(): a profile with no description
+                // of its own reports its game's shipped blurb (Mudlet reads both
+                // through the same TGameDetails fallback).
+                description: conn.description ?? findBundledGame(conn.name)?.description ?? '',
             };
         }
         return out;
@@ -2515,7 +2528,7 @@ export class ScriptingAPI {
     saveProfileXml(location?: string, saveName?: string) {
         return this.host.saveProfileXml(location, saveName);
     }
-    reloadModule(name: string): boolean { return this.host.reloadModuleFromFile(name); }
+    reloadModule(name: string): InstallOutcome { return this.host.reloadModuleFromFile(name); }
     enableModuleSync(name: string): void { this.host.setModuleSync(name, true); }
     disableModuleSync(name: string): void { this.host.setModuleSync(name, false); }
     getModuleSync(name: string): boolean { return this.host.getModuleSync(name); }
@@ -4629,12 +4642,6 @@ export class ScriptingAPI {
      * Returns null when the text was fed, or the refusal message; the binding
      * shapes that into Mudlet's `true` / `(nil, errMsg)`.
      */
-    /** Whether a trigger or alias pass is running — the passes whose capture
-     *  globals a nested feedTriggers() has to hand back. */
-    inItemPass(): boolean {
-        return this.triggerLineDepth > 0 || this.host.inAliasPass?.() === true;
-    }
-
     feedTriggers(data: string, utf8Encoded = true): string | null {
         // A self-feeding trigger nests one line pass per re-match, and the
         // wasm stack is what runs out. Mudlet stops at TriggerUnit's
@@ -4648,6 +4655,17 @@ export class ScriptingAPI {
         if (this.triggerLineDepth >= ScriptingAPI.MAX_TRIGGER_DEPTH) {
             this.runawayFeedStopped = true;
             return FEED_RUNAWAY_ERROR;
+        }
+        // Every carriage return is dropped, as cTelnet drops the game's: TBuffer
+        // ends a line at each one, so a CR LF would otherwise end it twice and
+        // a captured log would replay with a blank line after every line. One
+        // that ends the text stays — like the one cTelnet::slot_timerPosting()
+        // adds, it flushes the line still being fed (TLuaInterpreter::
+        // feedTriggers). A CR is the same byte in every encoding a game uses.
+        if (data.includes('\r')) {
+            const flushesLine = data.endsWith('\r');
+            data = data.replace(/\r/g, '');
+            if (flushesLine) data += '\r';
         }
         const encoding = this.session.getServerEncoding();
         let text: string;
@@ -4682,11 +4700,10 @@ export class ScriptingAPI {
         // An EOT (0x04) ends a line as '\n' does, in fed text as in the game's:
         // TBuffer::translateToPlainText commits on it whatever the source.
         text = text.replace(/\x04/g, '\n');
-        // Only cTelnet strips the game's carriage returns, so one handed to
-        // feedTriggers() reaches TBuffer, which commits the line on it — and
-        // commits nothing when the line is still empty (TBuffer::commitLine's
-        // "empty timer posting"), so "line\r\n" is the line and then an empty
-        // one, as on desktop. The decoder above already read it as itself.
+        // The one carriage return feedTriggers() leaves — ending the text —
+        // reaches TBuffer, which commits the line on it, and commits nothing
+        // when the line is still empty (TBuffer::commitLine's "empty timer
+        // posting"). The decoder above already read it as itself.
         if (text.includes('\r')) text = commitFedCarriageReturns(this.heldFeedText, text);
         // Trigger reloads are coalesced onto a microtask, which cannot run while
         // the calling Lua chunk is still on the stack. Mudlet applies perm* and
@@ -4783,6 +4800,11 @@ export class ScriptingAPI {
 
     getLastLineNumber(windowName?: string): number {
         return this.getLineCount(windowName);
+    }
+
+    /** Whether a trigger pass is under way (TriggerUnit::processingDepth). */
+    get triggerPassActive(): boolean {
+        return this.triggerLineDepth > 0;
     }
 
     /** Whether `con` is the main console mid trigger pass — the one time it has
@@ -8190,15 +8212,24 @@ export class ScriptingAPI {
      * warnIfUnencodable gives: a line the player can read has to be a line
      * getLines() and the cursor APIs can see.
      */
-    /** Held installs wait on the save's flush; see ScriptingEngine. */
-    markProfileSaveInFlight(): void {
-        this.host.markProfileSaveInFlight();
-    }
-
     postInfo(text: string): void {
         const notice = `\x1b[36m[ INFO ]\x1b[0m  - ${text}`;
         this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
         this.session.events.emit('message', notice, 'script', Date.now());
+    }
+
+    /** Mudlet's `Host::postMessage` for the `[ WARN ]` kind, written the same
+     *  way as {@link postInfo}. */
+    postWarning(text: string): void {
+        const notice = `\x1b[33m[ WARN ]\x1b[0m  - ${text}`;
+        this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
+        this.session.events.emit('message', notice, 'script', Date.now());
+    }
+
+    /** A profile save counts as running until the next pass of the event
+     *  loop; see ScriptingEngine.markProfileSaveInFlight. */
+    markProfileSaveInFlight(): void {
+        this.host.markProfileSaveInFlight();
     }
 
     /** Mudlet's `Host::postMessage` for the `[ ERROR ]` kind: unlike printError

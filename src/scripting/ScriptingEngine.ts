@@ -5,7 +5,7 @@ import { MAP_WIDGET_ID } from '../ui/windows/types';
 import { qtKeyToDomCode, qtModifiersToList } from '../mud/keybindings/qtKeys';
 import { splitSentCommands } from '../mud/commandSplit';
 import type {AliasEngine, AliasNode} from '../mud/aliases/AliasEngine';
-import {TriggerEngine, highlightColor, highlightTargets, type TriggerNode} from '../mud/triggers/TriggerEngine';
+import {TriggerEngine, colorPatternProblem, highlightColor, highlightTargets, perlPatternError, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
@@ -211,6 +211,14 @@ function itemChunkName(kind: CodeItemKind, name: string): string {
  */
 function itemSyntaxError(rt: IScriptingRuntime | null | undefined, code: string, chunkName: string): string | null {
     return rt?.syntaxError?.(`function __mudlet_item() ${code}\nend`, chunkName) ?? null;
+}
+
+/** TAlias::compileRegex's complaint about a pattern PCRE rejects, as plain
+ *  text, or null when it compiles. An empty pattern is not compiled at all. */
+function aliasPatternError(pattern: string | undefined): string | null {
+    if (!pattern) return null;
+    const reason = perlPatternError(pattern);
+    return reason === null ? null : `Error: in "Pattern:", faulty regular expression, reason: "${reason}".`;
 }
 
 /** What the compile check needs of an item — see ScriptingEngine.cannotCompile. */
@@ -1384,27 +1392,74 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
-     * Re-read a module's XML from disk and replace its tagged nodes in the store.
-     * Pairs with the "Reload from file" UI action.
+     * Mudlet `reloadModule(name)` — Host::reloadModule, for a script and for
+     * the editor's "Reload from file" alike. Answers like an install does:
+     * `{ ok: true, error }` with whatever in the module does not work, or
+     * `{ ok: false, error }` with why it was not reloaded.
+     *
+     * Two things are checked before anything else, so the module's items are
+     * untouched by either: that it is installed at all, and that the file it
+     * was installed from can still be read — the reload takes the module
+     * apart before reading that file back in, and a file that has gone would
+     * leave it listed with nothing in it. Only then is a reload asked for
+     * during a profile save put off until the save is over; the true answered
+     * now is all the caller hears, so how the reload went afterwards is said on
+     * the console.
      */
-    reloadModuleFromFile(moduleName: string): boolean {
+    reloadModuleFromFile(moduleName: string): InstallOutcome {
+        const pkg = this.findManifest(moduleName);
+        if (!pkg || pkg.kind !== 'module') return { ok: false, error: "module doesn't exist" };
+        const file = this.getModulePath(moduleName) ?? '';
+        if (!this.moduleFileReadable(file)) return { ok: false, error: `module file '${file}' cannot be read` };
+        if (this.profileSaveInFlight) {
+            this.postponedReloads.push(moduleName);
+            return { ok: true, error: null };
+        }
+        return this.reloadModuleNow(moduleName);
+    }
+
+    /** Whether the file a module was installed from is a file that reads —
+     *  QFileInfo's isFile() && isReadable() — in the profile or under the
+     *  read-only /lua/ namespace. */
+    private moduleFileReadable(file: string): boolean {
+        if (!file) return false;
+        if (this.runtimes.lua?.readBuiltinBytes?.(file)) return true;
+        return this.vfs?.stat(file)?.type === 'file';
+    }
+
+    /** Reloads put off by a profile save, carried out once it is over. */
+    private readonly postponedReloads: string[] = [];
+
+    /** The end of a profile save: the reloads it held up are carried out now,
+     *  and only the console is left to tell how they went. */
+    private runPostponedReloads(): void {
+        while (this.postponedReloads.length > 0 && !this.profileSaveInFlight) {
+            const name = this.postponedReloads.shift()!;
+            const outcome = this.reloadModuleFromFile(name);
+            if (!outcome.ok) {
+                this.api.postWarning(`Module "${name}" could not be reloaded: ${outcome.error}`);
+            } else if (outcome.error) {
+                this.api.postWarning(`Module "${name}" was reloaded, but parts of it are not working: ${outcome.error}`);
+            }
+        }
+    }
+
+    private reloadModuleNow(name: string): InstallOutcome {
+        let moduleName = name;
         const vfs = this.vfs;
-        if (!vfs) {
-            this.api.printError('[module] no profile VFS available');
-            return false;
-        }
+        if (!vfs) return { ok: false, error: 'no profile VFS available' };
         const id = this.connectionId;
-        const pkg = (useAppStore.getState().connectionPackages[id] ?? []).find(p => p.name === moduleName);
-        if (!pkg || pkg.kind !== 'module') {
-            this.api.printError(`[module] not a module: ${moduleName}`);
-            return false;
-        }
+        const pkg = this.findManifest(moduleName);
+        if (!pkg || pkg.kind !== 'module') return { ok: false, error: "module doesn't exist" };
         // A module's own install-time script asking for it to be reloaded —
         // by the name its config.lua gave it, which the install could not have
         // known to refuse by the file's — would import the file again on top
         // of the copy still being read in, a second set of every item per
         // round. Refused while it is installing (or already reloading).
-        if (this.installing.has(moduleName)) return false;
+        if (this.installing.has(moduleName)) {
+            return { ok: false, error: `module "${moduleName}" is still being installed` };
+        }
+        const file = this.getModulePath(moduleName) ?? moduleXmlAbsolutePath(pkg, vfs) ?? '';
         // Host::reloadModule is a sync uninstall followed by a sync install
         // (uninstallPackage / installPackage with ModuleSync), so a reload says
         // what those say: sysUninstall and sysSyncUninstallModule while the old
@@ -1414,33 +1469,60 @@ export class ScriptingEngine implements EngineHost {
         // reload at all.
         this.raiseEvent('sysUninstall', [moduleName]);
         this.raiseEvent('sysSyncUninstallModule', [moduleName]);
+        let data: MudletImportResult;
+        const reread: { manifest?: PackageManifest } = {};
         try {
-            const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
-            // Desktop re-reads module info only from an archive's config.lua,
-            // which replaces whatever a script had set on it. A plain XML module
-            // has no config.lua to re-read, so what setModuleInfo put there
-            // stays — dropping it on every reload lost fields desktop keeps.
-            if (pkg.sourcePath && /\.(mpackage|zip)$/i.test(pkg.sourcePath)) {
-                this.moduleInfoOverrides.delete(moduleName);
-            }
-            this.noteModuleLoaded(moduleName, data);
-            const problems = this.collectInstallProblems(moduleName,
-                () => useAppStore.getState().installPackage(id, pkg, data), data);
-            // A reload is Mudlet's module sync, so it says so the way a sync
-            // does — on the event, with whatever in the module does not work,
-            // and never on the console, where it would come back on every
-            // reload. The file is the one the module was installed from (the
-            // .mpackage for an archive, as desktop records it and getModulePath
-            // reports), not the XML unpacked out of it.
-            this.notifyInstalled(moduleName, problems);
-            const file = this.getModulePath(moduleName) ?? moduleXmlAbsolutePath(pkg, vfs) ?? '';
-            this.raiseEvent('sysSyncInstallModule', problems ? [moduleName, file, problems] : [moduleName, file]);
-            return true;
+            data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig, reread);
         } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            this.api.printError(`[module] reload failed for "${moduleName}": ${msg}`);
-            return false;
+            // The uninstall half has already run on desktop by the time the
+            // install half fails, so the module stays listed with nothing in
+            // it — and the reason says so.
+            const reason = err instanceof Error ? err.message : String(err);
+            useAppStore.getState().installPackage(id, pkg, {
+                scripts: [], aliases: [], triggers: [], timers: [], keys: [], buttons: [], warnings: [],
+            });
+            return { ok: false, error: `${reason}, so the module is now empty` };
         }
+        // Desktop re-reads module info only from an archive's config.lua,
+        // which replaces whatever a script had set on it. A plain XML module
+        // has no config.lua to re-read, so what setModuleInfo put there
+        // stays — dropping it on every reload lost fields desktop keeps.
+        if (pkg.sourcePath && /\.(mpackage|zip)$/i.test(pkg.sourcePath)) {
+            this.moduleInfoOverrides.delete(moduleName);
+        }
+        // The archive can since have been replaced by one whose config.lua
+        // names it differently, and what it holds then goes in under that name:
+        // the old one, which holds nothing any more, is no longer listed beside
+        // it (Host::reloadModule's installedUnderAnotherName).
+        const renamedTo = reread.manifest && reread.manifest.name !== moduleName ? reread.manifest.name : null;
+        if (renamedTo) {
+            useAppStore.getState().uninstallPackage(id, moduleName);
+            this.unloadedModules.delete(moduleName);
+            moduleName = renamedTo;
+        }
+        const installed: PackageManifest = renamedTo
+            ? { ...reread.manifest!, kind: 'module', sync: pkg.sync, ...(pkg.priority !== undefined ? { priority: pkg.priority } : {}) }
+            : pkg;
+        this.noteModuleLoaded(moduleName, data);
+        const problems = this.collectInstallProblems(moduleName,
+            () => useAppStore.getState().installPackage(id, installed, data), data);
+        // A reload is Mudlet's module sync, so it says so the way a sync
+        // does — on the event, with whatever in the module does not work,
+        // and never on the console, where it would come back on every
+        // reload. The file is the one the module was installed from (the
+        // .mpackage for an archive, as desktop records it and getModulePath
+        // reports), not the XML unpacked out of it.
+        this.finishInstall(moduleName);
+        this.announceInstallLater(moduleName, 'module', problems,
+            () => this.raiseEvent('sysSyncInstallModule', problems ? [moduleName, file, problems] : [moduleName, file]),
+            this.moduleLoadedNothing(moduleName, data));
+        // Queued behind the install's own events, so a handler hears
+        // sysInstall before the sysUninstall that came of it.
+        this.carryOutHeldRemovals();
+        // Whatever was read before the XML broke is the module now, but it did
+        // not load (Host::mModulesLoadedOk), and the caller is told so.
+        if (data.parseError) return { ok: false, error: `module '${moduleName}' could not be loaded from '${file}'` };
+        return { ok: true, error: problems };
     }
 
     /** Toggle a module's sync flag. Updates the manifest in the store. */
@@ -1660,7 +1742,7 @@ export class ScriptingEngine implements EngineHost {
             this.noteModuleLoaded(manifest.name, data);
             // A module whose XML will not read is installed and stays listed,
             // and desktop says it could not be loaded.
-            if (data.parseError) this.announceUnreadableContents(manifest.name, 'module');
+            if (data.parseError) this.announceUnreadableContents(manifest.name, data, 'module');
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             // Host::installPackage raises the generic sysInstall and exactly one
@@ -1668,8 +1750,11 @@ export class ScriptingEngine implements EngineHost {
             // Lua's installModule (ModuleFromScript) that is sysLuaInstallModule
             // alone. Raising sysInstallPackage / sysInstallModule as well made a
             // package tracker count every scripted module as a package.
-            this.notifyInstalled(manifest.name, problems);
-            this.raiseEvent('sysLuaInstallModule', problems ? [manifest.name, path, problems] : [manifest.name, path]);
+            this.finishInstall(manifest.name);
+            this.announceInstallLater(manifest.name, 'module', problems,
+                () => this.raiseEvent('sysLuaInstallModule', problems ? [manifest.name, path, problems] : [manifest.name, path]),
+                this.moduleLoadedNothing(manifest.name, data));
+            this.carryOutHeldRemovals();
             void vfs.flush();
             return { ok: true, error: problems };
         } catch (err) {
@@ -1699,6 +1784,7 @@ export class ScriptingEngine implements EngineHost {
         // uninstallPackage raises that for a package alone, and a handler
         // listening for its own package going would take a module of the
         // same name for it.
+        this.countRemoval(moduleName);
         this.raiseEvent('sysUninstall', [moduleName]);
         // Nothing more, sync flag or not: sysSyncUninstallModule belongs to a
         // ModuleSync removal (the first half of a reload), and desktop does not
@@ -1935,6 +2021,27 @@ export class ScriptingEngine implements EngineHost {
         } finally {
             this.compiledThisLoad = null;
         }
+        this.reportScriptsThatFailedToLoad();
+    }
+
+    /**
+     * Host::reportScriptsThatFailedToLoad: once the profile's scripts have run
+     * — at open, and again after a reset — one warning names every switched-on
+     * script whose body failed, in script-list order, so a broken script is
+     * not lost among the errors that scrolled past. Module scripts are left
+     * out, as on desktop: a module of positive priority runs its scripts only
+     * after this, so reporting the others would make the warning depend on a
+     * module's priority.
+     */
+    private reportScriptsThatFailedToLoad(): void {
+        const priorityMap = this.modulePriorityMap();
+        const names = (useAppStore.getState().connectionScripts[this.connectionId] ?? [])
+            .filter(s => this.failedScripts.has(s.id) && s.enabled
+                && !(s.packageName && priorityMap.has(s.packageName)))
+            .map(s => s.name);
+        if (names.length === 0) return;
+        this.postMainMessage(`[ WARN ]  - These scripts failed to run when the profile loaded: "${names.join('", "')}". `
+            + 'Open them in the editor to see why.');
     }
 
     /** Whether the root `s` sits under is switched on — what compileAll asks
@@ -2065,6 +2172,7 @@ export class ScriptingEngine implements EngineHost {
         if (parts.length === 0) { this.api.sendData(''); return; }
         for (const part of parts) {
             if (!this.processInput(part)) this.api.sendData(part);
+            else this.runtimes.lua?.endAliasPass?.();
         }
     }
 
@@ -2360,13 +2468,61 @@ export class ScriptingEngine implements EngineHost {
      *  their fonts and raise the generic sysInstall. The caller raises the one
      *  detailed event that fits how the install was asked for. */
     private notifyInstalled(name: string, problems?: string | null): void {
+        this.finishInstall(name);
+        this.raiseEvent('sysInstall', problems ? [name, problems] : [name]);
+    }
+
+    /** Everything an install does once its items are in, short of saying so:
+     *  apply them and register the package's fonts. */
+    private finishInstall(name: string): void {
         this.flushPendingApplies();
         // Host::installPackage ends every install by moving the temporary
         // triggers behind the permanent ones, whatever the package held.
         this.triggerEngine.reorderAfterPackageImport(
             useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
         this.registerPackageFonts(name);
-        this.raiseEvent('sysInstall', problems ? [name, problems] : [name]);
+    }
+
+    /** How many times each package or module has been removed — Host's
+     *  mRemovalsOf. A reload's own removal is not counted: it puts the same
+     *  module straight back. */
+    private readonly removalsOf = new Map<string, number>();
+
+    private countRemoval(name: string): void {
+        this.removalsOf.set(name, (this.removalsOf.get(name) ?? 0) + 1);
+    }
+
+    /** A module whose XML broke before anything was read in has nothing
+     *  running, so it is not announced (Host's moduleLoadedNothing). */
+    private moduleLoadedNothing(name: string, data: MudletImportResult): boolean {
+        return this.unloadedModules.has(name) && !!data.nothingRead;
+    }
+
+    /**
+     * Raise an install's sysInstall and then its detailed event on the next
+     * pass of the event loop, as Host::installPackage does (a zero-timer), so
+     * everything the install set up - its variables above all - is in place
+     * before a handler runs. An install undone before then is not announced,
+     * nor is the detailed event raised once a sysInstall handler has taken it
+     * away again: its errors would be stale by then.
+     */
+    private announceInstallLater(
+        name: string,
+        kind: 'package' | 'module',
+        problems: string | null,
+        detailed: () => void,
+        loadedNothing = false,
+    ): void {
+        const removalsBefore = this.removalsOf.get(name) ?? 0;
+        const stillInstalled = (): boolean =>
+            (kind === 'package' ? this.getPackageNames() : this.getModuleNames()).includes(name)
+            && (this.removalsOf.get(name) ?? 0) === removalsBefore;
+        this.timerEngine.addTemp(0, () => {
+            if (this.disposed || loadedNothing || !stillInstalled()) return;
+            this.raiseEvent('sysInstall', problems ? [name, problems] : [name]);
+            if (!stillInstalled()) return;
+            detailed();
+        });
     }
 
     /** Re-register every installed package's fonts on profile open. See the
@@ -2423,6 +2579,7 @@ export class ScriptingEngine implements EngineHost {
      * scripts they live in) are still loaded when the event fires.
      */
     notifyPackageUninstalled(packageName: string): void {
+        this.countRemoval(packageName);
         this.raiseEvent('sysUninstall', [packageName]);
         this.raiseEvent('sysUninstallPackage', [packageName]);
     }
@@ -2464,17 +2621,13 @@ export class ScriptingEngine implements EngineHost {
      * script log and handed back to Lua for Mudlet's (ok, err) contract.
      */
     installPackageFromVfsPath(path: string): InstallOutcome {
-        // Before anything else, the path included. A profile save is not over
-        // when saveProfile() returns — the VFS flush that makes it durable is
-        // still running — and an install that wrote through the middle of one
-        // would interleave with it. So it is put off and answers true there and
-        // then, which is why an EMPTY path answers true while a save runs and
-        // its own complaint when none does: the postponement is at the head,
-        // above every check.
-        if (this.profileSaveInFlight) {
-            this.postponedInstalls.push(path);
-            return { ok: true, error: null };
-        }
+        // Before anything else, the path included: a script's install waits
+        // out a profile save that is running and then gives its real answer
+        // (TLuaInterpreter::installPackage's waitOutAProfileSave). Putting it
+        // off and answering true there and then told a script an install had
+        // happened that had not even been tried, and a failing one was only
+        // ever said on the console once the save was over.
+        this.waitOutProfileSave();
         const vfs = this.vfs;
         if (!vfs) {
             const error = 'no profile VFS available';
@@ -2505,6 +2658,7 @@ export class ScriptingEngine implements EngineHost {
         try {
             const buf = builtin ?? vfs.readBinaryFile(path);
             const filename = path.split('/').pop() || path;
+            if (/\.(mpackage|zip)$/i.test(filename)) this.clearAwayCrashedUnpacking();
             const prepared = preparePackageInstall(filename, buf, vfs, {
                 sourcePath: path,
                 readConfig: this.readPackageConfig,
@@ -2518,7 +2672,11 @@ export class ScriptingEngine implements EngineHost {
             // listed — the same as a module whose XML will not load — so what
             // changes is that it is SAID. Silence left the player with a
             // package that is listed, owns nothing, and gives no reason.
-            if (prepared.data.parseError) this.announceUnreadableContents(prepared.manifest.name);
+            // Not for one nothing could be read out of: that is refused below,
+            // and the refusal is the whole of what is said.
+            if (prepared.data.parseError && !prepared.data.nothingRead) {
+                this.announceUnreadableContents(prepared.manifest.name, prepared.data);
+            }
             // Everything the reader could not make sense of but carried on past
             // — a pattern type from a later Mudlet, a key code nothing maps to.
             // The package installs either way; these say what it will not do,
@@ -2531,6 +2689,13 @@ export class ScriptingEngine implements EngineHost {
             // anything is written, so it leaves neither its folder nor the
             // details its config.lua filed. A file from a later Mudlet is
             // refused in the words the console was just given.
+            // An archive is moved into the folder of its name before anything
+            // is read out of it, so a clash there is what refuses it - unless
+            // the folder is an installed package's, which is refused for that.
+            if (prepared.moveClash && !this.getPackageNames().includes(prepared.manifest.name)
+                && !this.getModuleNames().includes(prepared.manifest.name)) {
+                return { ok: false, error: prepared.moveClash };
+            }
             const { nothingRead } = prepared.data;
             if (nothingRead) {
                 const error = nothingRead === 'newer'
@@ -2582,7 +2747,10 @@ export class ScriptingEngine implements EngineHost {
             this.savePackageVariables(data);
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
-            this.notifyPackageInstalled(manifest.name, path, problems);
+            this.finishInstall(manifest.name);
+            this.announceInstallLater(manifest.name, 'package', problems,
+                () => this.raiseEvent('sysInstallPackage', problems ? [manifest.name, path, problems] : [manifest.name, path]));
+            this.carryOutHeldRemovals();
             void vfs.flush();
             this.saveAfterPackageChange();
             return { ok: true, error: problems };
@@ -3186,6 +3354,40 @@ export class ScriptingEngine implements EngineHost {
         return '';
     }
 
+    /**
+     * The chunks of a package's items as they are removed, with the package
+     * that owned them, until the next pass of the event loop. Desktop takes a
+     * removed item out of the tree at once but frees it only once the pass
+     * that is running it is over, so code of the item that is still running -
+     * a trigger that uninstalled its own package, then placed a command - is
+     * still its package's.
+     */
+    private readonly removedChunkOwners = new Map<string, string>();
+
+    private rememberOwnersOfRemovedItems(packageName: string): void {
+        const s = useAppStore.getState();
+        const id = this.connectionId;
+        const kinds: [string, readonly { isGroup?: boolean; name: string; packageName?: string }[]][] = [
+            ['Script', s.connectionScripts[id] ?? []],
+            [ITEM_CHUNK_PREFIX.trigger, s.connectionTriggers[id] ?? []],
+            [ITEM_CHUNK_PREFIX.alias, s.connectionAliases[id] ?? []],
+            [ITEM_CHUNK_PREFIX.timer, s.connectionTimers[id] ?? []],
+            [ITEM_CHUNK_PREFIX.key, s.connectionKeybindings[id] ?? []],
+            [ITEM_CHUNK_PREFIX.button, s.connectionButtons[id] ?? []],
+        ];
+        const first = this.removedChunkOwners.size === 0;
+        for (const [prefix, items] of kinds) {
+            for (const item of items) {
+                if (!item.isGroup && item.packageName === packageName) {
+                    this.removedChunkOwners.set(`${prefix}: ${item.name}`, packageName);
+                }
+            }
+        }
+        if (first && this.removedChunkOwners.size > 0) {
+            this.timerEngine.addTemp(0, () => this.removedChunkOwners.clear());
+        }
+    }
+
     private ownersOfChunk(source: string): Set<string> {
         const owners = new Set<string>();
         const s = useAppStore.getState();
@@ -3215,6 +3417,10 @@ export class ScriptingEngine implements EngineHost {
                     if (inProfile.startsWith(`${name}/`)) owners.add(name);
                 }
             }
+        }
+        if (owners.size === 0) {
+            const removedOwner = this.removedChunkOwners.get(source);
+            if (removedOwner !== undefined) owners.add(removedOwner);
         }
         return owners;
     }
@@ -3266,6 +3472,7 @@ export class ScriptingEngine implements EngineHost {
         // archive's own config.lua on a reinstall — inside the package's own
         // load script as well — where desktop starts again from config.lua.
         this.packageInfoOverrides.delete(packageName);
+        this.rememberOwnersOfRemovedItems(packageName);
         useAppStore.getState().uninstallPackage(this.connectionId, packageName);
         this.api.addonCommands.removeOwnedBy(packageName);
         this.saveAfterPackageChange();
@@ -3361,22 +3568,20 @@ export class ScriptingEngine implements EngineHost {
      * Same batching as toggleTriggerByName: one set() collapses N matches into
      * a single subscription tick (and a single TimerEngine.loadPerm rebuild).
      */
-    /** Whether the flush that makes a profile save durable is still running.
-     *  An install asked for during one is put off rather than interleaved. */
+    /** Whether a profile save still counts as running: a second save is
+     *  refused, and so is an uninstall, as Host::currentlySavingProfile()
+     *  makes them. */
     private profileSaveInFlight = false;
-    /** Paths handed to installPackage while a save was running, in order. */
-    private readonly postponedInstalls: string[] = [];
+    /** Which save the scheduled end below belongs to, so the end of one that
+     *  was waited out cannot cut a later save short. */
+    private profileSaveGeneration = 0;
 
     /**
-     * Hold installs until the save's flush has settled, then carry out the ones
-     * that arrived meanwhile.
-     *
-     * The postponed install already answered true to its caller, so there is no
-     * return value left for a failure to travel back on — saying it on the main
-     * console is all that remains, quiet caller or not.
+     * Mark a profile save as running until the next pass of the event loop.
      */
     markProfileSaveInFlight(): void {
         this.profileSaveInFlight = true;
+        const generation = ++this.profileSaveGeneration;
         // Scheduled on the TIMER ENGINE rather than a plain setTimeout, because
         // a spec never gives the browser its thread back: pumpEvents() stands in
         // for the event loop by firing Mudlet Web's own due timers in a synchronous
@@ -3389,16 +3594,28 @@ export class ScriptingEngine implements EngineHost {
         // the write it just started. Tying it to the VFS flush instead — the
         // durability step — is unbounded, and held installs for good.
         this.timerEngine.addTemp(0, () => {
+            if (generation !== this.profileSaveGeneration) return;
             this.profileSaveInFlight = false;
-            while (this.postponedInstalls.length > 0) {
-                const path = this.postponedInstalls.shift()!;
-                const outcome = this.installPackageFromVfsPath(path);
-                // The postponed install already answered true to its caller, so
-                // there is no return value left for the failure to travel back
-                // on. Saying it on the main console is all that remains.
-                if (!outcome.ok) this.api.postInfo(`Package install failed — ${outcome.error}`);
-            }
+            this.runPostponedReloads();
         });
+    }
+
+    /**
+     * Host::waitForProfileSave for a script's install: desktop runs the event
+     * loop until the save's writes are done, delivering nothing but the save's
+     * own completions. Mudlet Web's save has already written everything by the
+     * time it counts as running (the VFS flush that follows only makes it
+     * durable, and later writes join it), so what is left to wait for is the
+     * window itself - ended here and now, so nothing else gets to run in the
+     * middle of the waiting script either.
+     */
+    private waitOutProfileSave(): void {
+        if (!this.profileSaveInFlight) return;
+        this.profileSaveInFlight = false;
+        this.profileSaveGeneration++;
+        // The save's own completions are delivered by the wait, and the
+        // reloads it held up are among them (Host::profileSaveFinished).
+        this.runPostponedReloads();
     }
 
     private saveAfterPackageChangePending = false;
@@ -3447,16 +3664,54 @@ export class ScriptingEngine implements EngineHost {
         return source => lua.readPackageConfig!(source);
     }
 
+    /**
+     * A crash part-way through an install leaves the folder it was unpacking
+     * into, a "mudlet-installing-" one marked ".mudlet-unpacking"; the next
+     * install of an archive clears it away (Host::installPackage). One
+     * holding files an install had moved out of the way (".mudlet-replaced")
+     * is all that is left of them, so it is kept and its place said instead.
+     * A package or module that is itself called that is left alone.
+     */
+    private clearAwayCrashedUnpacking(): void {
+        const vfs = this.vfs;
+        if (!vfs) return;
+        let names: string[];
+        try { names = vfs.readdir(vfs.profilePath); } catch { return; }
+        const installed = new Set([...this.getPackageNames(), ...this.getModuleNames()]);
+        for (const name of names) {
+            if (!name.startsWith('mudlet-installing-') || installed.has(name)) continue;
+            const folder = `${vfs.profilePath}/${name}`;
+            try { if (vfs.lstat(folder).type !== 'dir') continue; } catch { continue; }
+            if (vfs.exists(`${folder}/.mudlet-unpacking`)) {
+                try { vfs.rmdir(folder); } catch (err) {
+                    console.warn(`[installPackage] could not clear away ${folder}:`, err);
+                }
+            } else if (vfs.exists(`${folder}/.mudlet-replaced`)) {
+                this.api.postWarning(`Some files that were in the way of a package could not be put back, and are in "${folder}".`);
+            }
+        }
+    }
+
+    /** Said when a package's XML would not read, once per file that broke,
+     *  with the reader's reason — Host::installPackage's "Failed to load
+     *  package/module" warning. Only modules were ever asked whether their
+     *  contents loaded, so a package installed to silence. */
+    private announceUnreadableContents(
+        packageName: string,
+        data: Pick<MudletImportResult, 'loadErrors' | 'parseError'>,
+        kind: 'package' | 'module' = 'package',
+    ): void {
+        // A load error is "<package>[/<file>]: <reason>"; the warning gives the reason alone.
+        const reasons = data.loadErrors?.length
+            ? data.loadErrors.map(e => e.slice(e.indexOf(': ') + 2))
+            : [data.parseError ?? ''];
+        for (const reason of reasons) this.api.postWarning(`Failed to load ${kind} "${packageName}": ${reason}`);
+    }
+
     /** What a lost manifest costs, said once, where the player will see it: the
      *  package installed under the archive's own name and filed no details, so a
      *  name-based uninstall, a repository update and anything depending on it
      *  all stop matching with nothing to go on. */
-    /** Said when a package's XML would not read. Only modules were ever asked
-     *  whether their contents loaded, so a package installed to silence. */
-    private announceUnreadableContents(packageName: string, kind: 'package' | 'module' = 'package'): void {
-        this.api.postInfo(`Failed to load ${kind} "${packageName}" — its contents could not be read,`
-            + ' so it is installed but owns nothing.');
-    }
 
     private announceLostManifest(packageName: string, reason: string): void {
         this.api.postInfo(`The config.lua of "${packageName}" could not be read,`
@@ -3915,20 +4170,19 @@ export class ScriptingEngine implements EngineHost {
         const keys = store.connectionKeybindings[cid] ?? [];
         const scripts = store.connectionScripts[cid] ?? [];
 
-        // `killed` temp items wait for the cleanup to free them: desktop still
-        // has them in its tree, so they count in total and temp, but not as
-        // active.
-        const tally = (list: BaseTreeNode[], tempCount: number, active = list.filter(i => !i.isGroup && i.enabled).length, killed = 0) => {
+        const tally = (list: BaseTreeNode[], tempCount: number, active = list.filter(i => !i.isGroup && i.enabled).length,
+            tempActive = tempCount) => {
             const items = list.filter(i => !i.isGroup);
             return {
-                total: items.length + tempCount + killed,
-                temp: tempCount + killed,
-                active: active + tempCount,
+                total: items.length + tempCount,
+                temp: tempCount,
+                active: active + tempActive,
             };
         };
 
-        const tempTriggers = this.triggerEngine.tempCount;
-        const killedTriggers = this.runtimes.lua?.killedTempItemCount?.('trigger') ?? 0;
+        // A killed temporary trigger is still in the unit's tree until the
+        // line's deferred cleanup, as a killed alias is (see below).
+        const tempTriggers = this.triggerEngine.tempCount + (this.runtimes.lua?.deadTempItemCount?.('trigger') ?? 0);
         let patternsTotal = tempTriggers;
         let patternsActive = tempTriggers;
         for (const t of triggers) {
@@ -3939,11 +4193,17 @@ export class ScriptingEngine implements EngineHost {
         }
 
         return {
-            triggers: { ...tally(triggers, tempTriggers, undefined, killedTriggers), patterns: { total: patternsTotal, active: patternsActive } },
-            aliases: tally(aliases, this.aliasEngine.tempCount),
+            triggers: { ...tally(triggers, tempTriggers, undefined, this.triggerEngine.tempCount), patterns: { total: patternsTotal, active: patternsActive } },
+            // A killed temporary alias or key is still in its unit's tree until
+            // the deferred cleanup, which is what desktop's assembleReport
+            // walks: it counts in the totals, though no longer as active.
+            aliases: (() => {
+                const dead = this.runtimes.lua?.deadTempItemCount?.('alias') ?? 0;
+                return tally(aliases, this.aliasEngine.tempCount + dead, undefined, this.aliasEngine.tempCount);
+            })(),
             // Mudlet counts a timer by the same state isActive reports.
             timers: tally(timers, this.timerEngine.tempCount, this.timerEngine.countPermActive(timers)),
-            keys: tally(keys, this.keyEngine.tempCount),
+            keys: tally(keys, this.keyEngine.tempCount, undefined, this.keyEngine.tempActiveCount),
             scripts: tally(scripts, 0,
                 scripts.filter(s => !s.isGroup && s.enabled && !this.failedScripts.has(s.id)).length),
             // Every label carrying a movie counts; the ones actually running
@@ -4836,11 +5096,6 @@ export class ScriptingEngine implements EngineHost {
 
     /** Nesting depth of {@link processInput} — see the note there. */
     private aliasDepth = 0;
-
-    /** Part of {@link EngineHost}. */
-    inAliasPass(): boolean {
-        return this.aliasDepth > 0;
-    }
     /** Set when a chain hits {@link MAX_ALIAS_DEPTH}, until it unwinds to the outermost pass. */
     private aliasRunawayStopped = false;
     /** AliasUnit::scmMaxProcessingDepth. */
@@ -5492,7 +5747,7 @@ export class ScriptingEngine implements EngineHost {
     private collectInstallProblems(
         name: string,
         commit: () => void,
-        items: Pick<MudletImportResult, 'triggers' | 'timers' | 'aliases' | 'buttons' | 'keys'>,
+        items: Pick<MudletImportResult, 'triggers' | 'timers' | 'aliases' | 'buttons' | 'keys' | 'loadErrors'>,
     ): string | null {
         const outer = this.installProblems;
         const problems: string[] = [];
@@ -5504,23 +5759,64 @@ export class ScriptingEngine implements EngineHost {
             this.installProblems = outer;
             this.installing.delete(name);
         }
-        this.carryOutHeldRemovals();
         // Every kind whose Lua is compiled as it is read, in the order
         // XMLimport reads their packages — each unit names the items it could
-        // not compile (XMLimport::mItemsWithErrors).
+        // not compile (XMLimport::mItemsWithErrors), in document order: a
+        // group ahead of what is in it, and an item's script ahead of its
+        // patterns. A group's script is compiled like any other item's.
         const rt = this.runtimes.lua;
-        const kinds: [CodeItemKind, readonly { isGroup?: boolean; code?: string; language?: string; name: string }[]][] = [
+        const kinds: [CodeItemKind, readonly { code?: string; language?: string; name: string }[]][] = [
             ['trigger', items.triggers], ['timer', items.timers], ['alias', items.aliases],
             ['button', items.buttons], ['key', items.keys],
         ];
         for (const [kind, list] of kinds) {
             for (const item of list ?? []) {
-                if (item.isGroup || !item.code || item.language !== 'lua') continue;
-                const err = itemSyntaxError(rt, item.code, itemChunkName(kind, item.name));
-                if (err) problems.push(`${item.name}: Lua syntax error: ${err}`);
+                if (item.code && item.language === 'lua') {
+                    const err = itemSyntaxError(rt, item.code, itemChunkName(kind, item.name));
+                    if (err) problems.push(`${item.name}: Lua syntax error: ${err}`);
+                }
+                const patternError = kind === 'trigger' ? this.triggerPatternErrors(item as TriggerNode)
+                    : kind === 'alias' ? aliasPatternError((item as AliasNode).pattern)
+                        : null;
+                if (patternError) problems.push(`${item.name}: ${patternError}`);
             }
         }
+        // Then each file that could not be read whole, named by the package
+        // (and the file, for an archive): the install's loadErrors, which go
+        // to the caller and the install events behind the items' errors.
+        problems.push(...(items.loadErrors ?? []));
         return problems.length > 0 ? problems.join('; ') : null;
+    }
+
+    /**
+     * Why a trigger's patterns do not all compile, in the plain text
+     * XMLimport hands back for TTrigger::setRegexCodeList's error: one
+     * sentence per pattern that failed, numbered by its place in the list, or
+     * null when they all compile (a trigger with no patterns is kept for its
+     * script and is not broken).
+     */
+    private triggerPatternErrors(trigger: TriggerNode): string | null {
+        const errors: string[] = [];
+        (trigger.patterns ?? []).forEach((p, i) => {
+            if (!p.text && p.type !== 'prompt') return;
+            const item = i + 1;
+            if (p.type === 'regex') {
+                const reason = perlPatternError(p.text);
+                if (reason !== null) errors.push(`Error: in item ${item}, perl regex "${p.text}" failed to compile, reason: "${reason}".`);
+            } else if (p.type === 'luaFunction') {
+                const fn = `trigger${this.uuidToNumericId.get(trigger.id) ?? 0}condition${i}`;
+                const reason = this.runtimes.lua?.syntaxError?.(`function ${fn}() ${p.text}\nend`, fn) ?? null;
+                if (reason !== null) errors.push(`Error: in item ${item}, lua function "${p.text}" failed to compile, reason: "${reason}".`);
+            } else if (p.type === 'colorTrigger') {
+                const problem = colorPatternProblem(p.text);
+                if (problem === 'noColors') {
+                    errors.push(`Error: in item ${item}, no colors to match were set - at least one of the foreground or background must not be ignored.`);
+                } else if (problem === 'noMatch') {
+                    errors.push(`Error: in item ${item}, color pattern "${p.text}" names no color that can be matched.`);
+                }
+            }
+        });
+        return errors.length > 0 ? errors.join(' ') : null;
     }
 
     private reportEntityError(

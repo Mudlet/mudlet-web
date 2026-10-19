@@ -52,9 +52,6 @@ export interface EngineHost {
      *  through the API's error channel rather than thrown. */
     runLinkCode(code: string): void;
 
-    /** Whether an alias pass is running (AliasUnit's processing depth). */
-    inAliasPass?(): boolean;
-
     /** Push text through the full alias pipeline, sending it to the MUD if no
      *  alias consumes it. Backs Mudlet's `expandAlias`. */
     expandAlias(text: string, echo: boolean): void;
@@ -121,7 +118,7 @@ export interface EngineHost {
     /** Put package installs off until the turn that started a profile save has
      *  ended; see ScriptingEngine.markProfileSaveInFlight. */
     markProfileSaveInFlight(): void;
-    reloadModuleFromFile(name: string): boolean;
+    reloadModuleFromFile(name: string): InstallOutcome;
     setModuleSync(name: string, sync: boolean): void;
     getModuleSync(name: string): boolean;
     setModulePriority(name: string, priority: number): boolean;
@@ -291,7 +288,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     saveSyncedModules: () => {},
     saveProfileXml: () => ({ ok: false as const, err: 'no profile host available' }),
     markProfileSaveInFlight: () => {},
-    reloadModuleFromFile: () => false,
+    reloadModuleFromFile: () => ({ ok: false, error: "module doesn't exist" }),
     setModuleSync: () => {},
     getModuleSync: () => false,
     setModulePriority: () => false,
