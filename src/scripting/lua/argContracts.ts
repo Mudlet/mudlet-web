@@ -429,7 +429,7 @@ end`,
     setRoomArea: {
         custom: `function(n, a1)
   if not isN(a1) and type(a1) ~= 'table' then
-    return MF('setRoomArea: bad argument #%d type (roomID as number or table of roomIDs\\nexpected, got %s!)', 1, a1, n)
+    return MF('setRoomArea: bad argument #%d type (roomID as number or table of roomIDs expected, got %s!)', 1, a1, n)
   end
 end`,
     },
@@ -523,7 +523,7 @@ end`,
     setGridMode: { args: [i('areaID'), b('true/false')] },
     addAreaName: { args: [s('area name')] },
     deleteArea: {
-        args: [s('', { msg: 'deleteArea: bad argument #%d type (area Id as number or area name as string\nexpected, got %s!)' })],
+        args: [s('', { msg: 'deleteArea: bad argument #%d type (area Id as number or area name as string expected, got %s!)' })],
     },
     getCollisionLocationsInArea: AREA,
     getAreaUserData: { args: [i('areaID'), s('key')] },

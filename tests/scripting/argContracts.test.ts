@@ -71,8 +71,8 @@ describe('argument contracts (#277)', () => {
         // GUIUtils.lua puts its own check in front, on desktop too.
         ['setLabelClickCallback("lbl", 5)', 'setLabelClickCallback: bad argument #2 type (function expected, got number!)'],
         ['setLink({}, "hint")', 'setLink: bad argument #1 type (command as string or function expected, got table!)'],
-        ['setRoomArea("x", 1)', 'setRoomArea: bad argument #1 type (roomID as number or table of roomIDs\nexpected, got string!)'],
-        ['deleteArea({})', 'deleteArea: bad argument #1 type (area Id as number or area name as string\nexpected, got table!)'],
+        ['setRoomArea("x", 1)', 'setRoomArea: bad argument #1 type (roomID as number or table of roomIDs expected, got string!)'],
+        ['deleteArea({})', 'deleteArea: bad argument #1 type (area Id as number or area name as string expected, got table!)'],
         ['exportAreaImage("nope", "a.png")', 'exportAreaImage: bad argument #1 type (areaID as number expected, got string!)'],
         ['getMudletVersion({})', 'getMudletVersion: bad argument #1 type (style as string is optional, got table!)'],
     ])('%s raises with desktop\'s message', (call, message) => {

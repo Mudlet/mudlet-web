@@ -3797,7 +3797,7 @@ function setAreaName(idOrName, newName)
     -- An area is reached by id or by name; a boolean names neither, and Mudlet
     -- raises rather than reporting it as an area that could not be found.
     if type(idOrName) ~= 'string' and __mudlet_num(idOrName) == nil then
-        error('setAreaName: bad argument #1 type (areaID as number or area name as string\n'
+        error('setAreaName: bad argument #1 type (areaID as number or area name as string '
             .. 'expected, got ' .. type(idOrName) .. '!)', 2)
     end
     local r = __setAreaName(idOrName, newName)
@@ -4283,11 +4283,11 @@ end
 -- work here. No build suffix — desktop's PTB tag names a desktop build.
 do
     local MAJOR, MINOR, REVISION, BUILD = 5, 0, 0, ""
-    local STYLES = "   \"major\", \"minor\", \"revision\", \"build\", \"string\" or \"table\"."
+    local STYLES = "\"major\", \"minor\", \"revision\", \"build\", \"string\" or \"table\"."
     function getMudletVersion(...)
         local count = select('#', ...)
         if count > 1 then
-            error("getMudletVersion: only takes one (optional) argument:\n" .. STYLES, 2)
+            error("getMudletVersion: only takes one (optional) argument: " .. STYLES, 2)
         end
         local mode = ...
         if count == 0 or mode == nil then
@@ -4305,7 +4305,7 @@ do
             return string.format("%d.%d.%d", MAJOR, MINOR, REVISION)
         end
         if what:find("table", 1, true) then return MAJOR, MINOR, REVISION, BUILD end
-        error("getMudletVersion: takes one (optional) argument:\n" .. STYLES, 2)
+        error("getMudletVersion: takes one (optional) argument: " .. STYLES, 2)
     end
 end
 
@@ -8647,8 +8647,14 @@ do
     function setRoomArea(rooms, area)
         local ids
         if type(rooms) ~= 'table' and __mudlet_num(rooms) == nil then
-            error('setRoomArea: bad argument #1 type (roomID as number or table of roomIDs\n'
+            error('setRoomArea: bad argument #1 type (roomID as number or table of roomIDs '
                 .. 'expected, got ' .. type(rooms) .. '!)', 2)
+        end
+        -- The area is an id or a name, and anything else raises before any
+        -- room is moved (TLuaInterpreter::setRoomArea).
+        if type(area) ~= 'string' and __mudlet_num(area) == nil then
+            error('setRoomArea: bad argument #2 type (areaID as number or area name as string '
+                .. 'expected, got ' .. type(area) .. '!)', 2)
         end
         if type(rooms) == 'table' then
             local parts = {}
@@ -9342,7 +9348,8 @@ do
             if path:sub(1, 1) ~= "/" then path = getMudletHomeDir() .. "/" .. path end
             local f = io.open(path, "r")
             if not f then
-                return nil, 'loadMap: the file "' .. path .. '" was not found'
+                -- Host::importMapFile's wording, on one line like every refusal
+                return nil, 'loadMap: bad argument #1 value (filename used: "' .. path .. '" was not found).'
             end
             xml = f:read("*a")
             f:close()
@@ -9972,8 +9979,8 @@ do
             local v = args[i]
             local t = type(v)
             if t ~= 'string' and t ~= 'number' and t ~= 'boolean' and t ~= 'nil' then
-                error("raiseGlobalEvent: bad argument type #" .. i
-                    .. " (boolean, number, string or nil expected, got " .. t .. "!)", 2)
+                error("raiseGlobalEvent: bad argument #" .. i
+                    .. " type (boolean, number, string or nil expected, got a " .. t .. "!)", 2)
             end
             if i == 1 then
                 if t == 'number' then
