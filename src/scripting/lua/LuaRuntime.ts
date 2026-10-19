@@ -726,7 +726,8 @@ export class LuaRuntime implements IScriptingRuntime {
     /** Script-created temp aliases/triggers by id. `dead` marks one killed but
      *  not yet reaped: Mudlet frees a killed unit in the deferred cleanup it
      *  runs at the end of a line, not at the kill, so until then it is still
-     *  findable while no longer firing — `exists` says 1, `isActive` says 0, and
+     *  held while no longer firing — `exists` and `isActive` say 0 (desktop
+     *  skips an item pending deletion), getProfileStats counts it, and
      *  a second kill finds a corpse and answers false. {@link reapKilledTempItems}
      *  does the freeing. */
     private readonly tempIds = new Map<number, {
@@ -3048,7 +3049,20 @@ end`,
      * don't live in the persisted store the way permanent items do.
      */
     tempItemExists(id: number, type: string): boolean {
-        return this.tempIds.get(id)?.type === type;
+        // A killed item waiting for the reap is not counted: Mudlet's exists()
+        // (and findItems/isActive with it) skips anything its unit has marked
+        // for deletion (`pendingDeletion`), though the unit still holds it.
+        const entry = this.tempIds.get(id);
+        return entry?.type === type && !entry.dead;
+    }
+
+    /** Killed temp items of `type` the reap has not freed yet. getProfileStats
+     *  still counts them, as desktop's assembleReport walks the unit's tree and
+     *  a killed item stays in it until the deferred cleanup. */
+    deadTempItemCount(type: 'alias' | 'trigger'): number {
+        let n = 0;
+        for (const entry of this.tempIds.values()) if (entry.dead && entry.type === type) n++;
+        return n;
     }
 
     /** A live temp item of `type` carrying this Mudlet-supplied name — how

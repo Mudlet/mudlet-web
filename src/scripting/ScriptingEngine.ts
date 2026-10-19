@@ -3882,12 +3882,13 @@ export class ScriptingEngine implements EngineHost {
         const keys = store.connectionKeybindings[cid] ?? [];
         const scripts = store.connectionScripts[cid] ?? [];
 
-        const tally = (list: BaseTreeNode[], tempCount: number, active = list.filter(i => !i.isGroup && i.enabled).length) => {
+        const tally = (list: BaseTreeNode[], tempCount: number, active = list.filter(i => !i.isGroup && i.enabled).length,
+            tempActive = tempCount) => {
             const items = list.filter(i => !i.isGroup);
             return {
                 total: items.length + tempCount,
                 temp: tempCount,
-                active: active + tempCount,
+                active: active + tempActive,
             };
         };
 
@@ -3903,10 +3904,16 @@ export class ScriptingEngine implements EngineHost {
 
         return {
             triggers: { ...tally(triggers, tempTriggers), patterns: { total: patternsTotal, active: patternsActive } },
-            aliases: tally(aliases, this.aliasEngine.tempCount),
+            // A killed temporary alias or key is still in its unit's tree until
+            // the deferred cleanup, which is what desktop's assembleReport
+            // walks: it counts in the totals, though no longer as active.
+            aliases: (() => {
+                const dead = this.runtimes.lua?.deadTempItemCount('alias') ?? 0;
+                return tally(aliases, this.aliasEngine.tempCount + dead, undefined, this.aliasEngine.tempCount);
+            })(),
             // Mudlet counts a timer by the same state isActive reports.
             timers: tally(timers, this.timerEngine.tempCount, this.timerEngine.countPermActive(timers)),
-            keys: tally(keys, this.keyEngine.tempCount),
+            keys: tally(keys, this.keyEngine.tempCount, undefined, this.keyEngine.tempActiveCount),
             scripts: tally(scripts, 0,
                 scripts.filter(s => !s.isGroup && s.enabled && !this.failedScripts.has(s.id)).length),
             // Every label carrying a movie counts; the ones actually running

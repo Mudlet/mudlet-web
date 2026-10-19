@@ -79,8 +79,9 @@ interface TempKey {
     enabled: boolean;
     /** Killed, but not yet reaped. Mudlet frees a killed key in the deferred
      *  cleanup its unit runs at the end of a line, so until then the key is
-     *  still findable while no longer firing: `exists` says 1, `isActive` says
-     *  0, and a second `killKey` finds a corpse and answers false. */
+     *  held while no longer firing: `exists` and `isActive` say 0 (desktop
+     *  skips an item pending deletion), getProfileStats still counts it, and
+     *  a second `killKey` finds a corpse and answers false. */
     dead?: boolean;
     /** Its script did not compile. Mudlet still makes the key, but
      *  TKey::setScript leaves it unable to fire or report active, however it
@@ -125,11 +126,18 @@ export class KeyEngine {
 
     // ── Temp keybindings (session-scoped, created by scripts) ─────────────────
 
-    /** Number of live session-scoped temp keys (Mudlet `getProfileStats` temp
-     *  count). Killed-but-unreaped keys are not live and don't count. */
+    /** Number of session-scoped temp keys the unit holds (Mudlet
+     *  `getProfileStats` temp count). A killed key still counts until the
+     *  reap: desktop's KeyUnit::assembleReport walks the tree, and the key
+     *  stays in it until the deferred cleanup frees it. */
     get tempCount(): number {
+        return this.temp.size;
+    }
+
+    /** Of {@link tempCount}, the keys that are active — a killed one is not. */
+    get tempActiveCount(): number {
         let n = 0;
-        for (const t of this.temp.values()) if (!t.dead) n++;
+        for (const t of this.temp.values()) if (!t.dead && t.enabled && !t.uncompiled) n++;
         return n;
     }
 
@@ -151,7 +159,13 @@ export class KeyEngine {
     }
 
     /** Whether a temp key with this id is live — backs exists(id, "key"). */
-    hasTemp(id: number): boolean { return this.temp.has(id); }
+    /** A temp key with this id that has not been killed. A corpse waiting for
+     *  the reap is still held, but exists()/isActive()/findItems() skip it, as
+     *  desktop's skip anything KeyUnit has marked `pendingDeletion`. */
+    hasTemp(id: number): boolean {
+        const t = this.temp.get(id);
+        return t !== undefined && !t.dead;
+    }
 
     /** Whether a live temp key is enabled — backs isActive(id, "key"). */
     isTempEnabled(id: number): boolean {
