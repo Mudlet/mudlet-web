@@ -2327,6 +2327,67 @@ function getGridMode(areaId)
     return r
 end
 
+-- Mudlet getAreaGraph() → { areas = { [areaID] = {name, x, y, rooms, radius,
+-- pinned} }, links = { {from, to, exits}, ... } }: the areas as a graph, each
+-- placed in a world layout that is kept in the map's user data.
+function getAreaGraph()
+    local raw = __getAreaGraph()
+    local areas, links = {}, {}
+    local i = 0
+    while raw.areas[i] ~= nil do
+        local a = raw.areas[i]
+        areas[a.id] = { name = a.name, x = a.x, y = a.y, rooms = a.rooms, radius = a.radius, pinned = a.pinned }
+        i = i + 1
+    end
+    i = 0
+    while raw.links[i] ~= nil do
+        local l = raw.links[i]
+        links[#links + 1] = { from = l.from, to = l.to, exits = l.exits }
+        i = i + 1
+    end
+    return { areas = areas, links = links }
+end
+
+-- Mudlet setAreaGraphPosition(areaID, x, y) → true, pinning the area there;
+-- (nil, errMsg) for an unknown area or a coordinate out of range.
+function setAreaGraphPosition(areaId, x, y)
+    local r = __setAreaGraphPosition(areaId, x, y)
+    if r ~= true then return nil, r end
+    return true
+end
+
+-- Mudlet resetAreaGraphLayout([keepPinned]) → true, laying the areas out
+-- afresh, keeping the pinned ones where they are when asked.
+function resetAreaGraphLayout(keepPinned)
+    return __resetAreaGraphLayout(keepPinned == true)
+end
+
+-- Mudlet getMapEnvironmentKit(envID) → kit name, and whether the map names
+-- it (true) rather than it being guessed from the environment's colour.
+function getMapEnvironmentKit(environmentId)
+    local r = __getMapEnvironmentKit(environmentId)
+    return r[0], r[1]
+end
+
+-- Mudlet getMapEnvironmentKits() → { [envID] = kit } for the kits the map
+-- names, keyed by number as desktop's lua_pushnumber keys them.
+function getMapEnvironmentKits()
+    local kits = {}
+    for id, kit in pairs(__getMapEnvironmentKits()) do
+        kits[tonumber(id)] = kit
+    end
+    return kits
+end
+
+-- Mudlet setMapEnvironmentKit(envID [, kit]) → true; nil or "" clears the
+-- name. A kit it does not know, or saved kits that are not a JSON object, is
+-- (nil, errMsg) — warnArgumentValue's message alone.
+function setMapEnvironmentKit(environmentId, kit)
+    local r = __setMapEnvironmentKit(environmentId, kit)
+    if r ~= true then return nil, r end
+    return true
+end
+
 -- Mudlet getRoomName(id) → name string on success, (false, errMsg) on miss.
 function getRoomName(id)
     local n = __getRoomName(id)

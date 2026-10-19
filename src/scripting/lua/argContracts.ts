@@ -534,6 +534,13 @@ end`,
     getRoomsByPosition1: { args: [i('areaID'), i('x'), i('y'), i('z')] },
     getGridMode: AREA,
     setGridMode: { args: [i('areaID'), b('true/false')] },
+    setAreaGraphPosition: { args: [i('areaID'), n('x'), n('y')] },
+    // getVerifiedBool(…, isOptional), read only when not none-or-nil.
+    resetAreaGraphLayout: { args: [b('keep pinned areas', { opt: true, nonnil: true })] },
+    getMapEnvironmentKit: { args: [i('environmentID')] },
+    // The name is getVerifiedString(…, isOptional) read only when present and
+    // not nil, so a nil second argument clears rather than raises.
+    setMapEnvironmentKit: { args: [i('environmentID'), s('kit name', { opt: true, nonnil: true })] },
     addAreaName: { args: [s('area name')] },
     deleteArea: {
         args: [s('', { msg: 'deleteArea: bad argument #%d type (area Id as number or area name as string expected, got %s!)' })],

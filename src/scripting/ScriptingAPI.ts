@@ -57,6 +57,7 @@ import {
 import { isQtResourcePath, qtResourceUrl } from '../assets/qt-resources';
 import { ProfilesPresence } from './profilesPresence';
 import { MapStore } from '../map/MapStore';
+import { MAP_STYLES, DEFAULT_MAP_STYLE } from '../map/mapStyle';
 import { type EngineHost, type TempComplexTriggerSpec, NULL_ENGINE_HOST } from './EngineHost';
 import { BUNDLED_GAMES, findBundledGame } from '../mud/games/bundledGames';
 import { TAB_COMPLETION_LINES, tabCompletionPool } from '../ui/tabCompletion';
@@ -442,6 +443,12 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     // Qt's NoFontMerging strategy bit: draw symbols only with the chosen family
     // instead of falling back to another font for glyphs it lacks.
     mapSymbolFontOnlyUseSelected:   { type: 'bool', default: false },
+    // Host::mMapperStitchAreas: draw the areas an exit leads into beside the
+    // one in view. On unless a profile turns it off.
+    mapStitchAreas:                 { type: 'bool', default: true },
+    // The modern 3D mapper's style (Host::mapStyle), matched exactly as
+    // MapStyle::find does — see map/mapStyle.ts.
+    mapStyle:                       { type: 'str',  default: DEFAULT_MAP_STYLE, enum: MAP_STYLES },
     // Session-only on purpose, and Mudlet is the same: a UI package that sets
     // this and is then uninstalled must not leave the map button dead for good,
     // so every session starts back on "default".
