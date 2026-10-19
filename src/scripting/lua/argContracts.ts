@@ -290,6 +290,28 @@ end`,
 end`,
     },
     setBackgroundColor: { custom: backgroundColorFamily('setBackgroundColor') },
+    // setWindow(windowName, element [, x, y, show]): the element name must be a
+    // string by lua_type — a number is refused — and once a third argument is
+    // there, desktop reads all three of x, y and show (getVerifiedInt/Bool).
+    // GUIUtils' setGaugeWindow relays these under its own name.
+    setWindow: {
+        custom: `function(n, a1, a2, a3, a4, a5)
+  if a1 ~= nil and not isS(a1) then return MW('setWindow', 1, 'window', a1, n) end
+  if type(a2) ~= 'string' then
+    return MF('setWindow: bad argument #%d type (element name as string expected, got %s!)', 2, a2, n)
+  end
+  if n > 2 then
+    local v = { a3, a4 }
+    local names = { 'x-coordinate', 'y-coordinate' }
+    for p = 1, 2 do
+      if not isN(v[p]) then return M('setWindow', p + 2, names[p], 'number', v[p], n) end
+      local num = tonumber(v[p])
+      if num >= 2147483648 or num <= -2147483649 then return MO('setWindow', p + 2, names[p], v[p]) end
+    end
+    if type(a5) ~= 'boolean' then return M('setWindow', 5, 'show element', 'boolean', a5, n) end
+  end
+end`,
+    },
     setCommandBackgroundColor: { custom: backgroundColorFamily('setCommandBackgroundColor') },
     setCommandForegroundColor: { custom: backgroundColorFamily('setCommandForegroundColor') },
     setBackgroundImage: {

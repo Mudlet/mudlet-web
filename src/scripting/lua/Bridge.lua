@@ -1470,6 +1470,12 @@ do
         -- The TYPE is settled before the lookup: a table where a name belongs is
         -- a mistake in the call, not a window that could not be found.
         element = __mudlet_check_string(element, 'setWindow', 2, 'element name')
+        -- WINDOW_NAME reads a number as the window's name, and nil as main.
+        if type(parent) == 'number' then
+            parent = tostring(parent)
+        elseif parent == nil then
+            parent = 'main'
+        end
         -- The map lives in a dock widget it cannot be put back into once taken
         -- out, and naming that dock as a destination would otherwise read as a
         -- plain "not found" — as though the profile had no map (Host::setWindow).
