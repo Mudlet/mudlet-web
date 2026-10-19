@@ -2009,6 +2009,27 @@ export class ScriptingEngine implements EngineHost {
         } finally {
             this.compiledThisLoad = null;
         }
+        this.reportScriptsThatFailedToLoad();
+    }
+
+    /**
+     * Host::reportScriptsThatFailedToLoad: once the profile's scripts have run
+     * — at open, and again after a reset — one warning names every switched-on
+     * script whose body failed, in script-list order, so a broken script is
+     * not lost among the errors that scrolled past. Module scripts are left
+     * out, as on desktop: a module of positive priority runs its scripts only
+     * after this, so reporting the others would make the warning depend on a
+     * module's priority.
+     */
+    private reportScriptsThatFailedToLoad(): void {
+        const priorityMap = this.modulePriorityMap();
+        const names = (useAppStore.getState().connectionScripts[this.connectionId] ?? [])
+            .filter(s => this.failedScripts.has(s.id) && s.enabled
+                && !(s.packageName && priorityMap.has(s.packageName)))
+            .map(s => s.name);
+        if (names.length === 0) return;
+        this.postMainMessage(`[ WARN ]  - These scripts failed to run when the profile loaded: "${names.join('", "')}". `
+            + 'Open them in the editor to see why.');
     }
 
     /** Whether the root `s` sits under is switched on — what compileAll asks

@@ -107,6 +107,32 @@ describe('script items match desktop (mudlet-web#338)', () => {
         try { engine.destroy(); } catch { /* best-effort */ }
     });
 
+    describe('the scripts that failed as the profile loaded are named once on its console', () => {
+        const mainText = async () =>
+            String(await lua('return table.concat(getLines("main", 0, getLastLineNumber("main") + 1), "\\n")'));
+        const WARN = 'These scripts failed to run when the profile loaded';
+
+        it('names each switched-on script that failed, folders included, and none that ran or are off', async () => {
+            await boot([
+                script('bad', 'bad at load', 'missingAtLoad()'),
+                script('folder', 'a folder', '', { isGroup: true }),
+                script('inner', 'bad in folder', 'missingInFolder()', { parentId: 'folder' }),
+                script('off', 'bad but off', 'missingButOff()', { enabled: false }),
+                script('fine', 'runs fine', 'local ok = true'),
+            ]);
+            const text = await mainText();
+            expect(text.split(WARN).length - 1).toBe(1);
+            expect(text).toContain('"bad at load", "bad in folder"');
+            expect(text).not.toContain('"bad but off"');
+            expect(text).not.toContain('"runs fine"');
+        });
+
+        it('says nothing when every script ran', async () => {
+            await boot([script('fine', 'runs fine', 'local ok = true')]);
+            expect(await mainText()).not.toContain(WARN);
+        });
+    });
+
     describe('1. permScript, setScript and appendScript run the body once', () => {
         const BODY = `[[PSruns = (PSruns or 0) + 1
             registerAnonymousEventHandler("evP", function() L("PS anon handler") end)]]`;
