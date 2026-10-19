@@ -64,7 +64,10 @@ export interface BindingContext {
     /** Park the dispatch state (`command`, `matches`, …) the calling script is
      *  holding before running an alias pass of its own, and hand it back at the
      *  depth the push answered with. See LuaRuntime.pushNestedDispatchState. */
-    pushNestedDispatchState(): number;
+    pushNestedDispatchState(parkCommand?: boolean): number;
+    /** Whether an alias or trigger pass is running a script now — the
+     *  nesting desktop's feedTriggers parks the caller's captures for. */
+    inDispatchPass(): boolean;
     popNestedDispatchState(depth: number): void;
 
     /** Whether `matches`/`multimatches` are being built — see

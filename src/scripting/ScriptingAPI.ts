@@ -4595,6 +4595,17 @@ export class ScriptingAPI {
             this.runawayFeedStopped = true;
             return FEED_RUNAWAY_ERROR;
         }
+        // Every carriage return is dropped, as cTelnet drops the game's: TBuffer
+        // ends a line at each one, so a CR LF would otherwise end it twice and
+        // a captured log would replay with a blank line after every line. One
+        // that ends the text stays — like the one cTelnet::slot_timerPosting()
+        // adds, it flushes the line still being fed (TLuaInterpreter::
+        // feedTriggers). A CR is the same byte in every encoding a game uses.
+        if (data.includes('\r')) {
+            const flushesLine = data.endsWith('\r');
+            data = data.replace(/\r/g, '');
+            if (flushesLine) data += '\r';
+        }
         const encoding = this.session.getServerEncoding();
         let text: string;
         if (utf8Encoded && encoding === 'UTF-8') {
@@ -4628,11 +4639,10 @@ export class ScriptingAPI {
         // An EOT (0x04) ends a line as '\n' does, in fed text as in the game's:
         // TBuffer::translateToPlainText commits on it whatever the source.
         text = text.replace(/\x04/g, '\n');
-        // Only cTelnet strips the game's carriage returns, so one handed to
-        // feedTriggers() reaches TBuffer, which commits the line on it — and
-        // commits nothing when the line is still empty (TBuffer::commitLine's
-        // "empty timer posting"), so "line\r\n" is the line and then an empty
-        // one, as on desktop. The decoder above already read it as itself.
+        // The one carriage return feedTriggers() leaves — ending the text —
+        // reaches TBuffer, which commits the line on it, and commits nothing
+        // when the line is still empty (TBuffer::commitLine's "empty timer
+        // posting"). The decoder above already read it as itself.
         if (text.includes('\r')) text = commitFedCarriageReturns(this.heldFeedText, text);
         // Trigger reloads are coalesced onto a microtask, which cannot run while
         // the calling Lua chunk is still on the stack. Mudlet applies perm* and
@@ -4729,6 +4739,11 @@ export class ScriptingAPI {
 
     getLastLineNumber(windowName?: string): number {
         return this.getLineCount(windowName);
+    }
+
+    /** Whether a trigger pass is under way (TriggerUnit::processingDepth). */
+    get triggerPassActive(): boolean {
+        return this.triggerLineDepth > 0;
     }
 
     /** Whether `con` is the main console mid trigger pass — the one time it has
