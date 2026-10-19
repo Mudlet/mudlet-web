@@ -130,6 +130,17 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "iconFile": "banner_darkmists.png"
     },
     {
+        "name": "DreamLand",
+        "hostUrl": "dreamland.rocks",
+        "port": 9000,
+        "tlsEnabled": false,
+        "websiteInfo": "<a href='https://dreamland.rocks'>Website</a><br><a href='https://discord.gg/Ds46EpdKaF'>Discord</a>",
+        "icon": ":/icons/banner_dreamland.png",
+        "description": "Two gods built Thera as a mirror copy of someone else's world. Several epochs and a great many funerals later, the copy has stopped taking notes and started taking lives.\n\n23 races, 13 classes, alignment, ethos and 44 gods and cults add up to over 30,000 builds, and each one plays differently. Every random drop, quest reward and crafted piece sits on one power scale. Forge your own blades, cut gems, ink tattoos. Endless personal quests, 56 area quests, tiered mobs that call their friends and cast at you from the next room, remort, and ten clans, most with skills nobody else gets.\n\nThe whole game is in English, Ukrainian and Russian: one world, and every player sees it in their own language. Many of our regulars are blind, so everything works with a screen reader. Mudlet gets our own interface on connect: bars, chat tabs and the panels from our web client.\n\nDying is part of the tutorial.",
+        "ownUi": "clientGui",
+        "iconFile": "banner_dreamland.png"
+    },
+    {
         "name": "God Wars II",
         "hostUrl": "godwars2.org",
         "port": 3000,
