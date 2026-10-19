@@ -4939,7 +4939,23 @@ end
 -- Returns true, as Mudlet does — even with no usable event name: desktop's
 -- TLuaInterpreter::raiseEvent hands whatever it got to Host::raiseEvent and
 -- answers true regardless (raiseEvent({}) and raiseEvent() included, #277).
-function raiseEvent(event, ...)
+local __mudlet_event_arg_types = { string = true, number = true, boolean = true, table = true, ['function'] = true, ['nil'] = true }
+function raiseEvent(...)
+    -- An event carries only what a handler can be handed: a thread or a
+    -- userdata raises, the name included. Every argument is vetted before any
+    -- is taken, as TLuaInterpreter::raiseEvent does, so the first bad one is
+    -- named and a refusal holds on to nothing.
+    for i = 1, select('#', ...) do
+        local t = type((select(i, ...)))
+        if not __mudlet_event_arg_types[t] then
+            error("raiseEvent: bad argument #" .. i
+                .. " type (string, number, boolean, table, function, or nil expected, got a " .. t .. "!)", 2)
+        end
+    end
+    return __mudlet_raise_event(...)
+end
+
+function __mudlet_raise_event(event, ...)
     if type(event) ~= 'string' or event == '' then return true end
     local argc = select('#', ...)
     -- Drop getMainWindowSize's cache on a script-raised resize too, as
