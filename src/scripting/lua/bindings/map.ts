@@ -2,6 +2,10 @@ import type { BindingContext } from './context';
 import { parseXmlMapResult } from '../../../map/xmlMapImport';
 import { imageLabelPixmap } from '../../../map/labelPixmap';
 import { MapStore } from '../../../map/MapStore';
+import {
+    ENVIRONMENT_KITS, ENVIRONMENT_KIT_USER_DATA_KEY, isEnvironmentKit, type EnvironmentKit,
+} from '../../../map/environmentKit';
+import { AREA_GRAPH_MAX_COORDINATE } from '../../../map/areaGraph';
 
 /**
  * Mudlet's map API: the 2D view, room and area CRUD, exits, doors, custom
@@ -609,6 +613,57 @@ export function installMapBindings({
     lua.global.set('clearMapUserData',     ()              => api.map.clearMapUserData());
     lua.global.set('clearMapUserDataItem', (k: unknown)    => api.map.clearMapUserDataItem(String(k ?? '')));
     lua.global.set('getAllMapUserData', () => api.map.getAllMapUserData());
+
+    // ── Area graph (desktop's TAreaGraph) ─────────────────────────────────
+    // getAreaGraph() → { areas = {[id] = {name, x, y, rooms, radius, pinned}},
+    // links = {{from, to, exits}, …} }. Both halves go over as arrays, which
+    // Bridge.lua re-keys: areas by id, links from 1.
+    lua.global.set('__getAreaGraph', () => {
+        const graph = api.map.getAreaGraph();
+        return {
+            areas: graph.areas.map(n => ({
+                id: n.areaId, name: n.name, x: n.position[0], y: n.position[1],
+                rooms: n.roomCount, radius: n.radius, pinned: n.pinned,
+            })),
+            links: graph.links.map(l => ({ from: l.fromArea, to: l.toArea, exits: l.exitCount })),
+        };
+    });
+    // setAreaGraphPosition(areaID, x, y) → true, or the refusal's message.
+    lua.global.set('__setAreaGraphPosition', (id: unknown, x: unknown, y: unknown) => {
+        const areaId = int(id);
+        const px = Number(x), py = Number(y);
+        // Inverted, so that NaN is refused with the infinities.
+        if (!(Math.abs(px) <= AREA_GRAPH_MAX_COORDINATE) || !(Math.abs(py) <= AREA_GRAPH_MAX_COORDINATE)) {
+            return `x and y must be numbers between -${AREA_GRAPH_MAX_COORDINATE.toFixed(0)} and ${AREA_GRAPH_MAX_COORDINATE.toFixed(0)}`;
+        }
+        if (!api.map.setAreaGraphPosition(areaId, px, py)) return `number ${areaId} is not a valid area id`;
+        return true;
+    });
+    lua.global.set('__resetAreaGraphLayout', (keepPinned: unknown) => {
+        api.map.resetAreaGraphLayout(keepPinned === true);
+        return true;
+    });
+
+    // ── Environment kits (the ground the 3D styles draw an environment as) ──
+    // getMapEnvironmentKit(envID) → kit, named. The pair goes over as an array
+    // for Bridge.lua to unpack.
+    lua.global.set('__getMapEnvironmentKit', (id: unknown) => api.map.getEnvironmentKit(int(id)));
+    // getMapEnvironmentKits() → { [envID] = kit }. Object keys cross as
+    // strings; Bridge.lua turns them back into the numbers desktop keys by.
+    lua.global.set('__getMapEnvironmentKits', () => Object.fromEntries(api.map.getEnvironmentKits()));
+    // setMapEnvironmentKit(envID [, kit]) → true, or the refusal's message.
+    // Desktop trims and lower-cases the name before matching it, and a nil or
+    // empty one clears.
+    lua.global.set('__setMapEnvironmentKit', (id: unknown, kitName: unknown) => {
+        const name = kitName == null ? '' : String(kitName).trim().toLowerCase();
+        if (name !== '' && !isEnvironmentKit(name)) {
+            return `kit name '${name}' is not one of: ${ENVIRONMENT_KITS.join(', ')}`;
+        }
+        if (!api.map.setEnvironmentKit(int(id), name === '' ? null : name as EnvironmentKit)) {
+            return `the map user data '${ENVIRONMENT_KIT_USER_DATA_KEY}' is not a JSON object, so is left alone; fix or remove it first`;
+        }
+        return true;
+    });
 
     // ── Exits ─────────────────────────────────────────────────────────────
     // Mudlet's setExit/setExitStub accept the direction either as the

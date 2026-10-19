@@ -3,6 +3,11 @@ import {readerExport} from 'mudlet-map-binary-reader';
 import {findPath, type ExitWeightFilter, type PathfindResult} from './pathfinding';
 import {renderLabelPixmap} from './labelPixmap';
 import {mustBeOneOf} from '../utils/mustBeOneOf';
+import {
+    ENVIRONMENT_KIT_USER_DATA_KEY, guessEnvironmentKit, storeEnvironmentKit, storedEnvironmentKits,
+    type EnvironmentKit,
+} from './environmentKit';
+import {AreaGraph, type AreaGraphLink, type AreaGraphNode, type AreaGraphRoom} from './areaGraph';
 
 export type {ExitWeightFilter, PathfindResult} from './pathfinding';
 
@@ -134,6 +139,27 @@ const AREA_ZOOM_KEY = 'system.fallback_map2DZoom';
 // All of them are TAKEN on load, so scripts never see them, and the border
 // keys are refused by setRoomUserData, since a save would replace them.
 const SYMBOL_COLOR_FALLBACK_KEY = 'system.fallback_symbol_color';
+/** The profile's sixteen mapper colours as a new profile has them — Qt's
+ *  colour constants, in environment 1-16 order (Host::mRed_2 … mLightBlack_2),
+ *  which is also TMap::restore16ColorSet's 257→272 order. */
+const MAPPER_16_COLORS: ReadonlyArray<[number, number, number]> = [
+    [128, 0, 0],       // 1 / 257 dark red
+    [0, 128, 0],       // 2 / 258 dark green
+    [128, 128, 0],     // 3 / 259 dark yellow
+    [0, 0, 128],       // 4 / 260 dark blue
+    [128, 0, 128],     // 5 / 261 dark magenta
+    [0, 128, 128],     // 6 / 262 dark cyan
+    [192, 192, 192],   // 7 / 263 light gray
+    [0, 0, 0],         // 8 / 264 black
+    [255, 0, 0],       // 9 / 265 red
+    [0, 255, 0],       // 10 / 266 green
+    [255, 255, 0],     // 11 / 267 yellow
+    [0, 0, 255],       // 12 / 268 blue
+    [255, 0, 255],     // 13 / 269 magenta
+    [0, 255, 255],     // 14 / 270 cyan
+    [255, 255, 255],   // 15 / 271 white
+    [128, 128, 128],   // 16 / 272 dark gray
+];
 export const BORDER_COLOR_KEY = 'room.ui_borderColor';
 export const BORDER_THICKNESS_KEY = 'room.ui_borderThickness';
 const labelFontKey = (labelId: number) => `system.labelFont_${labelId}`;
@@ -3753,6 +3779,62 @@ export class MapStore {
     }
 
     /** Replace the entire map-level user-data dict (e.g. after loading a .dat). */
+    // ── Area graph (desktop's TAreaGraph) ─────────────────────────────────────
+
+    /** The areas as a graph with a world layout — see map/areaGraph.ts. It
+     *  reads the map through this source, and keeps its layout in the map's
+     *  user data, so a map replaced under it is noticed on the next read. */
+    private readonly areaGraph = new AreaGraph({
+        areaNames: () => this.areaNames,
+        areaRooms: () => {
+            const out = new Map<number, readonly number[]>();
+            for (const [id, area] of this.areas) out.set(id, area.rooms);
+            return out;
+        },
+        room: id => this.areaGraphRoom(this.rooms.get(id)),
+        rooms: () => [...this.rooms.values()].map(r => this.areaGraphRoom(r)!),
+        getUserData: key => this.getMapUserData(key),
+        // Written without a notify: reading the graph lays it out, and a read
+        // is no change anyone has to redraw for.
+        setUserData: (key, value) => {
+            if (value === undefined) delete this.mapUserData[key];
+            else this.mapUserData[key] = value;
+        },
+    });
+
+    private areaGraphRoom(room: MudletRoom | undefined): AreaGraphRoom | undefined {
+        if (!room) return undefined;
+        return {
+            area: room.area, x: room.x, y: room.y,
+            exits: () => [
+                room.north, room.northeast, room.east, room.southeast, room.south, room.southwest,
+                room.west, room.northwest, room.up, room.down, room.in, room.out,
+                ...Object.values(room.mSpecialExits ?? {}),
+            ],
+        };
+    }
+
+    /** Mudlet getAreaGraph(): the areas, by id in ascending order, and the
+     *  links between them sorted by (from, to). */
+    getAreaGraph(): { areas: AreaGraphNode[]; links: AreaGraphLink[] } {
+        this.areaGraph.refresh();
+        return { areas: this.areaGraph.getNodes(), links: this.areaGraph.getLinks() };
+    }
+
+    /** Mudlet setAreaGraphPosition(areaID, x, y): pins the area there. False
+     *  for an area the graph does not have, or a coordinate out of range. */
+    setAreaGraphPosition(areaId: number, x: number, y: number): boolean {
+        if (!this.areaGraph.setPosition(areaId, [x, y])) return false;
+        this.notify();
+        return true;
+    }
+
+    /** Mudlet resetAreaGraphLayout([keepPinned]). */
+    resetAreaGraphLayout(keepPinned: boolean): void {
+        this.areaGraph.resetLayout(keepPinned);
+        this.notify();
+    }
+
     loadMapUserData(data: Record<string, string> | undefined | null): void {
         this.mapUserData = data ? { ...data } : {};
         this.notify();
@@ -3838,6 +3920,9 @@ export class MapStore {
         // holds them). Left behind, they came back on the next area given this
         // id, and a save carried them into the file.
         this.labels.delete(id);
+        // TRoomDB::removeArea drops its place in the world layout too, which
+        // an area given this id later would otherwise inherit.
+        this.areaGraph.forgetArea(id);
         this.notify();
         return null;
     }
@@ -4873,26 +4958,7 @@ export class MapStore {
      * map is wiped rather than treated as user data.
      */
     private restore16ColorSet(): void {
-        // Qt's colour constants, in TMap::restore16ColorSet's 257→272 order.
-        const palette: Array<[number, number, number]> = [
-            [128, 0, 0],       // 257 dark red
-            [0, 128, 0],       // 258 dark green
-            [128, 128, 0],     // 259 dark yellow
-            [0, 0, 128],       // 260 dark blue
-            [128, 0, 128],     // 261 dark magenta
-            [0, 128, 128],     // 262 dark cyan
-            [192, 192, 192],   // 263 light gray
-            [0, 0, 0],         // 264 black
-            [255, 0, 0],       // 265 red
-            [0, 255, 0],       // 266 green
-            [255, 255, 0],     // 267 yellow
-            [0, 0, 255],       // 268 blue
-            [255, 0, 255],     // 269 magenta
-            [0, 255, 255],     // 270 cyan
-            [255, 255, 255],   // 271 white
-            [128, 128, 128],   // 272 dark gray
-        ];
-        palette.forEach(([r, g, b], i) => {
+        MAPPER_16_COLORS.forEach(([r, g, b], i) => {
             const envId = 257 + i;
             // Whatever the profile was last told to hold for this slot wins:
             // that is the point of the block, and of TMap::restore16ColorSet
@@ -4922,6 +4988,66 @@ export class MapStore {
         if (!this.customEnvColors.has(envId)) return false;
         this.customEnvColors.delete(envId);
         this.notify();
+        return true;
+    }
+
+    /**
+     * The colour desktop draws an environment's rooms in
+     * (RoomAppearance::environmentColor): mEnvColors remaps the id first; 1-16
+     * are the profile's sixteen mapper colours; a custom colour wins over the
+     * xterm cube and grey ramp for 17-255; and anything left — an environment
+     * the map does not define, or one remapped onto nothing — is dark red, the
+     * colour of environment 1, so that no room is drawn invisible.
+     */
+    environmentColor(environmentId: number): [number, number, number] {
+        let env = environmentId;
+        let defined = true;
+        if (this.envColors.has(env)) env = this.envColors.get(env)!;
+        else if (!this.customEnvColors.has(env)) defined = false;
+        if (!defined || !((env >= 1 && env < 256) || this.customEnvColors.has(env))) env = 1;
+        if (env >= 1 && env <= 16) {
+            const c = this.profileEnvColors.get(256 + env);
+            return c ? [c.r, c.g, c.b] : MAPPER_16_COLORS[env - 1];
+        }
+        const custom = this.customEnvColors.get(env);
+        if (custom) return [custom.r, custom.g, custom.b];
+        if (env > 16 && env < 232) {
+            const base = env - 16;
+            const r = Math.floor(base / 36);
+            const g = Math.floor((base - r * 36) / 6);
+            const b = base - r * 36 - g * 6;
+            const step = (v: number) => (v === 0 ? 0 : (v - 1) * 40 + 95);
+            return [step(r), step(g), step(b)];
+        }
+        if (env > 231 && env < 256) {
+            const k = (env - 232) * 10 + 8;
+            return [k, k, k];
+        }
+        const red = this.profileEnvColors.get(257);
+        return red ? [red.r, red.g, red.b] : MAPPER_16_COLORS[0];
+    }
+
+    /** Mudlet getMapEnvironmentKit(envID) → the kit, and whether the map names
+     *  it rather than it being guessed from the environment's colour — which is
+     *  read afresh each time, so the guess follows the colour. */
+    getEnvironmentKit(environmentId: number): [EnvironmentKit, boolean] {
+        const named = storedEnvironmentKits(this.getMapUserData(ENVIRONMENT_KIT_USER_DATA_KEY)).get(environmentId);
+        if (named) return [named, true];
+        return [guessEnvironmentKit(this.environmentColor(environmentId)), false];
+    }
+
+    /** Mudlet getMapEnvironmentKits() → the kits the map names, by environment. */
+    getEnvironmentKits(): Map<number, EnvironmentKit> {
+        return storedEnvironmentKits(this.getMapUserData(ENVIRONMENT_KIT_USER_DATA_KEY));
+    }
+
+    /** Mudlet setMapEnvironmentKit(envID, kit) — null clears. False when the
+     *  saved kits are not a JSON object, which is then left alone. */
+    setEnvironmentKit(environmentId: number, kit: EnvironmentKit | null): boolean {
+        const stored = storeEnvironmentKit(this.getMapUserData(ENVIRONMENT_KIT_USER_DATA_KEY), environmentId, kit);
+        if (!stored) return false;
+        if (stored.value === undefined) this.clearMapUserDataItem(ENVIRONMENT_KIT_USER_DATA_KEY);
+        else this.setMapUserData(ENVIRONMENT_KIT_USER_DATA_KEY, stored.value);
         return true;
     }
 
