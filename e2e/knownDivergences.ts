@@ -225,6 +225,13 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
     ],
     Other: [
         {
+            name: 'Tests the timer API / Tests the functionality of tempTimer / runs nothing and reports nothing for a timer with no code',
+            reason:
+                SECOND_PROFILE_FROM_A_FOLDER
+                + 'What it pins — a timer whose code is empty runs nothing and reports nothing — is the same here as '
+                + 'in this profile; only the second profile it builds to watch that on a fresh console cannot be made.',
+        },
+        {
             name: 'Tests Other.lua functions / Tests getConfig and setConfig round-trips / round-trips every boolean configuration option',
             reason:
                 'Every boolean option round-trips except lazyCaptureGlobals, which setConfig refuses to set true. '
@@ -235,6 +242,18 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
         },
     ],
     Package: [
+        ...[
+            'Tests opening a profile whose script fails as it loads / names the scripts that failed on that profile\'s console, once',
+            'Tests opening a profile whose script fails as it loads / names them again after a reset, leaving out those fixed or disabled since',
+            'Tests opening a profile whose script fails as it loads / names a package\'s script when a module has the package\'s name too',
+        ].map(name => ({
+            name,
+            reason:
+                SECOND_PROFILE_FROM_A_FOLDER
+                + 'The report itself is made here, as desktop words it — the switched-on scripts that failed as the '
+                + 'profile loaded or reset are named once on its console (tests/scripting/scriptItemDrift338.test.ts) '
+                + '— but for the profile this tab runs; the spec watches it happen on another.',
+        })),
         {
             name: 'Tests exporting the profile to a file with saveProfile / says so on the console when the write fails after the call has answered',
             reason:
