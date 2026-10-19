@@ -1583,7 +1583,8 @@ export class ScriptingAPI {
      *  - `connected` — the profile is connected to its game. Own tab: live; other
      *    tabs: their last-announced state (BroadcastChannel presence). Always
      *    false for a profile that isn't loaded.
-     *  - `description` — the connection record's free-text description.
+     *  - `description` — the connection record's free-text description, or the
+ *    blurb its bundled game ships with when it has none.
      * On a duplicate profile name, last-wins (a Lua table can't hold dup keys).
      */
     getProfiles(): Record<string, { host: string; port: string; loaded: boolean; connected?: boolean; description: string }> {
@@ -1603,7 +1604,10 @@ export class ScriptingAPI {
                 // loaded, too, so a crashed tab's stale presence can't outlive
                 // its (auto-released) lock.
                 ...(isLoaded ? { connected: this.presence.isConnected(conn.id) } : {}),
-                description: conn.description ?? '',
+                // As getProfileInformation(): a profile with no description
+                // of its own reports its game's shipped blurb (Mudlet reads both
+                // through the same TGameDetails fallback).
+                description: conn.description ?? findBundledGame(conn.name)?.description ?? '',
             };
         }
         return out;
