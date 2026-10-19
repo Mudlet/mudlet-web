@@ -40,15 +40,10 @@ export function installPackageBindings({ lua, api }: BindingContext): void {
         api.installModule(String(path ?? '')));
     lua.global.set('uninstallModule', (name: unknown) =>
         api.uninstallModule(String(name ?? '')));
-    // Mudlet `reloadModule(name)` doesn't return anything; we still flag
-    // failures via the printError call inside ScriptingEngine.
-    // Returns nothing at all, on either branch — a reload that found no such
-    // module is not an error worth a value, and a spec counts the returns.
-    // wasmoon turns a JS `undefined` into a single nil rather than no value, so
-    // the Bridge.lua wrapper is what actually drops it.
-    lua.global.set('__reloadModule', (name: unknown) => {
-        api.reloadModule(String(name ?? ''));
-    });
+    // Mudlet `reloadModule(name)` answers as an install does: true (and what
+    // in the module does not work), or (nil, why). Returns { ok, error }; the
+    // Bridge.lua wrapper reshapes it into the multi-return.
+    lua.global.set('__reloadModule', (name: unknown) => api.reloadModule(String(name ?? '')));
     lua.global.set('__mudlet_syncModule', (name: unknown) => {
         // Fire-and-forget; Lua callers don't get a promise. The underlying
         // flush is async but the in-app effect (sysSyncOnModule) will fire

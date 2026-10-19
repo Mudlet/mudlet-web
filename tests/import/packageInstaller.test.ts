@@ -66,6 +66,7 @@ function stubVfs(): FakeVfs {
     return {
         profilePath: '/profiles/test',
         exists: (p: string) => dirs.has(p) || files.has(p),
+        stat: (p: string) => (files.has(p) ? { type: 'file' } : dirs.has(p) ? { type: 'dir' } : null),
         mkdir: (p: string) => { dirs.add(p.replace(/\/$/, '')); },
         rmdir: (p: string) => {
             for (const d of [...dirs]) if (under(p, d)) dirs.delete(d);
@@ -129,15 +130,19 @@ describe('preparePackageInstall', () => {
         expect(vfs.exists(PKG_DIR)).toBe(false);
     });
 
-    it('replaces the previous copy on commit rather than merging into it', () => {
+    it('moves into a folder of its name already there, keeping what else is in it', () => {
+        // Host::installPackage moves an archive into a folder an uninstall or a
+        // crash left behind, entry by entry: the archive's own files replace
+        // theirs, and anything else in the folder stays.
         const vfs = stubVfs();
         installPackageFromBytes('mypkg.mpackage', goodArchive(), vfs);
         vfs.writeFile(`${PKG_DIR}/stale.txt`, 'left over from the old install');
+        vfs.writeFile(`${PKG_DIR}/mypkg.xml`, 'not the package XML');
 
         const second = zipSync({ 'mypkg.xml': strToU8(XML) });
         installPackageFromBytes('mypkg.mpackage', second, vfs);
-        expect(vfs.exists(`${PKG_DIR}/stale.txt`)).toBe(false);
-        expect(vfs.exists(`${PKG_DIR}/mypkg.xml`)).toBe(true);
+        expect(vfs.exists(`${PKG_DIR}/stale.txt`)).toBe(true);
+        expect(vfs.readFile(`${PKG_DIR}/mypkg.xml`)).toBe(XML);
     });
 
     it('keeps a source archive staged inside the package dir', () => {

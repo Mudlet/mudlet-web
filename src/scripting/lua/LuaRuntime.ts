@@ -814,6 +814,7 @@ export class LuaRuntime implements IScriptingRuntime {
     }
 
     private _denyCurrentSend = false;
+    private _sendRequestDepth = 0;
 
     /** The read-only `/lua/` namespace: bundled Mudlet Lua, and in busted builds
      *  the spec corpus and its fixtures. Values are Latin-1 byte-strings. */
@@ -5600,7 +5601,15 @@ end`);
     }
 
     dispatchSendRequest(text: string): boolean {
-        this.emitEvent('sysDataSendRequest', [text]);
+        // cTelnet::mSendRequestDispatchDepth: an alias pass run from inside a
+        // handler (one that denies the command and expands a replacement) must
+        // leave the deny for the command the handler is vetting.
+        this._sendRequestDepth++;
+        try {
+            this.emitEvent('sysDataSendRequest', [text]);
+        } finally {
+            this._sendRequestDepth--;
+        }
         if (!this._denyCurrentSend) return false;
         // Mudlet's Host::mAllowToSendCommand is consumed by the send it blocks,
         // never cleared ahead of the event (cTelnet::sendData puts it back only
@@ -5610,6 +5619,18 @@ end`);
         // denied the command about to go out had no effect at all.
         this._denyCurrentSend = false;
         return true;
+    }
+
+    /**
+     * The end of one command's alias pass that an alias consumed (Host::send).
+     * A deny raised there and never spent by a send of the alias's own would
+     * otherwise swallow whatever command comes next, so desktop puts
+     * mAllowToSendCommand back - unless the pass ran under a
+     * sysDataSendRequest handler, where the deny is meant for the command
+     * being handled.
+     */
+    endAliasPass(): void {
+        if (this._sendRequestDepth === 0) this._denyCurrentSend = false;
     }
 
     syncScriptHandlers(entries: ScriptHandlerEntry[]): void {

@@ -1592,7 +1592,8 @@ export class ScriptingAPI {
      *  - `connected` — the profile is connected to its game. Own tab: live; other
      *    tabs: their last-announced state (BroadcastChannel presence). Always
      *    false for a profile that isn't loaded.
-     *  - `description` — the connection record's free-text description.
+     *  - `description` — the connection record's free-text description, or the
+ *    blurb its bundled game ships with when it has none.
      * On a duplicate profile name, last-wins (a Lua table can't hold dup keys).
      */
     getProfiles(): Record<string, { host: string; port: string; loaded: boolean; connected?: boolean; description: string }> {
@@ -1612,7 +1613,10 @@ export class ScriptingAPI {
                 // loaded, too, so a crashed tab's stale presence can't outlive
                 // its (auto-released) lock.
                 ...(isLoaded ? { connected: this.presence.isConnected(conn.id) } : {}),
-                description: conn.description ?? '',
+                // As getProfileInformation(): a profile with no description
+                // of its own reports its game's shipped blurb (Mudlet reads both
+                // through the same TGameDetails fallback).
+                description: conn.description ?? findBundledGame(conn.name)?.description ?? '',
             };
         }
         return out;
@@ -2514,7 +2518,7 @@ export class ScriptingAPI {
     saveProfileXml(location?: string, saveName?: string) {
         return this.host.saveProfileXml(location, saveName);
     }
-    reloadModule(name: string): boolean { return this.host.reloadModuleFromFile(name); }
+    reloadModule(name: string): InstallOutcome { return this.host.reloadModuleFromFile(name); }
     enableModuleSync(name: string): void { this.host.setModuleSync(name, true); }
     disableModuleSync(name: string): void { this.host.setModuleSync(name, false); }
     getModuleSync(name: string): boolean { return this.host.getModuleSync(name); }
@@ -8139,15 +8143,24 @@ export class ScriptingAPI {
      * warnIfUnencodable gives: a line the player can read has to be a line
      * getLines() and the cursor APIs can see.
      */
-    /** Held installs wait on the save's flush; see ScriptingEngine. */
-    markProfileSaveInFlight(): void {
-        this.host.markProfileSaveInFlight();
-    }
-
     postInfo(text: string): void {
         const notice = `\x1b[36m[ INFO ]\x1b[0m  - ${text}`;
         this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
         this.session.events.emit('message', notice, 'script', Date.now());
+    }
+
+    /** Mudlet's `Host::postMessage` for the `[ WARN ]` kind, written the same
+     *  way as {@link postInfo}. */
+    postWarning(text: string): void {
+        const notice = `\x1b[33m[ WARN ]\x1b[0m  - ${text}`;
+        this.mainConsole.appendLine(new AnsiAwareBuffer(notice));
+        this.session.events.emit('message', notice, 'script', Date.now());
+    }
+
+    /** A profile save counts as running until the next pass of the event
+     *  loop; see ScriptingEngine.markProfileSaveInFlight. */
+    markProfileSaveInFlight(): void {
+        this.host.markProfileSaveInFlight();
     }
 
     /** Mudlet's `Host::postMessage` for the `[ ERROR ]` kind: unlike printError

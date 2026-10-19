@@ -93,6 +93,54 @@ export interface MudletImportResult {
      * through without a fault, empty or not, is the package.
      */
     nothingRead?: 'unreadable' | 'newer';
+    /**
+     * Why the document stopped being read, in the words desktop's streaming
+     * reader (QXmlStreamReader::errorString) gives — what Host::installPackage
+     * hands back for it, "<package>[/<file>]: <this>". Set alongside
+     * {@link parseError} for a malformed document.
+     */
+    xmlError?: string;
+    /**
+     * The install's "load errors": one "<package>[/<file>]: <xmlError>" per
+     * document of the package that could not be read whole, in the order they
+     * were read. Filled in by the package installer, which knows the files.
+     */
+    loadErrors?: string[];
+}
+
+/**
+ * The message QXmlStreamReader gives for a document the browser's parser
+ * refused, for the faults a package file actually turns up with: text where
+ * the document should begin, a closing tag that does not close the element
+ * that is open, and a document that ends with elements (or a tag) still open.
+ * Worked out from the text itself rather than from the browser's message,
+ * which differs between engines; anything else keeps the browser's words.
+ */
+function qtXmlErrorString(xml: string, browserReason: string): string {
+    const body = xml.replace(/^\uFEFF/, '');
+    const stack: string[] = [];
+    const tag = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[!?][^>]*>|<(\/?)([A-Za-z_][\w.:-]*)([^>]*)>/g;
+    let sawElement = false;
+    let last = 0;
+    for (let m = tag.exec(body); m; m = tag.exec(body)) {
+        // Character data before the root element is what QXmlStreamReader
+        // refuses as "Start tag expected."
+        if (!sawElement && body.slice(last, m.index).trim() !== '') return 'Start tag expected.';
+        last = m.index + m[0].length;
+        const name = m[2];
+        if (!name) continue;                       // comment, CDATA, declaration
+        sawElement = true;
+        if (m[1]) {
+            if (stack[stack.length - 1] !== name) return 'Opening and ending tag mismatch.';
+            stack.pop();
+            continue;
+        }
+        if (!m[3]?.trimEnd().endsWith('/')) stack.push(name);
+    }
+    if (!sawElement) return body.slice(last).trim() !== '' && !body.slice(last).trimStart().startsWith('<')
+        ? 'Start tag expected.' : 'Premature end of document.';
+    if (stack.length > 0 || body.slice(last).includes('<')) return 'Premature end of document.';
+    return browserReason;
 }
 
 /** Whether `result` holds anything read out of its document. */
@@ -423,6 +471,7 @@ export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImpo
     if (err) {
         const reason = `XML parse error: ${err.textContent?.split('\n')[0]}`;
         if (!opts.reportParseError) throw new Error(reason);
+        const xmlError = qtXmlErrorString(xml, reason);
         // Mudlet reads a package XML with a STREAMING reader, so a document that
         // stops part-way keeps everything it had already read — the items above
         // the break are installed and the package runs. DOMParser is all or
@@ -436,14 +485,14 @@ export function parseMudletXml(xml: string, opts: ParseOptions = {}): MudletImpo
             if (!retry.getElementsByTagName('parsererror')[0]) {
                 const result = parseMudletXml(repaired, { ...opts, reportParseError: false });
                 return {
-                    ...result, warnings: [...result.warnings, reason], parseError: reason,
+                    ...result, warnings: [...result.warnings, reason], parseError: reason, xmlError,
                     ...(readAnything(result) ? {} : { nothingRead: 'unreadable' as const }),
                 };
             }
         }
         return {
             scripts: [], aliases: [], triggers: [], timers: [], keys: [], buttons: [],
-            warnings: [reason], parseError: reason, nothingRead: 'unreadable',
+            warnings: [reason], parseError: reason, xmlError, nothingRead: 'unreadable',
         };
     }
 
