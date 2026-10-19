@@ -2053,6 +2053,7 @@ export class ScriptingEngine implements EngineHost {
         if (parts.length === 0) { this.api.sendData(''); return; }
         for (const part of parts) {
             if (!this.processInput(part)) this.api.sendData(part);
+            else this.runtimes.lua?.endAliasPass?.();
         }
     }
 
