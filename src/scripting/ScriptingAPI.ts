@@ -520,13 +520,15 @@ const CONFIG_KEY_ALIASES: Record<string, string> = {
  *  rendering or mapper behaviour a build can be asked to try; Mudlet Web implements
  *  none of them, but the switches are ordinary profile state and scripts feature-
  *  test through them, so they are answered rather than refused. Grouped by the
- *  first two dot-segments, and at most one per group may be on. */
+ *  first two dot-segments, and at most one per group may be on. Kept sorted
+ *  in byte order, as desktop sorts the `experiment.list` it hands out, so the
+ *  members of a group sit together. */
 const VALID_EXPERIMENTS: readonly string[] = [
-    'experiment.rendering.originalish',
-    'experiment.rendering.more-transparent',
+    'experiment.3d-player-icon',
     'experiment.3dmap.modernmapper',
     'experiment.render-in-out-exits',
-    'experiment.3d-player-icon',
+    'experiment.rendering.more-transparent',
+    'experiment.rendering.originalish',
 ];
 
 /** Format an epoch-ms timestamp as Mudlet's `TBuffer::smTimeStampFormat`,
