@@ -4303,24 +4303,27 @@ export class ScriptingEngine implements EngineHost {
      * Mudlet `tempButton(toolbar, name, orientation)`. Appends a transient
      * button under an existing toolbar group, with no command and no script:
      * TLuaInterpreter::tempButton gives it an empty one, and its third
-     * argument is the orientation. Returns the new id, or -1 when no toolbar
-     * of that name exists or a button or toolbar already has the name —
-     * desktop refuses a duplicate rather than adding a second button, so a
-     * script that makes its buttons on every load does not pile them up
-     * (mudlet-web#238). The Lua wrapper turns -1 into no value, as desktop
-     * returns. `orientation` is round-tripped
+     * argument is the orientation. Returns the new id, or a refusal code:
+     * -1 when nothing has the toolbar's name, -2 when what has it is a plain
+     * button (desktop's findAction(toolbar) takes the first action of that
+     * name and refuses one that is not a folder, as a button under a button
+     * never reaches a toolbar), -3 when a button or toolbar already has the
+     * name — desktop refuses a duplicate rather than adding a second button,
+     * so a script that makes its buttons on every load does not pile them up
+     * (mudlet-web#238). The Lua wrapper turns each into nil and desktop's
+     * message. `orientation` is round-tripped
      * onto the leaf for parity with Mudlet — the renderer doesn't use it at the
      * leaf, but ports that read it back via the store get a stable value.
      */
     createTempButton(toolbar: string, name: string, _orientation: number): number {
-        if (!toolbar || !name) return -1;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
-        const parent = buttons.find(b => b.isGroup && b.name === toolbar);
+        const parent = buttons.find(b => b.name === toolbar);
         if (!parent) return -1;
+        if (!parent.isGroup) return -2;
         // TLuaInterpreter::tempButton's findAction(name) looks at every
         // action, toolbars included, not just the ones on this toolbar.
-        if (buttons.some(b => b.name === name)) return -1;
+        if (buttons.some(b => b.name === name)) return -3;
         const uuid = store.addButton(this.connectionId, {
             name,
             enabled: true,
@@ -4345,7 +4348,6 @@ export class ScriptingEngine implements EngineHost {
      * desktop's findAction(name) is not limited to toolbars.
      */
     createTempButtonToolbar(name: string, orientation: number, location: number): number {
-        if (!name) return -1;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
         if (buttons.some(b => b.name === name)) return -1;

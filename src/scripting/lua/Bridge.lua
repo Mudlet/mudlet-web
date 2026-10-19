@@ -5439,21 +5439,30 @@ end
 
 -- Mudlet tempButton(toolbar, name, orientation). Makes a button with no
 -- command and no script (TLuaInterpreter::tempButton sets an empty one) - the
--- third argument is the orientation, not code. Returns the new id, or nothing
--- at all when no toolbar of that name exists or a button or toolbar already has
--- the name: desktop returns no value for both refusals, so
--- `if tempButton(...) then` is false for them (mudlet-web#238).
+-- third argument is the orientation, not code. Returns the new id, or nil and
+-- desktop's message (warnArgumentValue) when no toolbar of that name exists,
+-- when the first action of that name is a plain button, or when a button or
+-- toolbar already has the name, so `if tempButton(...) then` is false for
+-- them (mudlet-web#238).
 do
     local _raw = __mudlet_tempButton
     function tempButton(toolbar, name, orientation)
-        local id = _raw(tostring(toolbar or ""), tostring(name or ""), tonumber(orientation) or 0)
-        if id == -1 then return end
+        toolbar, name = tostring(toolbar or ""), tostring(name or "")
+        local id = _raw(toolbar, name, tonumber(orientation) or 0)
+        if id == -1 then
+            return nil, string.format("toolbar '%s' not found", toolbar)
+        elseif id == -2 then
+            return nil, string.format("'%s' is a button, not a toolbar or menu", toolbar)
+        elseif id == -3 then
+            return nil, string.format("a button or toolbar named '%s' already exists", name)
+        end
         return id
     end
 end
 
 -- Mudlet tempButtonToolbar(name, location, orientation). Creates a transient
--- toolbar group. Returns the new id, or nothing if the name is taken.
+-- toolbar group. Returns the new id, or nil and desktop's message if a button
+-- or toolbar already has the name.
 -- The LOCATION comes first (TLuaInterpreter::tempButtonToolbar reads #2 as
 -- location and #3 as orientation), and every location above 0 is shifted up
 -- one: TAction::mLocation keeps 1 for a bottom bar Lua cannot ask for, so
@@ -5461,10 +5470,13 @@ end
 do
     local _raw = __mudlet_tempButtonToolbar
     function tempButtonToolbar(name, location, orientation)
+        name = tostring(name or "")
         location = tonumber(location) or 0
         if location > 0 then location = location + 1 end
-        local id = _raw(tostring(name or ""), tonumber(orientation) or 0, location)
-        if id == -1 then return end
+        local id = _raw(name, tonumber(orientation) or 0, location)
+        if id == -1 then
+            return nil, string.format("a button or toolbar named '%s' already exists", name)
+        end
         return id
     end
 end
