@@ -2630,16 +2630,15 @@ export class ScriptingAPI {
         return this.host.toggleScriptByName(name, false);
     }
 
-    // A numeric argument names a script-created temp item, which lives in the
-    // runtime rather than the saved tree; Mudlet toggles either kind.
+    // Desktop's enableTrigger takes a NAME: a number is read as its string
+    // form, which is how a temp trigger is named (after its id). Temporary and
+    // permanent triggers share the one name table, so either kind answers.
     enableTrigger(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.host.setTempItemEnabled(nameOrId, true);
-        return this.host.toggleTriggerByName(nameOrId, true);
+        return this.host.toggleTriggerByName(String(nameOrId), true);
     }
 
     disableTrigger(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.host.setTempItemEnabled(nameOrId, false);
-        return this.host.toggleTriggerByName(nameOrId, false);
+        return this.host.toggleTriggerByName(String(nameOrId), false);
     }
 
     // A temp timer's name is the id tempTimer returned (Mudlet names it so), so

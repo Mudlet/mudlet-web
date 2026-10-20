@@ -1663,16 +1663,15 @@ export class LuaRuntime implements IScriptingRuntime {
             const wantFg = Number(fg);
             const wantBg = Number(bg);
             const max = (typeof expirationCount === 'number' && expirationCount > 0) ? expirationCount : -1;
-            const id = this.api.allocateItemId();
             let fires = 0;
-            let killed = false;
+            const triggers = this.api.triggers;
             // Empty-string substring trigger fires once per line; the colour
             // check gates it as the engine's `accept`, so a line of the wrong
             // colour counts as a miss rather than a match that did nothing —
-            // which is what lets a stay-open window fire on it.
-            const unsub = this.api.triggers.addTemp('', (matches) => {
-                const entry = this.tempIds.get(id);
-                if (killed || entry?.enabled === false || entry?.uncompiled) return;
+            // which is what lets a stay-open window fire on it. Its switch, its
+            // kill and a body that did not compile are the engine's to honour
+            // (see TriggerEngine.createTemp).
+            const id: number = triggers.createTemp('', (matches) => {
                 // matches[1] is the coloured RUN, not the whole line — the
                 // empty-substring pattern this rides on has no match text of
                 // its own, so the colour lookup supplies it. A fire with no
@@ -1689,23 +1688,12 @@ export class LuaRuntime implements IScriptingRuntime {
                     if (runs.length > 0) this.clearCaptureGlobals();
                 }
                 fires++;
-                if (max > 0 && fires >= max) {
-                    killed = true;
-                    unsub();
-                    releaseCb(cbId);
-                    this.tempIds.delete(id);
-                }
+                if (max > 0 && fires >= max) triggers.killTemp(id);
             }, 'substring', {
-                // Named after its id, as every temp trigger is, so
-                // setTriggerStayOpen(tostring(id), n) finds it.
-                name: String(id),
+                id: this.api.allocateItemId(),
                 accept: () => uncompiled !== true && this.api.currentLineColorMatch(wantFg, wantBg) !== null,
-            });
-            // A body that did not compile: made, but never fires and isActive()
-            // says 0 (tempItemEnabled), as installTempTrigger's.
-            this.tempIds.set(id, {
-                kill: () => { unsub(); releaseCb(cbId); }, type: 'trigger', enabled: true,
                 uncompiled: uncompiled === true,
+                onFree: () => releaseCb(cbId),
             });
             return id;
         });
@@ -2087,42 +2075,32 @@ export class LuaRuntime implements IScriptingRuntime {
             noScript?: unknown,
         ) => {
             // Its body did not compile: made, numbered and reachable like any
-            // other, but it never fires and isActive() says 0 (tempItemEnabled).
-            const broken = uncompiled === true;
-            const id = this.api.allocateItemId();
+            // other, but it never fires and isActive() says 0 — the engine
+            // holds that, with the trigger's switch and its kill.
+            const triggers = this.api.triggers;
             const max = (typeof expirationCount === 'number' && expirationCount > 0) ? expirationCount : -1;
             let fires = 0;
-            let killed = false;
-            let unsub: () => void = () => {};
-            const kill = () => {
-                if (killed) return;
-                killed = true;
-                unsub();
-                releaseCb(cbId);
-                this.tempIds.delete(id);
+            const opts = {
+                id: this.api.allocateItemId(),
+                // Mudlet names a trigger made by tempTrigger() and friends
+                // after its id, unless the call carried a name of its own.
+                name,
+                uncompiled: uncompiled === true,
+                onFree: () => releaseCb(cbId),
             };
-            // Mudlet names a trigger made by tempTrigger() and friends after its
-            // id, unless the call carried a name of its own — which is what the
-            // runaway report has to print.
-            //
-            // An empty pattern is not registered with the engine at all: Mudlet
+            // An empty pattern makes a trigger that never fires: Mudlet
             // compacts blank patterns out as it compiles a trigger (only a
             // prompt pattern may be blank — TTrigger::setRegexCodeList), so
             // `tempTrigger("")` and friends make a trigger, return its id, and
             // never fire. Here '' would match every line. The id stays live
             // for killTrigger/enableTrigger exactly as for any other.
-            if (pattern === '' && kind !== 'prompt') {
-                this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name, uncompiled: broken });
-                return id;
-            }
-            unsub = this.api.triggers.addTemp(pattern, (matches, spans, namedGroups) => {
-                const entry = this.tempIds.get(id);
-                if (killed || entry?.enabled === false || entry?.uncompiled) return;
+            if (pattern === '' && kind !== 'prompt') return triggers.createTemp('', () => {}, 'none', opts);
+            const id: number = triggers.createTemp(pattern, (matches, spans, namedGroups) => {
                 if (noScript === true) {
                     // An empty script is never called, so the `matches` the
                     // last script left stand (TTrigger::execute)
                     fires++;
-                    if (max > 0 && fires >= max) kill();
+                    if (max > 0 && fires >= max) triggers.killTemp(id);
                     return;
                 }
                 const prevSpans = this.currentCaptureSpans;
@@ -2150,11 +2128,11 @@ export class LuaRuntime implements IScriptingRuntime {
                 // A body that returns true is asking for one more fire, so the
                 // trigger only goes when it stops asking: Mudlet increments
                 // mExpiryCount on a truthy return and decrements it after the
-                // match, leaving the count where it was.
+                // match, leaving the count where it was. Expiry is a kill:
+                // deactivate() + markCleanup(), freed with the line's corpses.
                 if (!renewed) fires++;
-                if (max > 0 && fires >= max) kill();
-            }, kind, { name: name ?? String(id), onStopped: kill });
-            this.tempIds.set(id, { kill, type: 'trigger', enabled: true, name, uncompiled: broken });
+                if (max > 0 && fires >= max) triggers.killTemp(id);
+            }, kind, opts);
             return id;
         };
         this.lua.global.set('__mudlet_tempTrigger', (pattern: string, cbId: number, expirationCount?: number, uncompiled?: unknown, noScript?: unknown) =>
@@ -2176,44 +2154,31 @@ export class LuaRuntime implements IScriptingRuntime {
         // then self-expires. The TriggerEngine handles the line countdown; here
         // we mirror it with a `fires` counter so the callback is released after
         // the final fire (or earlier via killTrigger).
-        this.lua.global.set('__mudlet_tempLineTrigger', (from: unknown, howMany: unknown, cbId: number, uncompiled?: unknown) => {
-            const id = this.api.allocateItemId();
-            const total = Math.max(1, Math.trunc(Number(howMany)) || 1);
-            let fires = 0;
-            let killed = false;
-            let unsub: () => void = () => {};
-            const kill = () => {
-                if (killed) return;
-                killed = true;
-                unsub();
-                releaseCb(cbId);
-                this.tempIds.delete(id);
-            };
-            unsub = this.api.triggers.addTempLine(Number(from), Number(howMany), () => {
-                const entry = this.tempIds.get(id);
-                if (killed || entry?.enabled === false || entry?.uncompiled) return;
+        this.lua.global.set('__mudlet_tempLineTrigger', (from: unknown, howMany: unknown, cbId: number, uncompiled?: unknown) =>
+            // The engine counts the lines and retires the trigger after the
+            // last of them, as TTrigger::match does with mLineDelta.
+            this.api.triggers.createTempLine(Number(from), Number(howMany), () => {
                 // A line trigger has no pattern and so no captures, and Mudlet
                 // changes "matches" only for a fire with captures
                 // (TLuaInterpreter::setMatches) — the script is handed the
                 // table the previous fire left in place, not one of its own.
                 dispatchCb(cbId, 'tempLineTrigger');
-                fires++;
-                if (fires >= total) kill();
-            });
-            this.tempIds.set(id, { kill, type: 'trigger', enabled: true, uncompiled: uncompiled === true });
-            return id;
-        });
+            }, {
+                id: this.api.allocateItemId(),
+                uncompiled: uncompiled === true,
+                onFree: () => releaseCb(cbId),
+            }));
         this.lua.global.set('killTrigger', (idOrName: number | string) => {
-            // A temp item named by the script (tempComplexRegexTrigger) is
-            // reachable by that name, and is what Mudlet kills first — only a
-            // permanent item answers a name no temporary one carries.
-            const tempId = this.tempItemId(idOrName, 'trigger');
-            if (tempId !== null && this.tempIds.has(tempId)) return this.killTempItem(tempId, 'trigger');
-            if (typeof idOrName === 'string') return this.api.killByName('trigger', idOrName);
-            // A tempComplexRegexTrigger lives in the tree, not the temp
-            // registry, so its id is a node id — try that before giving up.
-            if (this.api.removeTemporaryTrigger(idOrName)) return true;
-            return this.killTempItem(idOrName, 'trigger');
+            const triggers = this.api.triggers;
+            // By id: the temp trigger handed that id, or failing that one an
+            // XML package brought in as isTempTrigger="yes" (a store node).
+            if (typeof idOrName === 'number') {
+                if (triggers.hasTemp(idOrName)) return triggers.killTemp(idOrName);
+                return this.api.removeTemporaryTrigger(idOrName);
+            }
+            // By name (see ScriptingEngine.killByName). A temp trigger's name
+            // is its id unless tempComplexRegexTrigger gave it one.
+            return this.api.killByName('trigger', idOrName);
         });
 
         // ── Keys ──────────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
 import type {ButtonNode, ScriptNode, TimerNode} from '../storage/schema';
-import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled} from '../storage/schema';
+import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled, isTempParentRef, tempParentRef, tempRefId, tempRootOf} from '../storage/schema';
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
 import {isPackageRemovable} from '../branding';
 import {saveProfileData} from '../storage/profileVfsData';
@@ -37,6 +37,21 @@ type BaseTreeNode = {
     packageName?: string;
     patterns?: unknown[];
 };
+
+/** The temporary half of one kind's tree, as ScriptingEngine's lookups read
+ *  it (see ScriptingEngine.tempTree). Ids are the ones scripts were handed. */
+interface TempTree {
+    /** In the tree and not killed (pendingDeletion false). */
+    hasLive(id: number): boolean;
+    /** Live, switched on and able to run — isActive(). */
+    isActive(id: number): boolean;
+    /** A live item's name, or null. */
+    name(id: number): string | null;
+    /** Live ids, ascending, whose name passes `test`. */
+    liveIds(test: (name: string) => boolean): number[];
+    /** The newest item carrying `name`; a killed one too when asked. */
+    newestByName(name: string, includeDead: boolean): number | null;
+}
 
 /**
  * The item a `perm*(name, parent, …)` call should hang its new item under, or
@@ -588,11 +603,21 @@ export class ScriptingEngine implements EngineHost {
         // the way Mudlet heads it.
         session.windows.profileName = connectionName;
         // One id sequence for the whole profile: a temporary item and a
-        // permanent one must never be handed the same number. Only the engines
-        // that hand an id back to Lua draw from it — the alias and trigger
-        // engines key their temp maps privately (see PatternEngine).
+        // permanent one must never be handed the same number.
         timerEngine.setIdSequence(this.itemIds);
         keyEngine.setIdSequence(this.itemIds);
+        triggerEngine.setIdSequence(this.itemIds);
+        // A freed temporary trigger takes the permanent ones under it along.
+        // Coalesced: a cleanup frees many at once.
+        let orphanDrainQueued = false;
+        triggerEngine.setOrphanListener(() => {
+            if (orphanDrainQueued) return;
+            orphanDrainQueued = true;
+            queueMicrotask(() => {
+                orphanDrainQueued = false;
+                if (!this.disposed) this.removeOrphanedTempChildren();
+            });
+        });
         this.connectionId = connectionId;
         // Bind the host here rather than after the Lua runtime resolves: the
         // runtime is created asynchronously and executes the whole bundled
@@ -3167,7 +3192,14 @@ export class ScriptingEngine implements EngineHost {
         const store = useAppStore.getState();
         const triggers = store.connectionTriggers[this.connectionId] ?? [];
         const targets = triggers.filter(t => t.name === name);
-        if (targets.length === 0) return false;
+        // The temporary ones answer to the same name table. One killed and
+        // waiting to be freed is skipped (TriggerUnit::enableTrigger skips
+        // mCleanupSet) — enabling it would resurrect it.
+        let temps = 0;
+        for (const id of this.triggerEngine.liveTempIds(n => n === name)) {
+            if (this.triggerEngine.setTempEnabled(id, enabled)) temps++;
+        }
+        if (targets.length === 0) return temps > 0;
         const patches = targets
             .filter(t => t.enabled !== enabled)
             .map(t => ({ id: t.id, patch: { enabled } }));
@@ -3199,15 +3231,13 @@ export class ScriptingEngine implements EngineHost {
         const store = useAppStore.getState();
         const triggers = store.connectionTriggers[this.connectionId] ?? [];
         const targets = triggers.filter(t => t.name === name);
-        if (targets.length > 0) {
-            this.triggerEngine.setStayOpen(targets.map(t => t.id), lines);
-            return true;
-        }
-        // A temporary trigger answers to the string form of its id — Mudlet
-        // names every temp after its own id and looks both kinds up in the same
-        // table, so `setTriggerStayOpen(tostring(tempTrigger(...)), 2)` is an
-        // ordinary call rather than a miss.
-        return this.triggerEngine.setTempStayOpen(name, lines);
+        if (targets.length > 0) this.triggerEngine.setStayOpen(targets.map(t => t.id), lines);
+        // A temporary trigger answers to its name too — the string form of its
+        // id, as Mudlet names every temp after its own id and looks both kinds
+        // up in the same table, so `setTriggerStayOpen(tostring(tempTrigger(...)), 2)`
+        // is an ordinary call rather than a miss.
+        const temps = this.triggerEngine.setTempStayOpen(name, lines);
+        return targets.length > 0 || temps;
     }
 
     /**
@@ -3416,10 +3446,55 @@ export class ScriptingEngine implements EngineHost {
         );
     }
 
+    /**
+     * The temporary half of a kind's one tree, as the lookups below read it, or
+     * null for a kind whose temporaries are not yet held this way.
+     *
+     * Desktop keeps temporary and permanent items of a kind in one tree and
+     * one name table, so exists/isActive/findItems/ancestors see both; here
+     * the permanent half is the store and the temporary half is the engine.
+     */
+    private tempTree(type: string): TempTree | null {
+        switch (type.toLowerCase()) {
+            case 'trigger': {
+                const e = this.triggerEngine;
+                return {
+                    hasLive: id => e.hasLiveTemp(id),
+                    isActive: id => e.tempIsActive(id),
+                    name: id => e.tempName(id),
+                    liveIds: test => e.liveTempIds(test),
+                    newestByName: (name, includeDead) => e.newestTempByName(name, includeDead),
+                };
+            }
+            default: return null;
+        }
+    }
+
+    /**
+     * The temporary item a store node hangs off, when that item is killed or
+     * already freed — desktop's `*Unit::pendingDeletion`, which walks the item
+     * and every ancestor, so a killed parent takes its whole subtree out of
+     * exists/isActive/findItems until the cleanup frees it for good.
+     */
+    private isPendingDeletion<T extends { id: string; parentId: string | null }>(
+        type: string, node: T, byId: ReadonlyMap<string, T>,
+    ): boolean {
+        const root = tempRootOf(node, byId);
+        if (root === null) return false;
+        return !(this.tempTree(type)?.hasLive(root) ?? false);
+    }
+
+    /** `list` without the nodes {@link isPendingDeletion} rules out. */
+    private liveNodes<T extends { id: string; parentId: string | null }>(type: string, list: T[]): T[] {
+        if (!list.some(n => isTempParentRef(n.parentId))) return list;
+        const byId = new Map(list.map(n => [n.id, n]));
+        return list.filter(n => !this.isPendingDeletion(type, n, byId));
+    }
+
     existsByName(nameOrId: string | number, type: string): number {
         const store = useAppStore.getState();
         const id = this.connectionId;
-        const list = ((): { id: string; name: string }[] => {
+        const raw = ((): { id: string; name: string; parentId: string | null }[] => {
             switch (type) {
                 case 'alias':   return store.connectionAliases[id]      ?? [];
                 case 'trigger': return store.connectionTriggers[id]     ?? [];
@@ -3431,38 +3506,43 @@ export class ScriptingEngine implements EngineHost {
                 default:        return [];
             }
         })();
+        // A killed temporary item and everything under it no longer count,
+        // though they are still in the tree until the cleanup frees them.
+        const list = this.liveNodes(type, raw);
+        const temps = this.tempTree(type);
         if (typeof nameOrId === 'number' && Number.isFinite(nameOrId)) {
             const wanted = nameOrId;
             for (const item of list) {
                 const n = this.uuidToNumericId.get(item.id);
                 if (n !== undefined && n === wanted) return 1;
             }
-            // Temp (script-created) items aren't in the store. Aliases and
-            // triggers are tracked by the runtime; temp KEYS live in the key
-            // engine, which owns their ids. Mudlet's exists() counts both.
+            if (temps) return temps.hasLive(wanted) ? 1 : 0;
+            // Temp (script-created) items aren't in the store. Aliases are
+            // tracked by the runtime; temp KEYS live in the key engine, which
+            // owns their ids. Mudlet's exists() counts both.
             if (this.runtimes.lua?.tempItemExists(wanted, type)) return 1;
             if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(wanted)) return 1;
             if (type === 'timer' && this.api.timers.hasTemp(wanted)) return 1;
             return 0;
         }
         const name = String(nameOrId);
-        // A temporary item's NAME is the id it was handed, so a numeric string
-        // has to resolve the same one the number does — and it counts alongside
-        // any permanent item that happens to share that name, which is exactly
-        // the case Alias_spec/KeyBinds_spec pin: kill the temporary and the
-        // count drops back to the permanent one on its own.
-        let temps = 0;
+        const perm = list.filter(i => i.name === name).length;
+        // One name table for both halves: a temporary item answers to its name
+        // — the id it was handed, unless tempComplexRegexTrigger named it — and
+        // counts alongside any permanent item sharing it, which is exactly the
+        // case Alias_spec/KeyBinds_spec pin: kill the temporary and the count
+        // drops back to the permanent one on its own.
+        if (temps) return perm + temps.liveIds(n => n === name).length;
+        let tempCount = 0;
         if (/^\d+$/.test(name)) {
             const asId = Number(name);
-            if (this.runtimes.lua?.tempItemExists(asId, type)) temps++;
-            else if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(asId)) temps++;
-            else if (type === 'timer' && this.api.timers.hasTemp(asId)) temps++;
-        } else if (type === 'trigger' || type === 'alias') {
-            // tempComplexRegexTrigger takes a name of its own, so a temporary
-            // item can share one with a permanent item and both must be counted.
-            if (this.runtimes.lua?.tempItemIdByName(name, type) != null) temps++;
+            if (this.runtimes.lua?.tempItemExists(asId, type)) tempCount++;
+            else if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(asId)) tempCount++;
+            else if (type === 'timer' && this.api.timers.hasTemp(asId)) tempCount++;
+        } else if (type === 'alias') {
+            if (this.runtimes.lua?.tempItemIdByName(name, type) != null) tempCount++;
         }
-        return temps + list.filter(i => i.name === name).length;
+        return tempCount + perm;
     }
 
     /**
@@ -3475,7 +3555,7 @@ export class ScriptingEngine implements EngineHost {
     isActiveByName(nameOrId: string | number, type: string, checkAncestors: boolean): number {
         const store = useAppStore.getState();
         const id = this.connectionId;
-        const list = ((): { id: string; name: string; enabled: boolean; parentId: string | null }[] => {
+        const raw = ((): { id: string; name: string; enabled: boolean; parentId: string | null }[] => {
             switch (type) {
                 case 'alias':   return store.connectionAliases[id]      ?? [];
                 case 'trigger': return store.connectionTriggers[id]     ?? [];
@@ -3487,6 +3567,9 @@ export class ScriptingEngine implements EngineHost {
                 default:        return [];
             }
         })();
+        const temps = this.tempTree(type);
+        // Pending deletion is not active either (see isPendingDeletion).
+        const list = temps ? this.liveNodes(type, raw) : raw;
         // A timer answers from the engine's runtime active flag, not its switch:
         // Mudlet reports TTimer::isActive(), which an enabled timer imported
         // under a disabled folder does not have, and an explicit enableTimer()
@@ -3501,7 +3584,15 @@ export class ScriptingEngine implements EngineHost {
             : type === 'key' || type === 'keybind' ? 'key'
             : null;
         let reachable: Set<string> | null = null;
+        let byId: Map<string, (typeof list)[number]> | null = null;
         const isOn = (item: (typeof list)[number]): boolean => {
+            // With checkAncestors, a temporary item at the top of the
+            // ancestry has to be active too (ancestorsActive()).
+            if (checkAncestors && temps) {
+                byId ??= new Map(list.map(n => [n.id, n]));
+                const root = tempRootOf(item, byId);
+                if (root !== null && !temps.isActive(root)) return false;
+            }
             if (type === 'timer') {
                 return this.timerEngine.permReportsActive(item as TimerNode, list as TimerNode[], checkAncestors);
             }
@@ -3522,11 +3613,12 @@ export class ScriptingEngine implements EngineHost {
                 const n = this.uuidToNumericId.get(item.id);
                 if (n !== undefined && n === nameOrId) return isOn(item) ? 1 : 0;
             }
+            if (temps) return temps.isActive(nameOrId) ? 1 : 0;
             // Temp keys are held by the key engine, not the store (see existsByName).
             if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(nameOrId)) {
                 return this.api.keys.isTempEnabled(nameOrId) ? 1 : 0;
             }
-            // Temp aliases/triggers are held by the runtime, likewise.
+            // Temp aliases are held by the runtime, likewise.
             if (this.runtimes.lua?.tempItemExists(nameOrId, type)) {
                 return this.runtimes.lua.tempItemEnabled(nameOrId) ? 1 : 0;
             }
@@ -3538,12 +3630,13 @@ export class ScriptingEngine implements EngineHost {
             return 0;
         }
         const name = String(nameOrId);
+        const namedCount = list.filter(i => i.name === name && isOn(i)).length;
+        if (temps) return namedCount + temps.liveIds(n => n === name).filter(t => temps.isActive(t)).length;
         if (type === 'timer' && /^\d+$/.test(name) && this.api.timers.tempIsActive(Number(name))) return 1;
-        // Mudlet names a temporary alias or trigger after its id
+        // Mudlet names a temporary alias after its id
         // (startTempAlias: `setName(QString::number(id))`), so the id as a
         // string finds it by name too, alongside anything saved under it.
-        const namedCount = list.filter(i => i.name === name && isOn(i)).length;
-        if (/^\d+$/.test(name) && (type === 'alias' || type === 'trigger')) {
+        if (/^\d+$/.test(name) && type === 'alias') {
             const tempId = Number(name);
             const lua = this.runtimes.lua;
             if (lua?.tempItemExists(tempId, type) && lua.tempItemEnabled(tempId)) return namedCount + 1;
@@ -3614,20 +3707,23 @@ export class ScriptingEngine implements EngineHost {
     ancestorsById(id: number, type: string): Array<{ id: number; name: string; node: string; isActive: boolean }> | null {
         const list = this.nodeListForType(type);
         const byUuid = new Map(list.map(i => [i.id, i]));
+        const temps = this.tempTree(type);
         const start = list.find(i => this.uuidToNumericId.get(i.id) === id);
         if (!start) {
             // A script-created temp item is a real item that simply has no
-            // parent — it is not in the tree and by construction sits at the
-            // root, so its ancestor list is EMPTY rather than missing. Reporting
-            // it as "does not exist" made an ordinary tempTrigger look like a
-            // bad id. Same test isAncestorsActiveById already makes.
-            const isTemp = this.runtimes.lua?.tempItemExists(id, type)
+            // parent — no temp* API takes one — so its ancestor list is EMPTY
+            // rather than missing. Reporting it as "does not exist" made an
+            // ordinary tempTrigger look like a bad id. Same test
+            // isAncestorsActiveById already makes.
+            const isTemp = temps ? temps.hasLive(id)
+                : this.runtimes.lua?.tempItemExists(id, type)
                 || (type === 'timer' && this.api.timers.hasTemp(id))
                 || ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(id));
             return isTemp ? [] : null;
         }
         const out: Array<{ id: number; name: string; node: string; isActive: boolean }> = [];
         let node = start.parentId ? byUuid.get(start.parentId) : undefined;
+        let top: BaseTreeNode = start;
         while (node) {
             out.push({
                 id: this.numericIdFor(node.id),
@@ -3635,7 +3731,15 @@ export class ScriptingEngine implements EngineHost {
                 node: this.nodeTypeLabel(node),
                 isActive: node.enabled,
             });
+            top = node;
             node = node.parentId ? byUuid.get(node.parentId) : undefined;
+        }
+        // A permanent item under a temporary one: the temporary item is the
+        // last ancestor, an ordinary item at the root.
+        const tempId = tempRefId(top.parentId);
+        if (tempId !== null && temps) {
+            const name = temps.name(tempId);
+            if (name !== null) out.push({ id: tempId, name, node: 'item', isActive: temps.isActive(tempId) });
         }
         return out;
     }
@@ -3650,18 +3754,29 @@ export class ScriptingEngine implements EngineHost {
         // An unrecognised type is a caller mistake, not "nothing matched": the
         // Lua wrapper turns null into Mudlet's (nil, "invalid item type ...").
         if (!KNOWN_ITEM_TYPES.has(type.toLowerCase())) return null;
-        const list = this.nodeListForType(type);
+        const temps = this.tempTree(type);
+        const raw = this.nodeListForType(type);
+        // A killed temporary item and its subtree are not found until freed.
+        const list = temps ? this.liveNodes(type, raw) : raw;
         const needle = caseSensitive ? name : name.toLowerCase();
+        const matchesName = (itemName: string): boolean => {
+            const hay = caseSensitive ? itemName : itemName.toLowerCase();
+            return exact ? hay === needle : hay.includes(needle);
+        };
         const out: number[] = [];
         for (const item of list) {
-            const hay = caseSensitive ? item.name : item.name.toLowerCase();
-            const hit = exact ? hay === needle : hay.includes(needle);
-            if (hit) out.push(this.numericIdFor(item.id));
+            if (matchesName(item.name)) out.push(this.numericIdFor(item.id));
+        }
+        if (temps) {
+            // One tree: *Unit::findItems walks the id map, so temporary and
+            // permanent items come back together in ascending id order.
+            out.push(...temps.liveIds(matchesName));
+            return out.sort((a, b) => a - b);
         }
         // Temporary items aren't in the store tree, and Mudlet's item unit holds
-        // them alongside the rest — a tempAlias/tempTrigger/tempTimer is named
-        // for the id it was handed out under, so searching by that string finds
-        // it. Same registries `existsByName` consults.
+        // them alongside the rest — a tempAlias/tempTimer is named for the id it
+        // was handed out under, so searching by that string finds it. Same
+        // registries `existsByName` consults.
         const asId = /^\d+$/.test(name) ? Number(name) : null;
         if (asId !== null && (exact || name.length > 0)) {
             const isTemp = this.runtimes.lua?.tempItemExists(asId, type)
@@ -3681,15 +3796,20 @@ export class ScriptingEngine implements EngineHost {
     isAncestorsActiveById(id: number, type: string): boolean | null {
         const list = this.nodeListForType(type);
         const byUuid = new Map(list.map(i => [i.id, i]));
+        const temps = this.tempTree(type);
         const start = list.find(i => this.uuidToNumericId.get(i.id) === id);
         if (!start) {
             // A script-created temp item is not in the tree and by construction
             // sits at the root, so every ancestor of it is trivially enabled.
-            const isTemp = this.runtimes.lua?.tempItemExists(id, type)
+            const isTemp = temps ? temps.hasLive(id)
+                : this.runtimes.lua?.tempItemExists(id, type)
                 || (type === 'timer' && this.api.timers.hasTemp(id))
                 || ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(id));
             return isTemp ? true : null;
         }
+        // A temporary item at the top of the ancestry counts like any other.
+        const tempRoot = tempRootOf(start, byUuid);
+        if (tempRoot !== null && temps && !temps.isActive(tempRoot)) return false;
         // Timers ask the ancestors' runtime active flags (TTimer::ancestorsActive).
         if (type.toLowerCase() === 'timer') {
             return this.timerEngine.permAncestorsActive(start as TimerNode, list as TimerNode[]);
@@ -3708,10 +3828,11 @@ export class ScriptingEngine implements EngineHost {
      * Mudlet `getProfileStats()`. Counts of total/active items per family plus
      * the trigger pattern tally. Temporary items (tempTimer/tempAlias/... ) are
      * not kept in the persisted node tree but live in the per-family engines, so
-     * their counts come from those engines: `temp` is the live temp count and
-     * is folded into `total`/`active` (a live temp is always active), matching
-     * Mudlet's report. Scripts have no temp form. There's no animated-GIF
-     * tracker, so `gifs` is always zero.
+     * their counts come from those engines: `temp` is the temp count and is
+     * folded into `total`/`active`, matching Mudlet's report. Desktop's
+     * assembleReport walks the live root lists unfiltered, so a killed item —
+     * and whatever hangs under it — still counts until the cleanup frees it.
+     * Scripts have no temp form.
      */
     getProfileStats(): Record<string, unknown> {
         const store = useAppStore.getState();
@@ -3732,15 +3853,14 @@ export class ScriptingEngine implements EngineHost {
         };
 
         const tempTriggers = this.triggerEngine.tempCount;
-        let patternsTotal = tempTriggers;
-        let patternsActive = tempTriggers;
+        let patternsTotal = this.triggerEngine.tempPatternCount;
+        let patternsActive = patternsTotal;
         for (const t of triggers) {
             if (t.isGroup) continue;
             const n = Array.isArray(t.patterns) ? t.patterns.length : 0;
             patternsTotal += n;
             if (t.enabled) patternsActive += n;
         }
-
         return {
             triggers: { ...tally(triggers, tempTriggers), patterns: { total: patternsTotal, active: patternsActive } },
             aliases: tally(aliases, this.aliasEngine.tempCount),
@@ -3860,7 +3980,7 @@ export class ScriptingEngine implements EngineHost {
         const triggers = store.connectionTriggers[this.connectionId] ?? [];
         let parentId: string | null = null;
         if (parent && parent.length > 0) {
-            parentId = permParentId(triggers, parent);
+            parentId = this.resolvePermParent('trigger', triggers, parent);
             if (parentId === null) return -1;
         }
         // A prompt trigger has no text pattern but is never a group; every other
@@ -3908,8 +4028,25 @@ export class ScriptingEngine implements EngineHost {
         this.flushPendingApplies();
         const created = (useAppStore.getState().connectionTriggers[this.connectionId] ?? [])
             .find(t => t.id === uuid);
-        if (created) this.triggerEngine.notePermCreated(created, this.rootTriggerOf(created));
+        if (created) this.triggerEngine.notePermCreated(created);
         return this.numericIdFor(uuid);
+    }
+
+    /**
+     * The parent a `perm*(name, parent, …)` call names: the NEWEST item of the
+     * kind carrying that name, temporary or permanent — desktop's findTrigger /
+     * findFirstAlias / findFirstTimer / findFirstKey look both up in the one
+     * name table, newest first, with no folder and no pending-deletion check.
+     * A temporary parent is answered as its temp parent ref (see
+     * TEMP_PARENT_PREFIX in schema.ts); null when nothing carries the name.
+     */
+    private resolvePermParent(type: string, items: readonly BaseTreeNode[], parent: string): string | null {
+        const permId = permParentId(items, parent);
+        const tempId = this.tempTree(type)?.newestByName(parent, true) ?? null;
+        if (tempId === null) return permId;
+        if (permId === null) return tempParentRef(tempId);
+        // Newest by id: the one sequence numbers both halves in creation order.
+        return tempId > this.numericIdFor(permId) ? tempParentRef(tempId) : permId;
     }
 
     /**
@@ -3927,20 +4064,28 @@ export class ScriptingEngine implements EngineHost {
      * chain is assembled one condition per call.
      */
     createTempComplexTrigger(spec: TempComplexTriggerSpec): number {
-        const store = useAppStore.getState();
+        const engine = this.triggerEngine;
         let patterns = spec.patterns;
         if (spec.name) {
-            for (const existing of store.connectionTriggers[this.connectionId] ?? []) {
-                if (!existing.temporary || existing.name !== spec.name) continue;
-                patterns = [...existing.patterns, ...patterns];
-                this.removeTriggerSubtree(existing.id);
+            // The newest live temporary trigger of that name is extended and
+            // replaced: its patterns lead the new list, and it is killed (freed
+            // at the next cleanup, its subtree with it).
+            const existing = engine.newestTempByName(spec.name, false);
+            if (existing !== null) {
+                patterns = [...(engine.tempPatterns(existing) ?? []), ...patterns];
+                engine.killTemp(existing);
             }
         }
-        const uuid = store.addTrigger(this.connectionId, {
+        // Compiled against the store as it is now, not as the coalesced reload
+        // will leave it.
+        this.flushPendingApplies();
+        // Lives in the trigger engine's tree, not the store: like every other
+        // temporary item it is never saved, and needs no store write. Its code
+        // is the dispatch stub, which always compiles — whether the script's
+        // own body did is the `uncompiled` flag.
+        return engine.createTempComplex({
             name: spec.name,
-            enabled: true,
             isGroup: false,
-            parentId: null,
             patterns,
             code: spec.code,
             language: 'lua',
@@ -3950,26 +4095,13 @@ export class ScriptingEngine implements EngineHost {
             delta: spec.delta,
             isFilter: spec.isFilter,
             highlight: spec.highlight,
-            temporary: true,
-        });
-        // Its code is the dispatch stub, which always compiles — the script's
-        // own body is what did not, so the trigger is marked for cannotCompile.
-        if (spec.uncompiled) this.uncompiledTempTriggers.add(uuid);
-        // Ordered by its creation, as createPermTrigger's (mudlet-web#371).
-        this.triggerEngine.reserveOrder([{ id: uuid }]);
-        // Same reason as createPermTrigger: compiled now, so a trigger armed
-        // while a line is being processed can still match that line.
-        this.flushPendingApplies();
-        const created = (useAppStore.getState().connectionTriggers[this.connectionId] ?? [])
-            .find(t => t.id === uuid);
-        if (created) this.triggerEngine.notePermCreated(created, this.rootTriggerOf(created));
-        return this.numericIdFor(uuid);
+        }, { id: this.allocateItemId(), uncompiled: spec.uncompiled });
     }
 
     /**
-     * Remove a temporary trigger by the numeric id `tempComplexRegexTrigger`
-     * handed the script. False when that id names no temporary trigger — a
-     * permanent one is refused, as Mudlet's killTrigger refuses it.
+     * Remove a temporary trigger node — an isTempTrigger="yes" item a package
+     * XML brought in — by its numeric id. False when that id names no such
+     * node — a permanent one is refused, as Mudlet's killTrigger refuses it.
      */
     removeTemporaryTriggerById(id: number): boolean {
         const node = (useAppStore.getState().connectionTriggers[this.connectionId] ?? [])
@@ -3992,7 +4124,6 @@ export class ScriptingEngine implements EngineHost {
             if (node.parentId && doomed.has(node.parentId)) doomed.add(node.id);
         }
         store.removeTriggers(this.connectionId, [...doomed]);
-        for (const id of doomed) this.uncompiledTempTriggers.delete(id);
         // Out of the engine now, not at the coalesced reload: that waits for a
         // microtask, and a packet's lines are all processed before one runs,
         // so a trigger killed (or expired) on its first line went on firing on
@@ -4001,19 +4132,49 @@ export class ScriptingEngine implements EngineHost {
         this.flushPendingApplies();
     }
 
-    /** The root ancestor of a trigger node — what a lineage is recorded against. */
-    private rootTriggerOf(node: TriggerNode): TriggerNode {
-        const all = useAppStore.getState().connectionTriggers[this.connectionId] ?? [];
-        const byId = new Map(all.map(t => [t.id, t]));
-        let cur = node;
-        const guard = new Set<string>([cur.id]);
-        while (cur.parentId) {
-            const parent = byId.get(cur.parentId);
-            if (!parent || guard.has(parent.id)) break;
-            guard.add(parent.id);
-            cur = parent;
+    /**
+     * Remove from the store the permanent items whose temporary parent has been
+     * freed. Desktop deletes an item's children with it (~TTrigger →
+     * deleteChildren), temporary or not, so the cleanup that frees a killed
+     * temporary item frees the permanent subtree a script hung under it.
+     * The engines report which parents went (takeOrphanedParents); until this
+     * runs nothing reaches those nodes, and the lookups count them as gone.
+     */
+    private removeOrphanedTempChildren(): void {
+        const refs = this.triggerEngine.takeOrphanedParents();
+        if (refs.length > 0) this.removeSubtreesUnder('trigger', new Set(refs));
+    }
+
+    /** Remove every permanent item hanging off a temporary one, of every kind. */
+    private dropTempParentedNodes(): void {
+        for (const type of ['trigger', 'alias', 'timer', 'key'] as const) this.removeSubtreesUnder(type, null);
+    }
+
+    /** Remove every store node of `type` hanging (at any depth) off one of the
+     *  temp parent refs in `refs`, or off any temp parent at all when `refs`
+     *  is null. */
+    private removeSubtreesUnder(type: 'trigger' | 'alias' | 'timer' | 'key', refs: ReadonlySet<string> | null): void {
+        const store = useAppStore.getState();
+        const cid = this.connectionId;
+        const all: readonly BaseTreeNode[] =
+            type === 'trigger' ? store.connectionTriggers[cid] ?? []
+            : type === 'alias' ? store.connectionAliases[cid] ?? []
+            : type === 'timer' ? store.connectionTimers[cid] ?? []
+            : store.connectionKeybindings[cid] ?? [];
+        const doomed = new Set<string>();
+        // Parents precede their children in store order (a child is always
+        // created after its parent), so one pass reaches every descendant.
+        for (const node of all) {
+            const p = node.parentId;
+            if (!p) continue;
+            if (isTempParentRef(p) ? (refs === null || refs.has(p)) : doomed.has(p)) doomed.add(node.id);
         }
-        return cur;
+        if (doomed.size === 0) return;
+        const ids = [...doomed];
+        if (type === 'trigger') store.removeTriggers(cid, ids);
+        else if (type === 'alias') store.removeAliases(cid, ids);
+        else if (type === 'timer') store.removeTimers(cid, ids);
+        else store.removeKeybindings(cid, ids);
     }
 
     /**
@@ -4394,10 +4555,13 @@ export class ScriptingEngine implements EngineHost {
         const id = this.connectionId;
         switch (kind) {
             case 'trigger': {
-                // The one temporary item that lives in the tree rather than the
-                // temp registry: tempComplexRegexTrigger needs a real node (see
-                // createTempComplexTrigger), so killing it by name is a tree
-                // removal. Everything else falls through to the refusal below.
+                // TriggerUnit::killTrigger walks the one name table newest
+                // first, skipping permanent items and corpses: the engine's
+                // temporaries — named after their id, or by
+                // tempComplexRegexTrigger — come first.
+                if (this.triggerEngine.killTempByName(name)) return true;
+                // Then an isTempTrigger="yes" node a package XML brought in,
+                // the one temporary trigger that lives in the store.
                 const doomed = (store.connectionTriggers[id] ?? [])
                     .filter(t => t.temporary && t.name === name);
                 if (doomed.length === 0) return false;
@@ -4827,6 +4991,9 @@ export class ScriptingEngine implements EngineHost {
             this.triggerEngine.destroy();
             this.aliasEngine.destroy();
             this.keyEngine.destroy();
+            // The temporary items went with the engines, and so do the
+            // permanent ones a script hung under them.
+            this.dropTempParentedNodes();
             // 2. Clear every UI surface — "all UI elements will be cleared".
             this.session.windows.clearAll();
             this.session.labels.clearAll();
@@ -4998,6 +5165,9 @@ export class ScriptingEngine implements EngineHost {
         // teardown (the emit would no-op anyway, but don't leave a stray timer).
         this.mapOpen.dispose();
         this.storeUnsub?.();
+        // The session's temporary items end with it, and so do the permanent
+        // items hung under them — which were never saved.
+        this.dropTempParentedNodes();
         this.storeUnsub = null;
         for (const unsub of this.unsubs) unsub();
         this.unsubs.length = 0;
@@ -5036,6 +5206,7 @@ export class ScriptingEngine implements EngineHost {
         this.triggerEngine.setRunawayReporter(null);
         this.api.setCaptureShiftHook(null);
         this.triggerEngine.setPermDisabler(null);
+        this.triggerEngine.setOrphanListener(null);
         this.triggerEngine.setCompileErrorReporter(null);
         // Unbind the host. This does NOT guard against late *Lua* calls —
         // lua_close ran a few lines up. It guards against DOM-side callers
@@ -5131,10 +5302,6 @@ export class ScriptingEngine implements EngineHost {
     /** Compile errors already put in the error log, by kind, chunk and code —
      *  not by id, so a module re-read under new ids does not report again. */
     private readonly reportedCompileErrors = new Set<string>();
-    /** tempComplexRegexTrigger nodes whose code string did not compile. The
-     *  node's own code is a stub that dispatches to the script's callback, so
-     *  only the Lua side knows; Mudlet leaves such a trigger inactive. */
-    private readonly uncompiledTempTriggers = new Set<string>();
 
     /**
      * The error compiling a piece of an item's code gives (see itemSyntaxError),
@@ -5172,7 +5339,6 @@ export class ScriptingEngine implements EngineHost {
      * the editor, where it is found when the item "does nothing".
      */
     private cannotCompile(kind: CodeItemKind, node: CompilableItem): boolean {
-        if (kind === 'trigger' && this.uncompiledTempTriggers.has(node.id)) return true;
         let broken = false;
         if (node.code && node.language === 'lua') {
             const chunkName = itemChunkName(kind, node.name);
@@ -5680,6 +5846,8 @@ export class ScriptingEngine implements EngineHost {
      */
     private reapKilledTempItems(): void {
         this.runtimes.lua?.reapKilledTempItems();
+        this.triggerEngine.reapKilled();
+        this.removeOrphanedTempChildren();
         this.api.timers.reapKilled();
         this.api.keys.reapKilled();
     }

@@ -1107,19 +1107,92 @@ export function isColorizing(t: Pick<TriggerNode, 'colorize' | 'highlight'>): bo
  * skips a temporary item the same way, subtree and all.
  */
 export function persistableNodes<T extends { id: string; parentId: string | null; temporary?: boolean }>(items: T[]): T[] {
-    if (!items.some(t => t.temporary)) return items;
+    if (!items.some(t => t.temporary || isTempParentRef(t.parentId))) return items;
     const byId = new Map(items.map(t => [t.id, t]));
     const isTemporary = (node: T): boolean => {
         let cur: T | undefined = node;
         const guard = new Set<string>();
         while (cur && !guard.has(cur.id)) {
-            if (cur.temporary) return true;
+            if (cur.temporary || isTempParentRef(cur.parentId)) return true;
             guard.add(cur.id);
             cur = cur.parentId ? byId.get(cur.parentId) : undefined;
         }
         return false;
     };
     return items.filter(t => !isTemporary(t));
+}
+
+// ── Permanent items under temporary parents ─────────────────────────────────
+//
+// Desktop Mudlet keeps temporary and permanent items of a kind in ONE tree, and
+// a perm*() call resolves its parent by name among both — so
+// `permRegexTrigger("c", tostring(tempTriggerId), …)` hangs a permanent trigger
+// under a temporary one. The permanent child is an ordinary store node here
+// (the editor's tree, enable/disable by name, the engines' loadPerm all work on
+// it unchanged), but its parent is not: temporary items live only in their
+// engine, keyed by the numeric id the script was handed, and never touch the
+// store.
+//
+// So such a child's `parentId` names its parent in a form no store node can
+// carry — `temp:<id>` (store ids are UUIDs) — rather than inventing a store
+// node for the temporary parent. That keeps temporary items out of the store
+// entirely (no store write, save or re-render per temp item), lets every
+// engine tell a temp parent from a missing one by the prefix alone, and makes
+// "this node hangs off a temporary item" a property of the node itself:
+//
+//  - persistableNodes drops it with its whole subtree, as desktop's XMLexport
+//    skips a temporary root and so everything under it;
+//  - the script editor and the package exporter hide it (see visibleTreeNodes);
+//  - when the temporary parent is freed (the deferred cleanup after a kill) the
+//    engine reports it and ScriptingEngine removes the subtree from the store,
+//    as desktop's ~TTrigger deletes its children with it.
+
+/** Prefix of a `parentId` that names a temporary item rather than a node. */
+export const TEMP_PARENT_PREFIX = 'temp:';
+
+/** The `parentId` a permanent child of temporary item `id` carries. */
+export function tempParentRef(id: number): string {
+    return TEMP_PARENT_PREFIX + id;
+}
+
+/** Whether `parentId` names a temporary item (see TEMP_PARENT_PREFIX). */
+export function isTempParentRef(parentId: string | null | undefined): parentId is string {
+    return typeof parentId === 'string' && parentId.startsWith(TEMP_PARENT_PREFIX);
+}
+
+/** The temporary item's id a temp parent ref names, or null for anything else. */
+export function tempRefId(parentId: string | null | undefined): number | null {
+    if (!isTempParentRef(parentId)) return null;
+    const n = Number(parentId.slice(TEMP_PARENT_PREFIX.length));
+    return Number.isInteger(n) ? n : null;
+}
+
+/**
+ * The temporary item a node ultimately hangs off, or null when its whole
+ * ancestry is in the store. Temporary items are always roots (no temp* API
+ * takes a parent), so this is the top store ancestor's parent ref.
+ */
+export function tempRootOf<T extends { id: string; parentId: string | null }>(
+    node: T,
+    byId: ReadonlyMap<string, T>,
+): number | null {
+    let cur: T | undefined = node;
+    const guard = new Set<string>();
+    while (cur && !guard.has(cur.id)) {
+        if (isTempParentRef(cur.parentId)) return tempRefId(cur.parentId);
+        guard.add(cur.id);
+        cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    return null;
+}
+
+/** The nodes the script editor shows: everything but the permanent items that
+ *  hang off a temporary one, which desktop's editor drops along with their
+ *  parent's subtree whenever it saves (see TEMP_PARENT_PREFIX). */
+export function visibleTreeNodes<T extends { id: string; parentId: string | null }>(items: T[]): T[] {
+    if (!items.some(t => isTempParentRef(t.parentId))) return items;
+    const byId = new Map(items.map(t => [t.id, t]));
+    return items.filter(t => tempRootOf(t, byId) === null);
 }
 
 /** Returns true if the item and all its ancestors are enabled. */

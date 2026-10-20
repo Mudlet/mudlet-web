@@ -8,6 +8,7 @@ import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type {
     AliasNode, ButtonNode, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode,
 } from '../../../storage/schema';
+import { persistableNodes } from '../../../storage/schema';
 import type { SerializeInput } from '../../../import/mudletXmlExport';
 import {
     buildPackageZip,
@@ -111,11 +112,17 @@ interface Props {
 }
 
 export function PackageExportModal({ connectionId, vfs, preselect, onClose, onExported }: Props) {
-    const triggers: TriggerNode[] = useAppStore(s => s.connectionTriggers[connectionId] ?? EMPTY);
-    const aliases:  AliasNode[]   = useAppStore(s => s.connectionAliases[connectionId] ?? EMPTY);
+    // Desktop's package exporter hides temporary items at every level, and
+    // with them whatever hangs under one (persistableNodes).
+    const triggersAll: TriggerNode[] = useAppStore(s => s.connectionTriggers[connectionId] ?? EMPTY);
+    const aliasesAll:  AliasNode[]   = useAppStore(s => s.connectionAliases[connectionId] ?? EMPTY);
     const scripts:  ScriptNode[]  = useAppStore(s => s.connectionScripts[connectionId] ?? EMPTY);
-    const timers:   TimerNode[]   = useAppStore(s => s.connectionTimers[connectionId] ?? EMPTY);
-    const keys:     KeyNode[]     = useAppStore(s => s.connectionKeybindings[connectionId] ?? EMPTY);
+    const timersAll:   TimerNode[]   = useAppStore(s => s.connectionTimers[connectionId] ?? EMPTY);
+    const keysAll:     KeyNode[]     = useAppStore(s => s.connectionKeybindings[connectionId] ?? EMPTY);
+    const triggers = useMemo(() => persistableNodes(triggersAll), [triggersAll]);
+    const aliases  = useMemo(() => persistableNodes(aliasesAll), [aliasesAll]);
+    const timers   = useMemo(() => persistableNodes(timersAll), [timersAll]);
+    const keys     = useMemo(() => persistableNodes(keysAll), [keysAll]);
     const buttons:  ButtonNode[]  = useAppStore(s => s.connectionButtons[connectionId] ?? EMPTY);
     const packages: PackageManifest[] = useAppStore(s => s.connectionPackages[connectionId] ?? EMPTY);
 

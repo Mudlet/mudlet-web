@@ -179,7 +179,9 @@ describe('mudlet-web#371 — temp items parity with desktop', () => {
         it('is gone once killed', async () => {
             await boot();
             const bad = complex('badk', '^HL', true);
-            expect(api.removeTemporaryTrigger(bad)).toBe(true);
+            // A temporary trigger now lives in the engine's tree, so killTrigger
+            // is the engine's kill: it stops counting at once.
+            expect(triggers.killTemp(bad)).toBe(true);
             expect(engine.existsByName(bad, 'trigger')).toBe(0);
         });
     });
