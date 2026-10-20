@@ -166,31 +166,12 @@ export interface IScriptingRuntime {
      * does), rename, flip the active flag, or drop one (empty `events`).
      */
     syncScriptHandlers(entries: ScriptHandlerEntry[]): void;
-    /**
-     * True when a script-created (temp) alias/trigger with this id is live and of
-     * the given type. Backs exists(id, "alias"/"trigger") for temp items, which
-     * (unlike permanent items) don't live in the persisted store.
-     */
-    tempItemExists(id: number, type: string): boolean;
-    /** A live temp item of `type` carrying this script-supplied name (Mudlet's
-     *  tempComplexRegexTrigger is the one temp API that takes one), or null. */
-    tempItemIdByName(name: string, type: string): number | null;
     /** Publish one use of a server-defined MXP element as `mxp.<element>`. */
     setMxpElement(
         name: string,
         attrs: Record<string, string>,
         body?: { text: string; actions: string[] },
     ): void;
-    /** Whether a live temp item is enabled — backs `isActive(id, type)`. */
-    tempItemEnabled(id: number): boolean;
-    /** enable/disable a live temp item by id — backs enableTrigger/disableTrigger
-     *  (and the alias pair) when handed the numeric id rather than a name. */
-    setTempItemEnabled(id: number, enabled: boolean): boolean;
-    /** Free every temp item killed since the last call, or only those of `type`.
-     *  A killed item stops firing immediately but stays findable until here,
-     *  which is Mudlet's deferred per-unit cleanup: aliases are reaped when
-     *  nested alias processing unwinds, triggers when the line batch finishes. */
-    reapKilledTempItems(type?: 'alias' | 'trigger'): void;
     /** Whether the capture globals are being built, when a pass a __gc
      *  finaliser starts is refused (TLuaInterpreter::buildingCaptureTables).
      *  Optional: a runtime with no finalisers never builds under one. */

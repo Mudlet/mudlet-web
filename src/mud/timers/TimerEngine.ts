@@ -221,11 +221,10 @@ export class TimerEngine {
     }
 
     /**
-     * Whether a temporary timer with this id is still present.
-     *
-     * Backs `exists(id, "timer")`. Temp timers aren't in the store and — unlike
-     * temp triggers and aliases — aren't tracked in LuaRuntime's tempIds either,
-     * so this map is the only thing that knows.
+     * Whether a temporary timer with this id is still present — killed or not.
+     * Temp timers aren't in the store: this map is the temporary half of the
+     * one timer tree (exists() asks {@link hasLiveTemp}, which skips a killed
+     * one).
      *
      * Present is not running: a killed timer stays here until the reap, and a
      * disabled one until it is killed — see {@link tempIsActive}.

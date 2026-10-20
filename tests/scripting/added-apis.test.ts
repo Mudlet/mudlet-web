@@ -1727,6 +1727,10 @@ describe('engine tempCount — live session-scoped temp items', () => {
     const id = e.addTemp('KeyA', [], () => {});
     expect(e.tempCount).toBe(1);
     e.killKey(id);
+    // Counted until the deferred cleanup frees it, as KeyUnit's report does.
+    expect(e.tempCount).toBe(1);
+    expect(e.tempActiveCount).toBe(0);
+    e.reapKilled();
     expect(e.tempCount).toBe(0);
   });
 });

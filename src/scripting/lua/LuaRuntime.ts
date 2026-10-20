@@ -669,32 +669,6 @@ interface VfsPathChange {
 
 export class LuaRuntime implements IScriptingRuntime {
 
-    // Temp alias/trigger IDs → { kill fn, type }. Engines return unsub, not
-    // numeric IDs; the type lets exists(id, "alias"/"trigger") recognise
-    // script-created temp items the way Mudlet does.
-    // Script-created (temp) aliases and triggers, by the id handed back to Lua.
-    //  backs enableTrigger/disableTrigger/isActive with a numeric id —
-    // Mudlet toggles temp items exactly like saved ones, so the dispatch checks
-    // it before firing.
-    /** Script-created temp aliases/triggers by id. `dead` marks one killed but
-     *  not yet reaped: Mudlet frees a killed unit in the deferred cleanup it
-     *  runs at the end of a line, not at the kill, so until then it is still
-     *  findable while no longer firing — `exists` says 1, `isActive` says 0, and
-     *  a second kill finds a corpse and answers false. {@link reapKilledTempItems}
-     *  does the freeing. */
-    private readonly tempIds = new Map<number, {
-        kill: () => void; type: 'alias' | 'trigger'; enabled: boolean; dead?: boolean;
-        /** Mudlet's tempComplexRegexTrigger is the one temporary-trigger API
-         *  that takes a name of its own, and exists()/killTrigger() have to
-         *  reach the item by it. Absent for the rest, which are only ever known
-         *  by the id they were handed. */
-        name?: string;
-        /** Its script did not compile. Mudlet still makes the item, so that it
-         *  can be seen and repaired, but TAlias::setScript leaves it in a state
-         *  that neither fires nor reports active, however it is switched. */
-        uncompiled?: boolean;
-    }>();
-
     // Tracks label callback ids per slot so re-binds can free the prior Lua-
     // registry slot via __mudlet_unregister_cb (avoids the leak the audit flagged
     // for setLabelClickCallback). Outer key: label name, inner key: slot id
@@ -2032,11 +2006,10 @@ export class LuaRuntime implements IScriptingRuntime {
         });
 
         // ── Aliases ───────────────────────────────────────────────────────────
-        this.lua.global.set('__mudlet_tempAlias', (pattern: string, cbId: number, uncompiled?: boolean) => {
-            const id = this.api.allocateItemId();
-            const unsub = this.api.aliases.addTemp(pattern, (m: RegExpMatchArray) => {
-                const entry = this.tempIds.get(id);
-                if (entry?.enabled === false || entry?.uncompiled) return;
+        // The alias engine holds the alias's switch, its kill and whether its
+        // body compiled (see PatternEngine.createTemp).
+        this.lua.global.set('__mudlet_tempAlias', (pattern: string, cbId: number, uncompiled?: boolean) =>
+            this.api.aliases.createTemp(pattern, (m: RegExpMatchArray) => {
                 // Named groups go onto the same `matches` table as the numbered
                 // ones, which is how Mudlet presents them (setCaptureNameGroups
                 // feeds the same table setCaptureGroups does).
@@ -2046,19 +2019,15 @@ export class LuaRuntime implements IScriptingRuntime {
                 } finally {
                     this.clearCaptureGlobals();
                 }
-            });
-            this.tempIds.set(id, { kill: () => { unsub(); releaseCb(cbId); }, type: 'alias', enabled: true, uncompiled: !!uncompiled });
-            return id;
-        });
-        this.lua.global.set('killAlias', (idOrName: number | string) => {
-            // A temp item named by the script (tempComplexRegexTrigger) is
-            // reachable by that name, and is what Mudlet kills first — only a
-            // permanent item answers a name no temporary one carries.
-            const tempId = this.tempItemId(idOrName, 'alias');
-            if (tempId !== null && this.tempIds.has(tempId)) return this.killTempItem(tempId, 'alias');
-            if (typeof idOrName === 'string') return this.api.killByName('alias', idOrName);
-            return this.killTempItem(idOrName, 'alias');
-        });
+            }, {
+                id: this.api.allocateItemId(),
+                uncompiled: !!uncompiled,
+                onFree: () => releaseCb(cbId),
+            }));
+        // Mudlet `killAlias(name)` — a number is read as its string form, the
+        // name a temp alias carries (its id). See ScriptingEngine.killByName.
+        this.lua.global.set('killAlias', (idOrName: number | string) =>
+            this.api.killByName('alias', String(idOrName)));
 
         // ── Triggers ──────────────────────────────────────────────────────────
         // Mudlet semantics:
@@ -2914,87 +2883,6 @@ end`,
         } finally {
             if (!this.inert) api.lua_settop(L, top);
         }
-    }
-
-    /**
-     * True when a script-created (temp) alias/trigger with this id is live and of
-     * the given type. Backs exists(id, "alias"/"trigger") for temp items, which
-     * don't live in the persisted store the way permanent items do.
-     */
-    tempItemExists(id: number, type: string): boolean {
-        return this.tempIds.get(id)?.type === type;
-    }
-
-    /** A live temp item of `type` carrying this Mudlet-supplied name — how
-     *  exists()/killTrigger() reach a tempComplexRegexTrigger. */
-    tempItemIdByName(name: string, type: string): number | null {
-        for (const [id, entry] of this.tempIds) {
-            if (entry.type === type && !entry.dead && entry.name === name) return id;
-        }
-        return null;
-    }
-
-    /**
-     * killAlias/killTrigger with a numeric id, for a script-created item.
-     *
-     * The item is unsubscribed and its callback released straight away — it must
-     * not fire again, including later in the very line pass that killed it — but
-     * the entry stays in the map, marked dead, until {@link reapKilledTempItems}.
-     * That is Mudlet's deferred cleanup: until the line ends, the corpse is still
-     * findable, which is what lets a second kill report `false` rather than
-     * mistaking the id for one that never existed.
-     */
-    /** Resolve a killTrigger/killAlias argument to a live temp item's id: the
-     *  number itself, or the name a tempComplexRegexTrigger was given. */
-    tempItemId(idOrName: number | string, type: 'alias' | 'trigger'): number | null {
-        if (typeof idOrName === 'number') return idOrName;
-        const byName = this.tempItemIdByName(idOrName, type);
-        if (byName !== null) return byName;
-        return /^\d+$/.test(idOrName) ? Number(idOrName) : null;
-    }
-
-    private killTempItem(id: number, type: 'alias' | 'trigger'): boolean {
-        const entry = this.tempIds.get(id);
-        if (!entry || entry.type !== type || entry.dead) return false;
-        entry.kill();
-        entry.enabled = false;
-        entry.dead = true;
-        // kill() removes the entry (that is how expiry retires an item), so put
-        // the corpse back for the reap to find.
-        this.tempIds.set(id, entry);
-        return true;
-    }
-
-    /**
-     * Free every temp alias/trigger killed since the last call, or only those of
-     * `type` when given.
-     *
-     * Mudlet cleans up per unit, at the end of whatever pass that unit runs:
-     * aliases when nested expandAlias processing unwinds, triggers when the line
-     * finishes. Passing the type keeps those independent, so an alias pass can't
-     * reap a trigger the current line is still walking past.
-     */
-    reapKilledTempItems(type?: 'alias' | 'trigger'): void {
-        for (const [id, entry] of this.tempIds) {
-            if (entry.dead && (type === undefined || entry.type === type)) this.tempIds.delete(id);
-        }
-    }
-
-    /** enableTrigger/disableTrigger/enableAlias/disableAlias with a numeric id.
-     *  False when no temp item of that id is live — a killed one is still
-     *  findable until the reap, but re-enabling it would resurrect it. */
-    setTempItemEnabled(id: number, enabled: boolean): boolean {
-        const entry = this.tempIds.get(id);
-        if (!entry || entry.dead) return false;
-        entry.enabled = enabled;
-        return true;
-    }
-
-    /** Whether a live temp item is enabled — backs isActive(id, type). One
-     *  whose script never compiled is not, however it is switched. */
-    tempItemEnabled(id: number): boolean {
-        const entry = this.tempIds.get(id);
-        return entry?.enabled === true && !entry.uncompiled;
     }
 
     // ── busted bridge (VITE_BUSTED builds only) ──────────────────────────────

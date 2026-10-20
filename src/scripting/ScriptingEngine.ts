@@ -620,6 +620,8 @@ export class ScriptingEngine implements EngineHost {
         };
         triggerEngine.setOrphanListener(drainOrphans);
         timerEngine.setOrphanListener(drainOrphans);
+        aliasEngine.setOrphanListener(drainOrphans);
+        keyEngine.setOrphanListener(drainOrphans);
         this.connectionId = connectionId;
         // Bind the host here rather than after the Lua runtime resolves: the
         // runtime is created asynchronously and executes the whole bundled
@@ -3357,7 +3359,11 @@ export class ScriptingEngine implements EngineHost {
         const store = useAppStore.getState();
         const aliases = store.connectionAliases[this.connectionId] ?? [];
         const targets = aliases.filter(a => a.name === name);
-        if (targets.length === 0) return false;
+        // The temporary one answers to the same name table — its id's
+        // spelling; one killed and waiting to be freed does not.
+        const temp = this.aliasEngine.newestTempByName(name, false);
+        const tempHit = temp !== null && this.aliasEngine.setTempEnabled(temp, enabled);
+        if (targets.length === 0) return tempHit;
         const patches = targets
             .filter(a => a.enabled !== enabled)
             .map(a => ({ id: a.id, patch: { enabled } }));
@@ -3375,7 +3381,11 @@ export class ScriptingEngine implements EngineHost {
         const store = useAppStore.getState();
         const keys = store.connectionKeybindings[this.connectionId] ?? [];
         const targets = keys.filter(k => k.name === name);
-        if (targets.length === 0) return false;
+        // The temporary one answers to the same name table — its id's
+        // spelling; one killed and waiting to be freed does not.
+        const temp = this.keyEngine.newestTempByName(name, false);
+        const tempHit = temp !== null && this.keyEngine.setTempEnabled(temp, enabled);
+        if (targets.length === 0) return tempHit;
         for (const k of targets) {
             if (k.enabled !== enabled) store.updateKeybinding(this.connectionId, k.id, { enabled });
         }
@@ -3401,12 +3411,6 @@ export class ScriptingEngine implements EngineHost {
             }
         }
         return null;
-    }
-
-    /** enable/disable a script-created temp trigger or alias by numeric id.
-     *  Those live in the Lua runtime, not the saved tree. */
-    setTempItemEnabled(id: number, enabled: boolean): boolean {
-        return this.runtimes.lua?.setTempItemEnabled(id, enabled) ?? false;
     }
 
     setForceMxpProcessorOn(on: boolean): void {
@@ -3464,6 +3468,29 @@ export class ScriptingEngine implements EngineHost {
                     hasLive: id => e.hasLiveTemp(id),
                     isActive: id => e.tempIsActive(id),
                     name: id => e.tempName(id),
+                    liveIds: test => e.liveTempIds(test),
+                    newestByName: (name, includeDead) => e.newestTempByName(name, includeDead),
+                };
+            }
+            case 'alias': {
+                // A temp alias is named after its id (startTempAlias).
+                const e = this.aliasEngine;
+                return {
+                    hasLive: id => e.hasLiveTemp(id),
+                    isActive: id => e.tempIsActive(id),
+                    name: id => (e.hasLiveTemp(id) ? String(id) : null),
+                    liveIds: test => e.liveTempIds(test),
+                    newestByName: (name, includeDead) => e.newestTempByName(name, includeDead),
+                };
+            }
+            case 'key':
+            case 'keybind': {
+                // A temp key is named after its id (startTempKey).
+                const e = this.keyEngine;
+                return {
+                    hasLive: id => e.hasLiveTemp(id),
+                    isActive: id => e.tempIsActive(id),
+                    name: id => (e.hasLiveTemp(id) ? String(id) : null),
                     liveIds: test => e.liveTempIds(test),
                     newestByName: (name, includeDead) => e.newestTempByName(name, includeDead),
                 };
@@ -3535,14 +3562,7 @@ export class ScriptingEngine implements EngineHost {
                 const n = this.uuidToNumericId.get(item.id);
                 if (n !== undefined && n === wanted) return 1;
             }
-            if (temps) return temps.hasLive(wanted) ? 1 : 0;
-            // Temp (script-created) items aren't in the store. Aliases are
-            // tracked by the runtime; temp KEYS live in the key engine, which
-            // owns their ids. Mudlet's exists() counts both.
-            if (this.runtimes.lua?.tempItemExists(wanted, type)) return 1;
-            if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(wanted)) return 1;
-            if (type === 'timer' && this.api.timers.hasTemp(wanted)) return 1;
-            return 0;
+            return temps?.hasLive(wanted) ? 1 : 0;
         }
         const name = String(nameOrId);
         const perm = list.filter(i => i.name === name).length;
@@ -3551,17 +3571,7 @@ export class ScriptingEngine implements EngineHost {
         // counts alongside any permanent item sharing it, which is exactly the
         // case Alias_spec/KeyBinds_spec pin: kill the temporary and the count
         // drops back to the permanent one on its own.
-        if (temps) return perm + temps.liveIds(n => n === name).length;
-        let tempCount = 0;
-        if (/^\d+$/.test(name)) {
-            const asId = Number(name);
-            if (this.runtimes.lua?.tempItemExists(asId, type)) tempCount++;
-            else if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(asId)) tempCount++;
-            else if (type === 'timer' && this.api.timers.hasTemp(asId)) tempCount++;
-        } else if (type === 'alias') {
-            if (this.runtimes.lua?.tempItemIdByName(name, type) != null) tempCount++;
-        }
-        return tempCount + perm;
+        return perm + (temps?.liveIds(n => n === name).length ?? 0);
     }
 
     /**
@@ -3632,35 +3642,12 @@ export class ScriptingEngine implements EngineHost {
                 const n = this.uuidToNumericId.get(item.id);
                 if (n !== undefined && n === nameOrId) return isOn(item) ? 1 : 0;
             }
-            if (temps) return temps.isActive(nameOrId) ? 1 : 0;
-            // Temp keys are held by the key engine, not the store (see existsByName).
-            if ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(nameOrId)) {
-                return this.api.keys.isTempEnabled(nameOrId) ? 1 : 0;
-            }
-            // Temp aliases are held by the runtime, likewise.
-            if (this.runtimes.lua?.tempItemExists(nameOrId, type)) {
-                return this.runtimes.lua.tempItemEnabled(nameOrId) ? 1 : 0;
-            }
-            // A running temporary timer is by definition active — there is no
-            // enable/disable for one, only kill. A killed one is still *present*
-            // until the reap, though, so this asks whether it is still running
-            // rather than whether it can be found (see TimerEngine.tempIsActive).
-            if (type === 'timer' && this.api.timers.tempIsActive(nameOrId)) return 1;
-            return 0;
+            return temps?.isActive(nameOrId) ? 1 : 0;
         }
         const name = String(nameOrId);
         const namedCount = list.filter(i => i.name === name && isOn(i)).length;
-        if (temps) return namedCount + temps.liveIds(n => n === name).filter(t => temps.isActive(t)).length;
-        if (type === 'timer' && /^\d+$/.test(name) && this.api.timers.tempIsActive(Number(name))) return 1;
-        // Mudlet names a temporary alias after its id
-        // (startTempAlias: `setName(QString::number(id))`), so the id as a
-        // string finds it by name too, alongside anything saved under it.
-        if (/^\d+$/.test(name) && type === 'alias') {
-            const tempId = Number(name);
-            const lua = this.runtimes.lua;
-            if (lua?.tempItemExists(tempId, type) && lua.tempItemEnabled(tempId)) return namedCount + 1;
-        }
-        return namedCount;
+        if (!temps) return namedCount;
+        return namedCount + temps.liveIds(n => n === name).filter(t => temps.isActive(t)).length;
     }
 
     /**
@@ -3734,11 +3721,7 @@ export class ScriptingEngine implements EngineHost {
             // rather than missing. Reporting it as "does not exist" made an
             // ordinary tempTrigger look like a bad id. Same test
             // isAncestorsActiveById already makes.
-            const isTemp = temps ? temps.hasLive(id)
-                : this.runtimes.lua?.tempItemExists(id, type)
-                || (type === 'timer' && this.api.timers.hasTemp(id))
-                || ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(id));
-            return isTemp ? [] : null;
+            return temps?.hasLive(id) ? [] : null;
         }
         const out: Array<{ id: number; name: string; node: string; isActive: boolean }> = [];
         let node = start.parentId ? byUuid.get(start.parentId) : undefined;
@@ -3790,18 +3773,7 @@ export class ScriptingEngine implements EngineHost {
             // One tree: *Unit::findItems walks the id map, so temporary and
             // permanent items come back together in ascending id order.
             out.push(...temps.liveIds(matchesName));
-            return out.sort((a, b) => a - b);
-        }
-        // Temporary items aren't in the store tree, and Mudlet's item unit holds
-        // them alongside the rest — a tempAlias/tempTimer is named for the id it
-        // was handed out under, so searching by that string finds it. Same
-        // registries `existsByName` consults.
-        const asId = /^\d+$/.test(name) ? Number(name) : null;
-        if (asId !== null && (exact || name.length > 0)) {
-            const isTemp = this.runtimes.lua?.tempItemExists(asId, type)
-                || (type === 'timer' && this.api.timers.hasTemp(asId))
-                || ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(asId));
-            if (isTemp && !out.includes(asId)) out.push(asId);
+            out.sort((a, b) => a - b);
         }
         return out;
     }
@@ -3820,11 +3792,7 @@ export class ScriptingEngine implements EngineHost {
         if (!start) {
             // A script-created temp item is not in the tree and by construction
             // sits at the root, so every ancestor of it is trivially enabled.
-            const isTemp = temps ? temps.hasLive(id)
-                : this.runtimes.lua?.tempItemExists(id, type)
-                || (type === 'timer' && this.api.timers.hasTemp(id))
-                || ((type === 'key' || type === 'keybind') && this.api.keys.hasTemp(id));
-            return isTemp ? true : null;
+            return temps?.hasLive(id) ? true : null;
         }
         // A temporary item at the top of the ancestry counts like any other.
         const tempRoot = tempRootOf(start, byUuid);
@@ -3873,7 +3841,10 @@ export class ScriptingEngine implements EngineHost {
                 active: active + tempActive,
             };
         };
-        const liveTemps = (type: string) => this.tempTree(type)?.liveIds(() => true).length ?? 0;
+        const activeTemps = (type: string): number => {
+            const temps = this.tempTree(type);
+            return temps ? temps.liveIds(() => true).filter(id => temps.isActive(id)).length : 0;
+        };
 
         const tempTriggers = this.triggerEngine.tempCount;
         let patternsTotal = this.triggerEngine.tempPatternCount;
@@ -3885,11 +3856,11 @@ export class ScriptingEngine implements EngineHost {
             if (t.enabled) patternsActive += n;
         }
         return {
-            triggers: { ...tally(triggers, tempTriggers, undefined, liveTemps('trigger')), patterns: { total: patternsTotal, active: patternsActive } },
-            aliases: tally(aliases, this.aliasEngine.tempCount),
+            triggers: { ...tally(triggers, tempTriggers, undefined, activeTemps('trigger')), patterns: { total: patternsTotal, active: patternsActive } },
+            aliases: tally(aliases, this.aliasEngine.tempCount, undefined, activeTemps('alias')),
             // Mudlet counts a timer by the same state isActive reports.
-            timers: tally(timers, this.timerEngine.tempCount, this.timerEngine.countPermActive(timers), liveTemps('timer')),
-            keys: tally(keys, this.keyEngine.tempCount),
+            timers: tally(timers, this.timerEngine.tempCount, this.timerEngine.countPermActive(timers), activeTemps('timer')),
+            keys: tally(keys, this.keyEngine.tempCount, undefined, activeTemps('key')),
             scripts: tally(scripts, 0,
                 scripts.filter(s => !s.isGroup && s.enabled && !this.failedScripts.has(s.id)).length),
             // Every label carrying a movie counts; the ones actually running
@@ -4168,6 +4139,10 @@ export class ScriptingEngine implements EngineHost {
         if (refs.length > 0) this.removeSubtreesUnder('trigger', new Set(refs));
         const timerRefs = this.timerEngine.takeOrphanedParents();
         if (timerRefs.length > 0) this.removeSubtreesUnder('timer', new Set(timerRefs));
+        const aliasRefs = this.aliasEngine.takeOrphanedParents();
+        if (aliasRefs.length > 0) this.removeSubtreesUnder('alias', new Set(aliasRefs));
+        const keyRefs = this.keyEngine.takeOrphanedParents();
+        if (keyRefs.length > 0) this.removeSubtreesUnder('key', new Set(keyRefs));
     }
 
     /** Remove every permanent item hanging off a temporary one, of every kind. */
@@ -4214,7 +4189,7 @@ export class ScriptingEngine implements EngineHost {
         const aliases = store.connectionAliases[this.connectionId] ?? [];
         let parentId: string | null = null;
         if (parent && parent.length > 0) {
-            parentId = permParentId(aliases, parent);
+            parentId = this.resolvePermParent('alias', aliases, parent);
             if (parentId === null) return -1;
         }
         // An alias with neither a pattern nor a body is a FOLDER — that is how
@@ -4290,7 +4265,7 @@ export class ScriptingEngine implements EngineHost {
         const keys = store.connectionKeybindings[this.connectionId] ?? [];
         let parentId: string | null = null;
         if (parent && parent.length > 0) {
-            parentId = permParentId(keys, parent);
+            parentId = this.resolvePermParent('key', keys, parent);
             if (parentId === null) return -1;
         }
         // Mudlet keys the folder flag off the KEY CODE, not the modifier:
@@ -4593,21 +4568,19 @@ export class ScriptingEngine implements EngineHost {
                 for (const node of doomed) this.removeTriggerSubtree(node.id);
                 return true;
             }
-            case 'timer':
+            // Mudlet's kill* only removes TEMPORARY items — TimerUnit::killTimer,
+            // AliasUnit::killAlias, KeyUnit::killKey and TriggerUnit::killTrigger
+            // each skip a permanent match ("permanent objects cannot be
+            // removed") and a corpse, and kill the first live temporary one the
+            // name table gives. A temporary item's name is its id.
+            case 'timer': {
+                const id = this.tempTree('timer')?.newestByName(name, false) ?? null;
+                return id !== null && this.timerEngine.killTimer(id);
+            }
             case 'alias':
-                // Mudlet's kill* only removes TEMPORARY items — TimerUnit::killTimer,
-                // AliasUnit::killAlias and TriggerUnit::killTrigger each bail out on
-                // a non-temporary match, commented there as "permanent objects cannot
-                // be removed". Temp items never reach here: the bindings resolve those
-                // by the numeric id they handed the script, before falling back to
-                // this name lookup.
-                return false;
+                return this.aliasEngine.killTempByName(name);
             case 'key':
-                // Mudlet's KeyUnit::killKey refuses a permanent key outright —
-                // killKey only removes temporary ones, and named keys created
-                // with permKey are permanent. (killTimer/killAlias/killTrigger
-                // above do delete their permanent items, matching Mudlet.)
-                return false;
+                return this.keyEngine.killTempByName(name);
         }
     }
 
@@ -4796,7 +4769,8 @@ export class ScriptingEngine implements EngineHost {
             return this.processInputPass(text);
         } finally {
             if (--this.aliasDepth <= 1) this.aliasRunawayStopped = false;
-            if (this.aliasDepth === 0) this.runtimes.lua?.reapKilledTempItems('alias');
+            // AliasUnit's doCleanup, once the outermost alias pass is over.
+            if (this.aliasDepth === 0) this.aliasEngine.reapKilled();
         }
     }
 
@@ -5233,6 +5207,8 @@ export class ScriptingEngine implements EngineHost {
         this.triggerEngine.setPermDisabler(null);
         this.triggerEngine.setOrphanListener(null);
         this.timerEngine.setOrphanListener(null);
+        this.aliasEngine.setOrphanListener(null);
+        this.keyEngine.setOrphanListener(null);
         this.triggerEngine.setCompileErrorReporter(null);
         // Unbind the host. This does NOT guard against late *Lua* calls —
         // lua_close ran a few lines up. It guards against DOM-side callers
@@ -5871,7 +5847,7 @@ export class ScriptingEngine implements EngineHost {
      * Nothing can fire in the meantime: killing unsubscribes immediately.
      */
     private reapKilledTempItems(): void {
-        this.runtimes.lua?.reapKilledTempItems();
+        this.aliasEngine.reapKilled();
         this.triggerEngine.reapKilled();
         this.removeOrphanedTempChildren();
         this.api.timers.reapKilled();

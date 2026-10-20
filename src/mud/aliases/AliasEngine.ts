@@ -88,15 +88,15 @@ export class AliasEngine extends PatternEngine<AliasNode> {
     private fireTemp(id: number, input: string): boolean {
         const entry = this.temp.get(id);
         // A null pattern is an alias that exists but can never match — see
-        // PatternEngine.addTemp.
-        if (!entry?.pattern) return false;
+        // PatternEngine.addTemp. A switched-off, killed or uncompiled one is
+        // not looked at (AliasUnit asks isActive() before match()).
+        if (!entry?.pattern || !this.tempIsActive(id)) return false;
         const hit = matchAllCaptures(input, entry.pattern);
         if (!hit) return false;
-        // Re-read rather than trusting the snapshot's entry: killAlias
-        // unsubscribes, and an alias taken out while this pass was running
-        // must not still fire.
+        // Re-read rather than trusting the snapshot's entry: an alias killed
+        // or taken out while this pass was running must not still fire.
         const live = this.temp.get(id);
-        if (!live) return false;
+        if (!live || !this.tempIsActive(id)) return false;
         live.fn(asMatchArray(hit.all, hit.index, input, hit.named));
         return true;
     }
@@ -115,7 +115,7 @@ export class AliasEngine extends PatternEngine<AliasNode> {
         const steps: { seq: number; at: number; temp?: number; perm?: string }[] = [];
         for (const [id, { seq }] of this.temp) steps.push({ seq, at: 0, temp: id });
         this.permOrder.forEach((id, i) => {
-            steps.push({ seq: this.permRootSeq.get(id) ?? Number.MAX_SAFE_INTEGER, at: i + 1, perm: id });
+            steps.push({ seq: this.rootSeqOf(id), at: i + 1, perm: id });
         });
         steps.sort((a, b) => a.seq - b.seq || a.at - b.at);
         let fired = false;
@@ -153,6 +153,10 @@ export class AliasEngine extends PatternEngine<AliasNode> {
     private firePermIfMatched(id: string, input: string, fire: (hit: PermAliasMatch) => void): boolean {
         const entry = this.permById.get(id);
         if (!entry) return false;
+        // Under a temporary alias: an active parent passes the command down
+        // to its children whether or not it matched (TAlias::match); an
+        // inactive or killed one keeps them out of it.
+        if (!this.reachable(id)) return false;
         const hit = matchAllCaptures(input, entry.re);
         if (!hit) return false;
         fire({ alias: entry.item, matchedText: hit.all[0], captures: hit.all.slice(1), named: hit.named });

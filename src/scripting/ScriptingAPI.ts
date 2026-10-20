@@ -2658,14 +2658,13 @@ export class ScriptingAPI {
         return perm || temp;
     }
 
+    // By name, as enableTrigger: a number is the name a temp alias carries.
     enableAlias(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.host.setTempItemEnabled(nameOrId, true);
-        return this.host.toggleAliasByName(nameOrId, true);
+        return this.host.toggleAliasByName(String(nameOrId), true);
     }
 
     disableAlias(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.host.setTempItemEnabled(nameOrId, false);
-        return this.host.toggleAliasByName(nameOrId, false);
+        return this.host.toggleAliasByName(String(nameOrId), false);
     }
 
     /** The saved keybinding carrying this numeric id, or null. Backs
@@ -2674,17 +2673,14 @@ export class ScriptingAPI {
         return this.host.keyNodeByNumericId(numericId);
     }
 
-    // A numeric argument names a script-created temp key, which lives in the key
-    // engine rather than the saved tree; Mudlet's enableKey/disableKey toggle
-    // either kind.
+    // By name, as enableTrigger: a number is the name a temp key carries (its
+    // id), and temporary and permanent keys share the one name table.
     enableKey(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.keys.setTempEnabled(nameOrId, true);
-        return this.host.toggleKeyByName(nameOrId, true);
+        return this.host.toggleKeyByName(String(nameOrId), true);
     }
 
     disableKey(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.keys.setTempEnabled(nameOrId, false);
-        return this.host.toggleKeyByName(nameOrId, false);
+        return this.host.toggleKeyByName(String(nameOrId), false);
     }
 
     /**

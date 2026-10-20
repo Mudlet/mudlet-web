@@ -62,6 +62,8 @@ type EngineInternals = {
     triggersReady: boolean;
     applyTriggersFromStore: () => void;
     applyTimersFromStore: () => void;
+    applyAliasesFromStore: () => void;
+    applyKeybindingsFromStore: () => void;
     scheduleTriggerApply: () => void;
     api: ScriptingAPI;
 };
@@ -72,6 +74,8 @@ describe('a permanent item under a temporary one', () => {
     let api: ScriptingAPI;
     let triggers: InstanceType<typeof TriggerEngine>;
     let timers: InstanceType<typeof TimerEngine>;
+    let aliases: InstanceType<typeof AliasEngine>;
+    let keys: InstanceType<typeof KeyEngine>;
     let scripts: Record<string, (matches: (string | undefined)[]) => void>;
     let out: string[];
     let unsubscribe: () => void = () => {};
@@ -80,11 +84,15 @@ describe('a permanent item under a temporary one', () => {
         useAppStore.setState(s => ({
             connectionTriggers: { ...s.connectionTriggers, [CONN]: [] },
             connectionTimers: { ...s.connectionTimers, [CONN]: [] },
+            connectionAliases: { ...s.connectionAliases, [CONN]: [] },
+            connectionKeybindings: { ...s.connectionKeybindings, [CONN]: [] },
         }));
         const session = new MudSession();
         triggers = new TriggerEngine();
         timers = new TimerEngine();
-        engine = new ScriptingEngine(session, new AliasEngine(), triggers, timers, new KeyEngine(), CONN);
+        aliases = new AliasEngine();
+        keys = new KeyEngine();
+        engine = new ScriptingEngine(session, aliases, triggers, timers, keys, CONN);
         vi.spyOn(session, 'sendData').mockImplementation(() => {});
         await TriggerEngine.ready();
         internals = engine as unknown as EngineInternals;
@@ -94,6 +102,8 @@ describe('a permanent item under a temporary one', () => {
         unsubscribe = useAppStore.subscribe((state, prev) => {
             if (state.connectionTriggers[CONN] !== prev.connectionTriggers[CONN]) internals.scheduleTriggerApply();
             if (state.connectionTimers[CONN] !== prev.connectionTimers[CONN]) internals.applyTimersFromStore();
+            if (state.connectionAliases[CONN] !== prev.connectionAliases[CONN]) internals.applyAliasesFromStore();
+            if (state.connectionKeybindings[CONN] !== prev.connectionKeybindings[CONN]) internals.applyKeybindingsFromStore();
         });
     };
 
@@ -124,7 +134,9 @@ describe('a permanent item under a temporary one', () => {
         useAppStore.setState(s => {
             const { [CONN]: _t, ...restT } = s.connectionTriggers;
             const { [CONN]: _m, ...restM } = s.connectionTimers;
-            return { connectionTriggers: restT, connectionTimers: restM };
+            const { [CONN]: _a, ...restA } = s.connectionAliases;
+            const { [CONN]: _k, ...restK } = s.connectionKeybindings;
+            return { connectionTriggers: restT, connectionTimers: restM, connectionAliases: restA, connectionKeybindings: restK };
         });
         try { engine.destroy(); } catch { /* teardown best-effort */ }
     });
@@ -244,6 +256,65 @@ describe('a permanent item under a temporary one', () => {
             expect(reports).toHaveLength(1);
             expect(reports[0]).toContain("trigger 'ptWatcher'");
             expect(fires).toBeGreaterThan(1000);
+        });
+    });
+
+    describe('aliases', () => {
+        it('an active temporary parent passes every command down; an inactive or killed one none', async () => {
+            await boot();
+            const parent = aliases.createTemp('^parent$', () => out.push('parent'), { id: engine.allocateItemId() });
+            const child = engine.createPermAlias('ptAliasChild', String(parent), '^child$', 'x');
+            scripts.ptAliasChild = () => out.push('child');
+            expect(useAppStore.getState().connectionAliases[CONN]!.find(a => a.name === 'ptAliasChild')!.parentId)
+                .toBe(tempParentRef(parent));
+
+            // The parent need not match: TAlias::match tests an active
+            // parent's children against the whole command regardless.
+            engine.processInput('child');
+            expect(out).toEqual(['child']);
+
+            out = [];
+            engine.toggleAliasByName(String(parent), false);
+            engine.processInput('child');
+            expect(out).toEqual([]);
+            engine.toggleAliasByName(String(parent), true);
+
+            expect(engine.killByName('alias', 'ptAliasChild')).toBe(false);
+            expect(engine.killByName('alias', String(parent))).toBe(true);
+            expect(engine.existsByName(child, 'alias')).toBe(0);
+            expect((engine.getProfileStats().aliases as { temp: number }).temp).toBe(1);
+            engine.processInput('child');
+            expect(out).toEqual([]);
+            await Promise.resolve();
+            expect(useAppStore.getState().connectionAliases[CONN]!.some(a => a.name === 'ptAliasChild')).toBe(false);
+            expect((engine.getProfileStats().aliases as { temp: number }).temp).toBe(0);
+        });
+    });
+
+    describe('keys', () => {
+        const F6 = 0x01000035;
+        const press = (code: string) => ({
+            code, key: '', location: 0, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
+        } as KeyboardEvent);
+
+        it('is reached only while its temporary parent is active, and goes with it', async () => {
+            await boot();
+            const parent = keys.addTemp('F5', [], () => out.push('parent'));
+            const child = engine.createPermKey('ptKeyChild', String(parent), 0, F6, 'x');
+            expect(child).toBeGreaterThan(parent);
+            expect(engine.processKey(press('F6'))).toBe(true);
+
+            engine.toggleKeyByName(String(parent), false);
+            expect(engine.processKey(press('F6'))).toBe(false);
+            engine.toggleKeyByName(String(parent), true);
+
+            expect(engine.killByName('key', String(parent))).toBe(true);
+            expect(engine.existsByName(child, 'keybind')).toBe(0);
+            expect(engine.findItemsByName('ptKeyChild', 'keybind', true, true)).toEqual([]);
+            expect(engine.processKey(press('F6'))).toBe(false);
+            feed('anything\n');
+            await Promise.resolve();
+            expect(useAppStore.getState().connectionKeybindings[CONN]!.some(k => k.name === 'ptKeyChild')).toBe(false);
         });
     });
 

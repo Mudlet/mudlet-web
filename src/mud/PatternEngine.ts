@@ -1,4 +1,5 @@
-import { buildEffectivelyEnabledIds, inTreeOrder } from '../storage/schema';
+import { buildEffectivelyEnabledIds, inTreeOrder, isTempParentRef, tempParentRef, tempRootOf } from '../storage/schema';
+import { ItemIdSequence } from './ItemIdSequence';
 import Pcre2, { ENGINE_MATCH_LIMIT_VERB } from './triggers/pcre/Pcre2';
 
 type TempFn = (matches: RegExpMatchArray) => void;
@@ -63,17 +64,49 @@ export class AliasPattern {
     }
 }
 
-export class PatternEngine<T extends PatternItem> {
+/** A temporary item: the temporary half of desktop's one tree per kind,
+ *  keyed by the id the script was handed. A temp item is named after its id
+ *  (startTempAlias: setName(QString::number(id))). */
+export interface TempPatternItem {
     /** A null pattern is an empty one, which can never match; an
      *  uncompilable one is an AliasPattern that never compiles. See
-     *  {@link addTemp}. */
-    protected readonly temp = new Map<number, { pattern: AliasPattern | null; fn: TempFn; seq: number }>();
-    /** Key for this engine's own temp map. NOT an item id: addTemp hands the
-     *  caller an unsubscribe function, and the id Lua sees is allocated by the
-     *  runtime from the profile's shared sequence. Drawing from that sequence
-     *  here would burn a number per temp item and put permAlias/tempAlias out
-     *  of step (Alias_spec pins the run of ids). */
-    protected nextInternalId = 1;
+     *  {@link PatternEngine.addTemp}. */
+    pattern: AliasPattern | null;
+    fn: TempFn;
+    seq: number;
+    /** enableAlias/disableAlias — Tree::mActive. */
+    enabled: boolean;
+    /** Killed, waiting for the deferred cleanup (mCleanupSet): no longer
+     *  fires, and it and everything under it read as gone to exists/isActive/
+     *  findItems, but it is still counted by getProfileStats until freed. */
+    dead: boolean;
+    /** Its script did not compile: made and findable, but never fires and
+     *  isActive() says 0 (TAlias::setScript). */
+    uncompiled: boolean;
+    /** Run once when the item is killed or removed, to release its callback. */
+    onFree?: () => void;
+    freed?: boolean;
+}
+
+/** What a caller can tell the engine about a temp item. */
+export interface TempPatternOptions {
+    /** The id to file it under, drawn by the caller from the profile's shared
+     *  sequence; the engine draws its own when absent (a bare test engine). */
+    id?: number;
+    uncompiled?: boolean;
+    onFree?: () => void;
+}
+
+export class PatternEngine<T extends PatternItem> {
+    protected readonly temp = new Map<number, TempPatternItem>();
+    /** Fallback id source for a bare engine — see TempPatternOptions.id. */
+    private idSeq = new ItemIdSequence();
+    /** Each permanent item hanging off a temporary one (as of the last
+     *  loadPerm) → that temporary root's id; and the parent refs in use. */
+    protected permTempRoot = new Map<string, number>();
+    private tempParentRefs = new Set<string>();
+    private orphanedParents = new Set<string>();
+    private onOrphans: (() => void) | null = null;
     protected permCompiled: Array<{ item: T; re: AliasPattern }> = [];
     /** {@link permCompiled} by item id — what is loaded and active right now. */
     protected permById = new Map<string, { item: T; re: AliasPattern }>();
@@ -96,7 +129,8 @@ export class PatternEngine<T extends PatternItem> {
     /** Each item in {@link permOrder} → the seq of the root it hangs under. */
     protected permRootSeq = new Map<string, number>();
 
-    /** Number of live session-scoped temp items (Mudlet `getProfileStats` temp count). */
+    /** Temp items in the tree — killed ones too, until the cleanup frees them
+     *  (desktop's getProfileStats walks the root list unfiltered). */
     get tempCount(): number {
         return this.temp.size;
     }
@@ -114,14 +148,136 @@ export class PatternEngine<T extends PatternItem> {
      * //, which matches every command typed and consumed the lot. A pattern
      * that PCRE rejects now simply never matches — see {@link AliasPattern}.
      */
-    addTemp(pattern: string, fn: TempFn): () => void {
+    addTemp(pattern: string, fn: TempFn, opts: TempPatternOptions = {}): () => void {
+        const id = this.createTemp(pattern, fn, opts);
+        return () => this.removeTemp(id);
+    }
+
+    /** {@link addTemp}, handing back the item's id rather than a disposer. */
+    createTemp(pattern: string, fn: TempFn, opts: TempPatternOptions = {}): number {
         const re = pattern !== '' ? new AliasPattern(pattern) : null;
-        const id = this.nextInternalId++;
-        this.temp.set(id, { pattern: re, fn, seq: this.regCounter++ });
-        return () => {
-            this.temp.delete(id);
-            re?.destroy();
-        };
+        const id = opts.id ?? this.idSeq.next();
+        this.temp.set(id, {
+            pattern: re, fn, seq: this.regCounter++, enabled: true, dead: false,
+            uncompiled: !!opts.uncompiled, onFree: opts.onFree,
+        });
+        return id;
+    }
+
+    /** Take a temp item out of the tree now, releasing its callback. Its
+     *  permanent children are left for the owner to remove (see
+     *  takeOrphanedParents). */
+    removeTemp(id: number): void {
+        const entry = this.temp.get(id);
+        if (!entry) return;
+        this.release(entry);
+        this.temp.delete(id);
+        entry.pattern?.destroy();
+        const ref = tempParentRef(id);
+        if (this.tempParentRefs.has(ref)) {
+            this.orphanedParents.add(ref);
+            this.onOrphans?.();
+        }
+    }
+
+    private release(entry: TempPatternItem): void {
+        if (entry.freed) return;
+        entry.freed = true;
+        entry.onFree?.();
+    }
+
+    /** Mudlet `killAlias` on a temp item: it stops at once and is queued for
+     *  the deferred cleanup, which frees it with its whole subtree. False for
+     *  an unknown id or one already waiting to be freed. */
+    killTemp(id: number): boolean {
+        const entry = this.temp.get(id);
+        if (!entry || entry.dead) return false;
+        entry.dead = true;
+        this.release(entry);
+        return true;
+    }
+
+    /** `killAlias(name)` for the temporaries: the newest live one so named. */
+    killTempByName(name: string): boolean {
+        const id = this.newestTempByName(name, false);
+        return id !== null && this.killTemp(id);
+    }
+
+    /** Free every temp item killed since the last call — the unit's
+     *  doCleanup(). */
+    reapKilled(): void {
+        for (const [id, entry] of [...this.temp]) if (entry.dead) this.removeTemp(id);
+    }
+
+    /** Tree keys of freed temp items that had permanent children, since the
+     *  last call. Their owner removes those subtrees from the store. */
+    takeOrphanedParents(): string[] {
+        if (this.orphanedParents.size === 0) return [];
+        const out = [...this.orphanedParents];
+        this.orphanedParents.clear();
+        return out;
+    }
+
+    /** Told when {@link takeOrphanedParents} has something to hand over. */
+    setOrphanListener(fn: (() => void) | null): void {
+        this.onOrphans = fn;
+    }
+
+    /** In the tree, killed or not. */
+    hasTemp(id: number): boolean {
+        return this.temp.has(id);
+    }
+
+    /** In the tree and not killed — what exists() counts. */
+    hasLiveTemp(id: number): boolean {
+        const entry = this.temp.get(id);
+        return !!entry && !entry.dead;
+    }
+
+    /** Live, switched on and compiled — isActive(). */
+    tempIsActive(id: number): boolean {
+        const entry = this.temp.get(id);
+        return !!entry && !entry.dead && entry.enabled && !entry.uncompiled;
+    }
+
+    /** Live temp ids, ascending, whose name — the id itself — passes `test`. */
+    liveTempIds(test: (name: string) => boolean): number[] {
+        const out: number[] = [];
+        for (const [id, entry] of this.temp) if (!entry.dead && test(String(id))) out.push(id);
+        return out.sort((a, b) => a - b);
+    }
+
+    /** The temp item named `name` — its id's exact spelling — or null; a
+     *  killed one only when `includeDead` (perm* parent resolution). */
+    newestTempByName(name: string, includeDead: boolean): number | null {
+        const id = Number(name);
+        if (!Number.isInteger(id) || String(id) !== name) return null;
+        const entry = this.temp.get(id);
+        return entry && (includeDead || !entry.dead) ? id : null;
+    }
+
+    /** enable/disable a live temp item. False for an unknown or killed one —
+     *  re-enabling a corpse would resurrect it. */
+    setTempEnabled(id: number, enabled: boolean): boolean {
+        const entry = this.temp.get(id);
+        if (!entry || entry.dead) return false;
+        entry.enabled = enabled;
+        return true;
+    }
+
+    /** The order seq of a permanent item's root: its own root's, or — for one
+     *  hanging off a temporary item — that item's. */
+    protected rootSeqOf(id: string): number {
+        const temp = this.permTempRoot.get(id);
+        if (temp !== undefined) return this.temp.get(temp)?.seq ?? Number.MAX_SAFE_INTEGER;
+        return this.permRootSeq.get(id) ?? Number.MAX_SAFE_INTEGER;
+    }
+
+    /** Whether a permanent item's temporary root (if it has one) is live and
+     *  active: desktop reaches it only through that parent's match(). */
+    protected reachable(id: string): boolean {
+        const temp = this.permTempRoot.get(id);
+        return temp === undefined || this.tempIsActive(temp);
     }
 
     /**
@@ -149,6 +305,18 @@ export class PatternEngine<T extends PatternItem> {
         const byId = new Map(items.map(i => [i.id, i]));
         for (const id of this.permReg.keys()) {
             if (!byId.has(id)) this.permReg.delete(id);
+        }
+        // Permanent items hanging off a temporary one (see TEMP_PARENT_PREFIX).
+        this.permTempRoot = new Map();
+        this.tempParentRefs.clear();
+        for (const item of items) {
+            if (isTempParentRef(item.parentId)) this.tempParentRefs.add(item.parentId);
+        }
+        if (this.tempParentRefs.size > 0) {
+            for (const item of items) {
+                const root = tempRootOf(item, byId);
+                if (root !== null) this.permTempRoot.set(item.id, root);
+            }
         }
         const rootSeq = (item: T): number => {
             let cur = item;
@@ -186,8 +354,14 @@ export class PatternEngine<T extends PatternItem> {
     }
 
     destroy(): void {
-        for (const { pattern } of this.temp.values()) pattern?.destroy();
+        for (const entry of this.temp.values()) {
+            this.release(entry);
+            entry.pattern?.destroy();
+        }
         this.temp.clear();
+        this.orphanedParents.clear();
+        this.tempParentRefs.clear();
+        this.permTempRoot = new Map();
         for (const { re } of this.permCompiled) re.destroy();
         this.permCompiled = [];
         this.permById = new Map();
