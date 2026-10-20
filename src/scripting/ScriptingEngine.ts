@@ -610,14 +610,16 @@ export class ScriptingEngine implements EngineHost {
         // A freed temporary trigger takes the permanent ones under it along.
         // Coalesced: a cleanup frees many at once.
         let orphanDrainQueued = false;
-        triggerEngine.setOrphanListener(() => {
+        const drainOrphans = () => {
             if (orphanDrainQueued) return;
             orphanDrainQueued = true;
             queueMicrotask(() => {
                 orphanDrainQueued = false;
                 if (!this.disposed) this.removeOrphanedTempChildren();
             });
-        });
+        };
+        triggerEngine.setOrphanListener(drainOrphans);
+        timerEngine.setOrphanListener(drainOrphans);
         this.connectionId = connectionId;
         // Bind the host here rather than after the Lua runtime resolves: the
         // runtime is created asynchronously and executes the whole bundled
@@ -3466,6 +3468,23 @@ export class ScriptingEngine implements EngineHost {
                     newestByName: (name, includeDead) => e.newestTempByName(name, includeDead),
                 };
             }
+            case 'timer': {
+                // A temp timer is named after its id (TimerUnit::registerTimer)
+                // and has no name of its own.
+                const e = this.timerEngine;
+                return {
+                    hasLive: id => e.hasLiveTemp(id),
+                    isActive: id => e.tempIsActive(id),
+                    name: id => (e.hasLiveTemp(id) ? String(id) : null),
+                    liveIds: test => e.liveTempIds(test),
+                    newestByName: (name, includeDead) => {
+                        if (!/^\d+$/.test(name)) return null;
+                        const id = Number(name);
+                        if (String(id) !== name) return null;
+                        return (includeDead ? e.hasTemp(id) : e.hasLiveTemp(id)) ? id : null;
+                    },
+                };
+            }
             default: return null;
         }
     }
@@ -4143,6 +4162,8 @@ export class ScriptingEngine implements EngineHost {
     private removeOrphanedTempChildren(): void {
         const refs = this.triggerEngine.takeOrphanedParents();
         if (refs.length > 0) this.removeSubtreesUnder('trigger', new Set(refs));
+        const timerRefs = this.timerEngine.takeOrphanedParents();
+        if (timerRefs.length > 0) this.removeSubtreesUnder('timer', new Set(timerRefs));
     }
 
     /** Remove every permanent item hanging off a temporary one, of every kind. */
@@ -4225,7 +4246,7 @@ export class ScriptingEngine implements EngineHost {
         const timers = store.connectionTimers[this.connectionId] ?? [];
         let parentId: string | null = null;
         if (parent && parent.length > 0) {
-            parentId = permParentId(timers, parent);
+            parentId = this.resolvePermParent('timer', timers, parent);
             if (parentId === null) return -1;
         }
         const seconds = Number.isFinite(delay) && delay > 0 ? delay : 0;
@@ -5207,6 +5228,7 @@ export class ScriptingEngine implements EngineHost {
         this.api.setCaptureShiftHook(null);
         this.triggerEngine.setPermDisabler(null);
         this.triggerEngine.setOrphanListener(null);
+        this.timerEngine.setOrphanListener(null);
         this.triggerEngine.setCompileErrorReporter(null);
         // Unbind the host. This does NOT guard against late *Lua* calls —
         // lua_close ran a few lines up. It guards against DOM-side callers

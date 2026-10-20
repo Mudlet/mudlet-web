@@ -1714,6 +1714,10 @@ describe('engine tempCount — live session-scoped temp items', () => {
     const id = e.addTemp(100, () => {});
     expect(e.tempCount).toBe(1);
     e.killTimer(id);
+    // Still in the tree, and counted, until the deferred cleanup frees it —
+    // desktop's getProfileStats walks the root list unfiltered.
+    expect(e.tempCount).toBe(1);
+    e.reapKilled();
     expect(e.tempCount).toBe(0);
   });
 

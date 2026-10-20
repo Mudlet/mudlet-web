@@ -61,6 +61,7 @@ const CONN = 'temp-parent-tree-conn';
 type EngineInternals = {
     triggersReady: boolean;
     applyTriggersFromStore: () => void;
+    applyTimersFromStore: () => void;
     scheduleTriggerApply: () => void;
     api: ScriptingAPI;
 };
@@ -70,6 +71,7 @@ describe('a permanent item under a temporary one', () => {
     let internals: EngineInternals;
     let api: ScriptingAPI;
     let triggers: InstanceType<typeof TriggerEngine>;
+    let timers: InstanceType<typeof TimerEngine>;
     let scripts: Record<string, (matches: (string | undefined)[]) => void>;
     let out: string[];
     let unsubscribe: () => void = () => {};
@@ -77,10 +79,12 @@ describe('a permanent item under a temporary one', () => {
     const boot = async () => {
         useAppStore.setState(s => ({
             connectionTriggers: { ...s.connectionTriggers, [CONN]: [] },
+            connectionTimers: { ...s.connectionTimers, [CONN]: [] },
         }));
         const session = new MudSession();
         triggers = new TriggerEngine();
-        engine = new ScriptingEngine(session, new AliasEngine(), triggers, new TimerEngine(), new KeyEngine(), CONN);
+        timers = new TimerEngine();
+        engine = new ScriptingEngine(session, new AliasEngine(), triggers, timers, new KeyEngine(), CONN);
         vi.spyOn(session, 'sendData').mockImplementation(() => {});
         await TriggerEngine.ready();
         internals = engine as unknown as EngineInternals;
@@ -89,12 +93,14 @@ describe('a permanent item under a temporary one', () => {
         internals.applyTriggersFromStore();
         unsubscribe = useAppStore.subscribe((state, prev) => {
             if (state.connectionTriggers[CONN] !== prev.connectionTriggers[CONN]) internals.scheduleTriggerApply();
+            if (state.connectionTimers[CONN] !== prev.connectionTimers[CONN]) internals.applyTimersFromStore();
         });
     };
 
     const feed = (text: string) =>
         engine.processFlushBatch([{ text, type: 'mud', fromServer: true }]);
     const storeTriggers = () => useAppStore.getState().connectionTriggers[CONN] ?? [];
+    const storeTimers = () => useAppStore.getState().connectionTimers[CONN] ?? [];
     /** A temp trigger as tempRegexTrigger makes it: an id from the shared sequence. */
     const tempRegex = (pattern: string, onFire: () => void) =>
         triggers.createTemp(pattern, onFire, 'regex', { id: engine.allocateItemId() });
@@ -117,7 +123,8 @@ describe('a permanent item under a temporary one', () => {
         vi.restoreAllMocks();
         useAppStore.setState(s => {
             const { [CONN]: _t, ...restT } = s.connectionTriggers;
-            return { connectionTriggers: restT };
+            const { [CONN]: _m, ...restM } = s.connectionTimers;
+            return { connectionTriggers: restT, connectionTimers: restM };
         });
         try { engine.destroy(); } catch { /* teardown best-effort */ }
     });
@@ -212,6 +219,45 @@ describe('a permanent item under a temporary one', () => {
             feed('hit orc\nhit elf\norc\n');
             expect(out).toEqual(['child orc']);
             expect(engine.existsByName(parent, 'trigger')).toBe(1);
+        });
+    });
+
+    describe('timers', () => {
+        it('is an offset timer its temporary parent never arms; enabling it runs it once', async () => {
+            await boot();
+            const parent = timers.addTemp(600, () => {});
+            const child = engine.createPermTimer('ptOffset', String(parent), 1, 'x');
+            expect(child).toBeGreaterThan(parent);
+            expect(storeTimers().find(t => t.name === 'ptOffset')!.parentId).toBe(tempParentRef(parent));
+            expect(engine.existsByName(child, 'timer')).toBe(1);
+            // Created inactive, as every permTimer is.
+            expect(engine.isActiveByName(child, 'timer', false)).toBe(0);
+            expect(timers.remainingTime('ptOffset')).toBe(-1);
+
+            engine.toggleTimerByName('ptOffset', true);
+            expect(timers.remainingTime('ptOffset')).toBeGreaterThan(0);
+            expect(timers.pumpDue(Date.now() + 2000)).toBe(1);
+            // One fire, then it is spent: nothing re-arms it.
+            expect(timers.remainingTime('ptOffset')).toBe(-1);
+            expect(timers.pumpDue(Date.now() + 4000)).toBe(0);
+        });
+
+        it('is gone with its killed parent at once, and freed by the cleanup', async () => {
+            await boot();
+            const parent = timers.addTemp(600, () => {});
+            const child = engine.createPermTimer('ptTimerKill', String(parent), 600, 'x');
+            const before = engine.getProfileStats().timers as { total: number; temp: number };
+            expect(timers.killTimer(parent)).toBe(true);
+            expect(engine.existsByName(child, 'timer')).toBe(0);
+            expect(engine.existsByName('ptTimerKill', 'timer')).toBe(0);
+            expect(engine.isActiveByName(child, 'timer', false)).toBe(0);
+            expect(engine.findItemsByName('ptTimerKill', 'timer', true, true)).toEqual([]);
+            expect(engine.getProfileStats().timers).toMatchObject(before);
+
+            feed('anything\n');
+            await Promise.resolve();
+            expect(storeTimers().some(t => t.name === 'ptTimerKill')).toBe(false);
+            expect((engine.getProfileStats().timers as { total: number }).total).toBe(before.total - 2);
         });
     });
 });
