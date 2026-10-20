@@ -5230,8 +5230,8 @@ end
 -- trigger is built with highlight / sound / fire-length / match-all options,
 -- so imported scripts and packages rely on it.
 --
--- Mudlet Web backs it with a session-scoped trigger node (see
--- ScriptingEngine.createTempComplexTrigger), which carries everything a
+-- Mudlet Web backs it with a temporary trigger in the trigger engine's tree
+-- (see ScriptingEngine.createTempComplexTrigger), which carries everything a
 -- permanent trigger can: multiline AND, filter, match-all, fire length, line
 -- delta, colour patterns, and the built-in highlight — painted by the trigger
 -- engine, with the colours resolved as Qt colour names on the JS side. This

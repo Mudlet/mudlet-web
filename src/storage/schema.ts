@@ -910,16 +910,14 @@ export interface TriggerNode extends BaseNode {
                                  // condition within which the rest must match. 0 = the same line only.
     isFilter: boolean;           // filter chain: pass captured/matched text to children instead of full line
     /**
-     * Session-scoped: created by `tempComplexRegexTrigger`, which needs a real
-     * trigger node rather than the flat temp-trigger primitive because it can
-     * ask for multiline-AND, a filter chain, a fire length, a line delta — all
-     * of them properties of a node in the tree — and can be named as another
-     * trigger's parent.
+     * Session-scoped: an `isTempTrigger="yes"` trigger from a package or
+     * profile XML, which desktop loads as a temporary TTrigger in the tree.
+     * (Script-created temporary triggers, tempComplexRegexTrigger's included,
+     * never reach the store: they live in the trigger engine — see
+     * TEMP_PARENT_PREFIX.) killTrigger can remove it.
      *
-     * Not persisted (see serializeProfileData), and neither is anything hanging
-     * under it: a permanent trigger parented to a temporary one goes when its
-     * parent does, so saving it would restore a child pointing at a parent that
-     * no longer exists.
+     * Not persisted (see persistableNodes), and neither is anything hanging
+     * under it: desktop's XMLexport skips a temporary root's whole subtree.
      */
     temporary?: boolean;
     /**
