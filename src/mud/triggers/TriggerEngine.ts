@@ -1166,7 +1166,8 @@ export class TriggerEngine {
             this.orphanedParents.add(entry.key);
             this.onOrphans?.();
         }
-        if (entry.kind === 'complex') this.recompile();
+        // A killed complex one is already out of the compiled tree (see killTemp).
+        if (entry.kind === 'complex' && !entry.dead) this.recompile();
     }
 
     private release(entry: TempEntry): void {
@@ -1186,6 +1187,7 @@ export class TriggerEngine {
         if (!entry || entry.dead) return false;
         entry.dead = true;
         this.release(entry);
+        if (entry.kind === 'complex') this.recompile();
         return true;
     }
 
@@ -1240,7 +1242,10 @@ export class TriggerEngine {
     /** Whether a live temp trigger is switched on and able to fire — isActive(). */
     tempIsActive(id: number): boolean {
         const entry = this.temp.get(id);
-        return !!entry && !entry.dead && entry.enabled && !entry.uncompiled;
+        if (!entry || entry.dead || !entry.enabled || entry.uncompiled) return false;
+        // A complex one whose pattern will not compile is left switched off,
+        // as a permanent trigger is (mOK_init false: Tree::isActive wants state()).
+        return !this.invalidPatterns.has(entry.key);
     }
 
     /** A live temp trigger's name, or null. */
@@ -1358,8 +1363,14 @@ export class TriggerEngine {
         // nodes the engine holds for them. Their seqs are their own (see
         // seqOf), so they stay out of permReg.
         let complex: TriggerNode[] | null = null;
+        // A killed one is left out: it can never fire again, and its compiled
+        // patterns are freed now rather than at the cleanup — a trigger that
+        // re-creates itself under its own name (tempComplexRegexTrigger
+        // extends and kills its namesake) would otherwise pile up a growing
+        // pattern list per generation until the wasm heap gave out. It stays
+        // in allById below, so what hangs under it still sees it as killed.
         for (const t of this.temp.values()) {
-            if (t.kind === 'complex') (complex ??= []).push(t.node);
+            if (t.kind === 'complex' && !t.dead) (complex ??= []).push(t.node);
         }
         const items = complex ? [...storeItems, ...complex] : storeItems;
         this.allById = new Map(items.map(i => [i.id, i]));

@@ -3862,14 +3862,18 @@ export class ScriptingEngine implements EngineHost {
         const keys = store.connectionKeybindings[cid] ?? [];
         const scripts = store.connectionScripts[cid] ?? [];
 
-        const tally = (list: BaseTreeNode[], tempCount: number, active = list.filter(i => !i.isGroup && i.enabled).length) => {
+        // `tempActive`: of the temp items, the ones still active — a killed
+        // one waiting for the cleanup is counted, but no longer as active.
+        const tally = (list: BaseTreeNode[], tempCount: number, active = list.filter(i => !i.isGroup && i.enabled).length,
+            tempActive = tempCount) => {
             const items = list.filter(i => !i.isGroup);
             return {
                 total: items.length + tempCount,
                 temp: tempCount,
-                active: active + tempCount,
+                active: active + tempActive,
             };
         };
+        const liveTemps = (type: string) => this.tempTree(type)?.liveIds(() => true).length ?? 0;
 
         const tempTriggers = this.triggerEngine.tempCount;
         let patternsTotal = this.triggerEngine.tempPatternCount;
@@ -3881,10 +3885,10 @@ export class ScriptingEngine implements EngineHost {
             if (t.enabled) patternsActive += n;
         }
         return {
-            triggers: { ...tally(triggers, tempTriggers), patterns: { total: patternsTotal, active: patternsActive } },
+            triggers: { ...tally(triggers, tempTriggers, undefined, liveTemps('trigger')), patterns: { total: patternsTotal, active: patternsActive } },
             aliases: tally(aliases, this.aliasEngine.tempCount),
             // Mudlet counts a timer by the same state isActive reports.
-            timers: tally(timers, this.timerEngine.tempCount, this.timerEngine.countPermActive(timers)),
+            timers: tally(timers, this.timerEngine.tempCount, this.timerEngine.countPermActive(timers), liveTemps('timer')),
             keys: tally(keys, this.keyEngine.tempCount),
             scripts: tally(scripts, 0,
                 scripts.filter(s => !s.isGroup && s.enabled && !this.failedScripts.has(s.id)).length),

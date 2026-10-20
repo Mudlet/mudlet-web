@@ -173,8 +173,8 @@ describe('a permanent item under a temporary one', () => {
             expect(engine.existsByName('ptKill', 'trigger')).toBe(0);
             expect(engine.isActiveByName(child, 'trigger', false)).toBe(0);
             expect(engine.findItemsByName('ptKill', 'trigger', true, true)).toEqual([]);
-            // Still in the tree until the cleanup: counted.
-            expect(engine.getProfileStats().triggers).toMatchObject(before);
+            // Counted until freed, but the killed parent no longer as active.
+            expect(engine.getProfileStats().triggers).toMatchObject({ total: before.total, temp: before.temp });
 
             feed('anything\n');
             await Promise.resolve();
@@ -222,6 +222,31 @@ describe('a permanent item under a temporary one', () => {
         });
     });
 
+    describe('tempComplexRegexTrigger in the engine tree', () => {
+        it('a name re-used extends and replaces the live namesake, and a self-re-creating one is stopped as a runaway', async () => {
+            await boot();
+            const reports: string[] = [];
+            triggers.setRunawayReporter(t => reports.push(t));
+            let fires = 0;
+            const make = () => engine.createTempComplexTrigger({
+                name: 'ptWatcher', patterns: [{ type: 'regex', text: '^watched$' }], code: 'x',
+                multiline: false, isFilter: false, multipleMatches: false, fireLength: 0, delta: 0,
+            });
+            const first = make();
+            const second = make();
+            // One live trigger under the name, carrying both pattern lists.
+            expect(engine.existsByName('ptWatcher', 'trigger')).toBe(1);
+            expect(engine.existsByName(first, 'trigger')).toBe(0);
+            expect(triggers.tempPatterns(second)).toHaveLength(2);
+
+            scripts.ptWatcher = () => { fires++; make(); };
+            feed('watched\n');
+            expect(reports).toHaveLength(1);
+            expect(reports[0]).toContain("trigger 'ptWatcher'");
+            expect(fires).toBeGreaterThan(1000);
+        });
+    });
+
     describe('timers', () => {
         it('is an offset timer its temporary parent never arms; enabling it runs it once', async () => {
             await boot();
@@ -252,7 +277,7 @@ describe('a permanent item under a temporary one', () => {
             expect(engine.existsByName('ptTimerKill', 'timer')).toBe(0);
             expect(engine.isActiveByName(child, 'timer', false)).toBe(0);
             expect(engine.findItemsByName('ptTimerKill', 'timer', true, true)).toEqual([]);
-            expect(engine.getProfileStats().timers).toMatchObject(before);
+            expect(engine.getProfileStats().timers).toMatchObject({ total: before.total, temp: before.temp });
 
             feed('anything\n');
             await Promise.resolve();
