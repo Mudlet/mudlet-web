@@ -10087,8 +10087,8 @@ end
 -- Mudlet setBackgroundImage([window,] path [, mode [, fullWindow]]). GUIUtils'
 -- wrapper translates a mode NAME through mudlet.BgImageMode and passes anything
 -- it doesn't recognise straight through, so a bad name arrives here as a string
--- and has to be refused. `cover` (mode 5) is a full-window mode: a console is
--- told so rather than left with a background it did not ask for.
+-- and has to be refused. The mode's range and the full-window rules are
+-- ScriptingAPI.setBackgroundImage's, in desktop's order.
 do
     local _rawSetBackgroundImage = setBackgroundImage
     function setBackgroundImage(...)
@@ -10107,13 +10107,7 @@ do
                 error("setBackgroundImage: bad argument #" .. modePos
                     .. " type (mode as number expected, got " .. type(mode) .. "!)", 2)
             end
-            mode = modeNum
             args[modePos] = modeNum
-            local fullWindow = (modePos < n) and args[n] or false
-            local target = (modePos > 2) and args[1] or 'main'
-            if mode == 5 and not fullWindow and target ~= 'main' then
-                return nil, "setBackgroundImage: mode 'cover' is only available for the main window"
-            end
         end
         local r = _rawSetBackgroundImage(unpack(args, 1, n))
         if type(r) == 'string' then return nil, r end

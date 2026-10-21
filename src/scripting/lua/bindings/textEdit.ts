@@ -233,24 +233,24 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
         return [c.r, c.g, c.b, c.a];
     });
 
-    // Mudlet `setBackgroundImage` — overloaded across labels, miniconsoles,
-    // userwindows, and the main window. The GUIUtils.lua wrapper has
-    // already coerced any string mode ("center", "tile", …) into a number
-    // by the time this binding fires, so the second/third arg's runtime
-    // type is enough to disambiguate. All overload routing lives in
-    // ScriptingAPI.setBackgroundImage — keep the binding thin so the
-    // C++/Lua overload set stays in one place. A refusal comes back as
-    // desktop's message, which Bridge.lua shapes into (nil, errMsg).
+    // Mudlet `setBackgroundImage([name,] path [, mode [, fullWindow]])` —
+    // overloaded across labels, miniconsoles, userwindows, and the main
+    // window. The GUIUtils.lua wrapper has already coerced any string mode
+    // ("center", "tile", …) into a number by the time this binding fires.
+    // As TLuaInterpreter::setBackgroundImage, a string second argument means
+    // the first is a name; otherwise the first is the path and what follows
+    // is the mode and the flag, for the main console. A refusal comes back
+    // as desktop's message, which Bridge.lua shapes into (nil, errMsg).
     lua.global.set('setBackgroundImage', (a: unknown, b?: unknown, c?: unknown, d?: unknown) => {
         if (typeof a !== 'string') return false;
-        if (b === undefined) return api.setBackgroundImage(a);
-        if (c === undefined) {
-            if (typeof b === 'number') return api.setBackgroundImage(a, b);
-            if (typeof b === 'string') return api.setBackgroundImage(a, b);
-            return false;
-        }
-        if (typeof b !== 'string') return false;
-        return api.setBackgroundImage(a, b, Number(c), d === true);
+        const named = typeof b === 'string';
+        const mode = named ? c : b;
+        return api.setBackgroundImage(
+            named ? a : 'main',
+            named ? b : a,
+            mode === undefined ? undefined : Number(mode),
+            (named ? d : c) === true,
+        );
     });
 
     // Mudlet `resetBackgroundImage([windowName] [, fullWindow])`. No name →

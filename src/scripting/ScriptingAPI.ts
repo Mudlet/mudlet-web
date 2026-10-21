@@ -7708,6 +7708,21 @@ export class ScriptingAPI {
      * UI's background picture) relies on to know it is not showing.
      */
     setBackgroundImage(a: string, b?: string | number, c?: number, fullWindow?: unknown): true | string {
+        // Desktop's refusals, in its order, before anything is looked up.
+        const named = typeof b === 'string';
+        const rawMode = named ? c : b;
+        if (rawMode !== undefined) {
+            const mode = Math.trunc(Number(rawMode));
+            if (!(mode >= 1 && mode <= 5)) {
+                return `${mode} is not a valid mode! Valid modes are 1 'border', 2 'center', 3 'tile', 4 'style', 5 'cover'`;
+            }
+            if (mode === 5 && fullWindow !== true) {
+                return "mode 'cover' is not supported for the main display - pass true as the 4th argument to apply it to the full window background instead";
+            }
+        }
+        if (fullWindow === true && named && a !== '' && a !== 'main') {
+            return 'the full window background can only be used with the main console';
+        }
         if (fullWindow === true && typeof b === 'string' && Number(c) === 5 && (a === 'main' || a === '')
             && !this.labelImageLoads(b)) {
             return `could not use '${b}' as a full window background image`;
