@@ -126,6 +126,17 @@ export interface LabelState {
     onMouseLeave?: (event: LabelMouseEvent) => void;
     /** Tooltip text rendered via the title attribute. */
     tooltip?: string;
+    /** Mudlet setLabelAccessibleName — the name a screen reader gives the
+     *  label. Empty means none of its own: TLabelModel::effectiveAccessibleName
+     *  then names it after the text it shows, or else its tooltip. */
+    accessibleName?: string;
+    /** Mudlet setLabelAccessibleRole — `true` for "button", `false` for "text",
+     *  unset for "" (decided by the label's click and release callbacks, as
+     *  TLabelModel::actsAsButton does). */
+    accessibleButton?: boolean;
+    /** Mudlet setLabelLiveRegion — how a change to the label's text is spoken
+     *  while the profile's `accessibleLabels` setting is on. Unset is "off". */
+    liveRegion?: LabelLiveRegion;
     /** CSS cursor value (e.g. 'pointer', 'crosshair', 'none'). */
     cursor?: string;
     /** Animated GIF player installed by Mudlet's setMovie. Rendered as a
@@ -168,6 +179,45 @@ export interface LabelWheelEvent extends LabelMouseEvent {
 }
 
 type Listener = (labels: LabelState[]) => void;
+
+/** TLabelLiveRegion, by the name setLabelLiveRegion takes and getLabelLiveRegion gives. */
+export type LabelLiveRegion = 'off' | 'polite' | 'assertive';
+
+/** What getLabelAccessibleRole reports (Host::labelAccessibleRole). */
+export type LabelAccessibleRole = 'button' | 'graphic' | 'animation' | 'text';
+
+const BLOCK_TAGS = /^(?:ADDRESS|BLOCKQUOTE|CENTER|DD|DIV|DL|DT|H[1-6]|HR|LI|OL|P|PRE|TABLE|TD|TH|TR|UL)$/;
+
+/** QTextDocumentFragment::fromHtml(html).toPlainText(), simplified — the text
+ *  TLabelModel's plainName() names a label after. A block or line break is a
+ *  break in Qt's plain text, so it parts the words on either side here too,
+ *  where textContent would run them together. */
+export function labelPlainName(html: string): string {
+    if (!html) return '';
+    if (typeof document === 'undefined') return stripTagsNoDom(html.replace(/<br\s*\/?>/gi, ' ')).replace(/\s+/g, ' ').trim();
+    const probe = document.createElement('div');
+    probe.innerHTML = html;
+    let out = '';
+    const walk = (node: Node): void => {
+        if (node.nodeType === 3) { out += node.nodeValue ?? ''; return; }
+        if (node.nodeType !== 1) return;
+        const tag = (node as Element).tagName.toUpperCase();
+        if (tag === 'BR') { out += ' '; return; }
+        if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'HEAD' || tag === 'TITLE') return;
+        const block = BLOCK_TAGS.test(tag);
+        if (block) out += ' ';
+        for (const child of node.childNodes) walk(child);
+        if (block) out += ' ';
+    };
+    walk(probe);
+    // QString::simplified: every run of whitespace (U+00A0 included, as QChar::isSpace has it) is one space
+    return out.replace(/[\s\u00a0]+/g, ' ').trim();
+}
+
+/** Qt::mightBeRichText, closely enough to tell a tag-carrying tooltip from plain text. */
+function mightBeRichText(text: string): boolean {
+    return /<\/?[a-zA-Z][^<>]*>|&[a-zA-Z]+;|&#\d+;/.test(text);
+}
 
 /** Runs the action behind an `<a href>` clicked inside a label — installed by
  *  ScriptingAPI, which owns the send/prompt/openUrl/Lua machinery the schemes
@@ -314,6 +364,31 @@ const scheduleFlush: (fn: () => void) => void =
         ? (fn) => { requestAnimationFrame(() => fn()); }
         : (fn) => { setTimeout(fn, 0); };
 
+/** TLabelModel::actsAsButton: a role chosen for it, else whether it has a
+ *  click or release callback to press — never while clicks pass through it. */
+export function labelActsAsButton(lbl: Readonly<LabelState>): boolean {
+    return !lbl.clickThrough && (lbl.accessibleButton ?? (!!lbl.onClick || !!lbl.onMouseUp));
+}
+
+/** TLabelModel::effectiveAccessibleName. */
+export function effectiveAccessibleName(lbl: Readonly<LabelState>): string {
+    if (lbl.accessibleName) return lbl.accessibleName;
+    const text = labelPlainName(lbl.html);
+    if (text) return text;
+    const tip = lbl.tooltip ?? '';
+    return mightBeRichText(tip) ? labelPlainName(tip) : tip.replace(/[\s\u00a0]+/g, ' ').trim();
+}
+
+/** Host::labelAccessibleRole: a button whatever it shows, else what it shows —
+ *  a movie is an animation, an image with no text over it a graphic
+ *  (TLabel::showsImage), anything else text. */
+export function accessibleRole(lbl: Readonly<LabelState>): LabelAccessibleRole {
+    if (labelActsAsButton(lbl)) return 'button';
+    if (lbl.movie) return 'animation';
+    if (lbl.backgroundImage && labelPlainName(lbl.html) === '') return 'graphic';
+    return 'text';
+}
+
 export class LabelManager {
     /** Where a press or release a label has no callback for goes: TLabel hands
      *  it to the window under the label (`parent`), which raises it as that
@@ -329,6 +404,10 @@ export class LabelManager {
     private readonly byParent = new Map<string, Map<string, LabelState>>();
     private readonly listeners = new Map<string, Set<Listener>>();
     private linkActivator: LinkActivator | null = null;
+    /** The profile's `accessibleLabels` setting (Host::mAccessibleLabels): with it
+     *  on, a label that acts as a button takes keyboard focus and is pressed with
+     *  Space or Return, and a live region speaks its label's text changes. */
+    private accessibleLabelsOn = false;
 
     private indexAdd(lbl: LabelState): void {
         let bucket = this.byParent.get(lbl.parent);
@@ -867,6 +946,74 @@ export class LabelManager {
         lbl.tooltip = text && text.length > 0 ? text : undefined;
         this.notify(lbl.parent);
         return true;
+    }
+
+    /** TLabelModel::setAccessibleName. An empty name hands naming back to the
+     *  label's text and tooltip. */
+    setAccessibleName(name: string, accessibleName: string): boolean {
+        const lbl = this.labels.get(name);
+        if (!lbl) return false;
+        const next = accessibleName === '' ? undefined : accessibleName;
+        if (lbl.accessibleName !== next) {
+            lbl.accessibleName = next;
+            this.notify(lbl.parent);
+        }
+        return true;
+    }
+
+    /** TLabelModel::effectiveAccessibleName: the name set, else the text the
+     *  label shows, else its tooltip (read literally unless it is rich text,
+     *  as Qt shows it). Undefined for a label that is not there. */
+    getAccessibleName(name: string): string | undefined {
+        const lbl = this.labels.get(name);
+        if (!lbl) return undefined;
+        return effectiveAccessibleName(lbl);
+    }
+
+    /** TLabelModel::setAccessibleButton — `undefined` decides by the callbacks. */
+    setAccessibleButton(name: string, button: boolean | undefined): boolean {
+        const lbl = this.labels.get(name);
+        if (!lbl) return false;
+        if (lbl.accessibleButton !== button) {
+            lbl.accessibleButton = button;
+            this.notify(lbl.parent);
+        }
+        return true;
+    }
+
+    /** Host::labelAccessibleRole. Undefined for a label that is not there. */
+    getAccessibleRole(name: string): LabelAccessibleRole | undefined {
+        const lbl = this.labels.get(name);
+        if (!lbl) return undefined;
+        return accessibleRole(lbl);
+    }
+
+    setLiveRegion(name: string, liveRegion: LabelLiveRegion): boolean {
+        const lbl = this.labels.get(name);
+        if (!lbl) return false;
+        const next = liveRegion === 'off' ? undefined : liveRegion;
+        if (lbl.liveRegion !== next) {
+            lbl.liveRegion = next;
+            this.notify(lbl.parent);
+        }
+        return true;
+    }
+
+    getLiveRegion(name: string): LabelLiveRegion | undefined {
+        const lbl = this.labels.get(name);
+        if (!lbl) return undefined;
+        return lbl.liveRegion ?? 'off';
+    }
+
+    /** Host::setAccessibleLabels — every label's keyboard access follows it. */
+    setAccessibleLabels(on: boolean): void {
+        if (this.accessibleLabelsOn === on) return;
+        this.accessibleLabelsOn = on;
+        for (const parent of this.listeners.keys()) this.notify(parent);
+    }
+
+    get accessibleLabels(): boolean {
+        return this.accessibleLabelsOn;
     }
 
     setClickThrough(name: string, value: boolean): boolean {

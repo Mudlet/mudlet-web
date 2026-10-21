@@ -853,6 +853,9 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `setHexFgColor([window,] hex)` | ✅ | Pure Lua via GUIUtils.lua → setFgColor |
 | `setItalics([window,] bool)` | ✅ | JS-exposed |
 | `setLabelToolTip(name, text, delay)` | ✅ | JS-exposed |
+| `setLabelAccessibleName(name, accessibleName)` / `getLabelAccessibleName(name)` | ✅ | `aria-label` on a button or graphic label; the getter answers desktop's effective name (the name set, else the label's text, else its tooltip) |
+| `setLabelAccessibleRole(name, role)` / `getLabelAccessibleRole(name)` | ✅ | `"button"` / `"text"` / `""` (decided by the click and release callbacks, as desktop); a button is `role="button"`, and with `accessibleLabels` on it is in the Tab order and pressed with Space or Return. The getter also reports `"graphic"` / `"animation"` |
+| `setLabelLiveRegion(name, mode)` / `getLabelLiveRegion(name)` | ✅ | `polite` / `assertive` / `off` → `aria-live`, only while `accessibleLabels` is on and the label is shown, as desktop announces |
 | `setLabelClickCallback(name, fn)` | ✅ | Bridge.lua + JS callback registry |
 | `setLabelDoubleClickCallback(name, fn)` | ✅ | Bridge.lua |
 | `setLabelMoveCallback(name, fn)` | ✅ | Bridge.lua |
@@ -1020,7 +1023,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | `sysAppStyleSheetChange` | ✅ | `setAppStyleSheet` — args: css, tag |
 | `sysPathChanged` | ✅ | VFS mutation of a watched path — arg: path |
 | `sysMediaFinished` | ✅ | Sound/music/video source ended or stopped — args: name, path |
-| `sysSettingChanged` | ✅ | Desktop's list only: `compactInputLine`, `mapperPanelVisible`, `enableClosedCaption`, `advertiseScreenReader`, `announceIncomingText`, `muteMediaAPI`, `muteMediaGame` — args: getConfig key, new boolean; raised only when the value changed, from a script or the Settings UI alike. Plus `("main window font", family, size)` when the main console's font changes. Every other setting changes silently, as on desktop |
+| `sysSettingChanged` | ✅ | Desktop's list only: `compactInputLine`, `mapperPanelVisible`, `enableClosedCaption`, `advertiseScreenReader`, `announceIncomingText`, `accessibleLabels`, `muteMediaAPI`, `muteMediaGame` — args: getConfig key, new boolean; raised only when the value changed, from a script or the Settings UI alike. Plus `("main window font", family, size)` when the main console's font changes. Every other setting changes silently, as on desktop |
 | `sysSoundFinished` | ➖ | Not raised: desktop Mudlet raises only `sysMediaFinished` (the old name has no emitter in TMedia). |
 | `sysIrcMessage` | ❌ | No IRC client in Mudlet Web; nothing fires it (no stub needed — events don't break callers when never raised) |
 

@@ -311,6 +311,7 @@ const REPORTED_SETTINGS: readonly { key: string; inBag: boolean; default: boolea
     { key: 'enableClosedCaption',   inBag: true,  default: false },
     { key: 'advertiseScreenReader', inBag: true,  default: false },
     { key: 'announceIncomingText',  inBag: true,  default: true },
+    { key: 'accessibleLabels',      inBag: true,  default: false },
     { key: 'muteMediaAPI',          inBag: true,  default: false },
     { key: 'muteMediaGame',         inBag: true,  default: false },
 ];
@@ -6383,7 +6384,7 @@ export class ScriptingEngine implements EngineHost {
         // short, fixed list of boolean settings only — the ones whose Host
         // setters go through raiseSettingChangedEvent (compactInputLine,
         // mapperPanelVisible, enableClosedCaption, advertiseScreenReader,
-        // announceIncomingText) and MudletMedia's two mute gates — always as
+        // announceIncomingText, accessibleLabels) and MudletMedia's two mute gates — always as
         // (getConfig key, boolean), and only when the value actually changed.
         // Every other setting changes silently, so the store is watched for
         // those keys alone, compared by the value getConfig would answer.

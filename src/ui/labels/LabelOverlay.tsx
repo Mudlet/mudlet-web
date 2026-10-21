@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
+import { accessibleRole, labelActsAsButton } from './LabelManager';
 import type { LabelManager, LabelMouseEvent, LabelState, LabelWheelEvent } from './LabelManager';
 import type { MoviePlayer } from './gifMovie';
 import { cssTextToParts, qtDeclarationsToCss, qtAlignmentToFlex, cssEscape } from './qtCss';
@@ -82,6 +83,19 @@ function buildMouseEvent(e: React.MouseEvent<HTMLDivElement>): LabelMouseEvent {
         ctrl:    e.ctrlKey,
         shift:   e.shiftKey,
         meta:    e.metaKey,
+    };
+}
+
+/** The left click at the label's centre TLabel::press() delivers for a
+ *  keyboard or screen-reader activation. */
+function buildPressEvent(el: HTMLElement): LabelMouseEvent {
+    const rect = el.getBoundingClientRect();
+    const x = Math.round(rect.width / 2);
+    const y = Math.round(rect.height / 2);
+    return {
+        button: 'LeftButton', buttons: ['LeftButton'], x, y,
+        globalX: Math.round(rect.left) + x, globalY: Math.round(rect.top) + y,
+        alt: false, ctrl: false, shift: false, meta: false,
     };
 }
 
@@ -428,6 +442,36 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
         ? (e: React.MouseEvent<HTMLDivElement>) => e.preventDefault()
         : undefined;
 
+    // Accessibility (TLabel / TLabelModel). A label that acts as a button —
+    // the role a script chose, else whether it has a click or release
+    // callback — is a button to assistive technology; one showing only an
+    // image is a graphic. With the profile's accessibleLabels on, a button
+    // also joins the Tab order and Space or Return presses it, as
+    // TLabel::keyPressEvent does: a left press then a release at its centre,
+    // the release only if the press left the label in place. A held key or
+    // one with a modifier still isn't typing, so it presses nothing.
+    const role = accessibleRole(l);
+    const keyboard = manager.accessibleLabels && labelActsAsButton(l);
+    const onKeyDown = keyboard
+        ? (e: React.KeyboardEvent<HTMLDivElement>) => {
+            if (e.key !== ' ' && e.key !== 'Enter') return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.repeat || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+            const cur = ref.current;
+            const ev = buildPressEvent(e.currentTarget);
+            cur.onMouseDown?.(ev);
+            cur.onClick?.(ev);
+            if (manager.get(cur.name) === cur) cur.onMouseUp?.(ev);
+        }
+        : undefined;
+    const ariaRole = role === 'button' ? 'button' : role === 'graphic' || role === 'animation' ? 'img' : undefined;
+    // A generic box can't carry a name, so only a button or a graphic gets one;
+    // a text label is read by what it says, as a screen reader reads a QLabel.
+    const ariaLabel = ariaRole ? (l.accessibleName || (ariaRole === 'img' ? l.tooltip : undefined)) : undefined;
+    // TLabel::announcesTextChanges: only with accessibleLabels on and the label in view.
+    const ariaLive = manager.accessibleLabels && l.visible && l.liveRegion ? l.liveRegion : undefined;
+
     // A movie (setMovie) replaces the html content, like QLabel. The canvas
     // sits left-aligned / vertically centered (QLabel's default pixmap
     // alignment) and is clipped to the label's geometry.
@@ -445,6 +489,11 @@ function Label({ l, manager, zIndex }: { l: LabelState; manager: LabelManager; z
             style={style}
             data-mudlet-label={l.name}
             title={l.tooltip}
+            role={ariaRole}
+            aria-label={ariaLabel || undefined}
+            aria-live={ariaLive}
+            tabIndex={keyboard ? 0 : undefined}
+            onKeyDown={onKeyDown}
             onClick={onClick}
             onContextMenu={onContextMenu}
             onPointerDown={onPointerDown}

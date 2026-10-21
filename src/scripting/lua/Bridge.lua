@@ -2784,6 +2784,54 @@ do
         return __getLabelToolTip(name)
     end
 
+    -- TLuaInterpreter's label accessibility functions. The argument types are
+    -- checked (and raised on) by argContracts.ts; what is left is desktop's
+    -- order of refusals: an empty name, then a value it does not know, then a
+    -- label that is not there - each as (nil, message).
+    do
+        local EMPTY = "a label cannot have an empty string as its name"
+        local function lookup(name)
+            if name == "" then return EMPTY end
+            if __windowType(name) ~= 'label' then
+                return "label name '" .. name .. "' not found"
+            end
+        end
+        local function setter(raw, check)
+            return function(name, value)
+                name, value = __mudlet_str(name) or name, __mudlet_str(value) or value
+                if name == "" then return nil, EMPTY end
+                local bad = check and check(value)
+                if bad then return nil, bad end
+                local err = lookup(name)
+                if err then return nil, err end
+                raw(name, value)
+                return true
+            end
+        end
+        local function getter(raw)
+            return function(name)
+                name = __mudlet_str(name) or name
+                local err = lookup(name)
+                if err then return nil, err end
+                return raw(name)
+            end
+        end
+        setLabelAccessibleName = setter(__mudlet_setLabelAccessibleName)
+        getLabelAccessibleName = getter(__mudlet_getLabelAccessibleName)
+        setLabelAccessibleRole = setter(__mudlet_setLabelAccessibleRole, function(role)
+            if role ~= "button" and role ~= "text" and role ~= "" then
+                return "'" .. role .. "' is not a valid role - use 'button', 'text', or '' to decide by the label's callbacks"
+            end
+        end)
+        getLabelAccessibleRole = getter(__mudlet_getLabelAccessibleRole)
+        setLabelLiveRegion = setter(__mudlet_setLabelLiveRegion, function(mode)
+            if mode ~= "polite" and mode ~= "assertive" and mode ~= "off" then
+                return "'" .. mode .. "' is not a valid live region - use 'polite', 'assertive' or 'off'"
+            end
+        end)
+        getLabelLiveRegion = getter(__mudlet_getLabelLiveRegion)
+    end
+
     -- getLabelStyleSheet answers "" for a label that exists but has no CSS, so
     -- the miss has to be told apart by asking whether the label is there.
     local _rawGetLabelStyleSheet = getLabelStyleSheet
