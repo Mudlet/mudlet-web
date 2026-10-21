@@ -549,13 +549,15 @@ export class TimerEngine {
             return;
         }
         // An offset timer is reported by its switch, and its own flag belongs
-        // to its parent's firing (TTimer::execute). Under a TEMPORARY parent
-        // nothing ever arms it — a temp timer's execute() returns before its
-        // children loop — so the enable is all there is: TTimer::enableTimer
-        // starts its QTimer once (when it and its parent can be unlocked), and
-        // its own execute() deactivates it after that one fire.
+        // to its parent's firing (TTimer::execute). Enabling it is a start of
+        // its own all the same: TTimer::enableTimer starts its QTimer once
+        // (when it and every ancestor can be unlocked), and its own execute()
+        // deactivates it after that one fire. Under a permanent parent the
+        // parent's next fire re-arms it as usual; under a TEMPORARY one
+        // nothing ever does — a temp timer's execute() returns before its
+        // children loop — so this one fire is all there is.
         if (isOffset(t)) {
-            if (isTempParentRef(t.parentId)) this.startUnderTemp(t);
+            this.startOffsetOnce(t, enabledIds);
             return;
         }
         // setIsActive(true) raises the flag whatever the ancestors say...
@@ -611,14 +613,21 @@ export class TimerEngine {
         return tree.isOffset(node) || this.activePerm.has(node.id);
     }
 
-    /** Start a permanent offset timer under a temporary parent, once — see
-     *  switchOne. Not while its parent is killed or switched off
-     *  (canBeUnlocked asks the parent too). */
-    private startUnderTemp(t: TimerNode): void {
+    /** Start a permanent offset timer once, as enabling it does — see
+     *  switchOne. Not while it or an ancestor is switched off, or a temporary
+     *  parent is killed (canBeUnlocked asks the parents too), and not one
+     *  without a script: TTimer::enableTimer keeps a command-only offset timer
+     *  to its parent's firing, which would otherwise give it a schedule of its
+     *  own. */
+    private startOffsetOnce(t: TimerNode, enabledIds: ReadonlySet<string>): void {
         const executeFn = this.executeFn;
-        if (!executeFn || !t.enabled || this.broken.has(t.id)) return;
-        const parent = this.temp.get(tempRefId(t.parentId)!);
-        if (!parent || parent.dead || parent.disabled) return;
+        if (!executeFn || !t.enabled || !t.code || this.broken.has(t.id)) return;
+        if (isTempParentRef(t.parentId)) {
+            const parent = this.temp.get(tempRefId(t.parentId)!);
+            if (!parent || parent.dead || parent.disabled) return;
+        } else if (!enabledIds.has(t.id)) {
+            return;
+        }
         this.killPermHandle(t.id);
         this.startPerm(t, executeFn, false);
         this.prevDesc.set(t.id, this.descOf(t));
