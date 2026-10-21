@@ -5169,11 +5169,14 @@ do
         -- A code string that doesn't compile is a *reported* failure here, not a
         -- raised one: Mudlet hands back (-1, message) so a script can react to a
         -- bad body it built at runtime. Every other bad argument still raises.
+        -- The message is startTempTimer's, which names no function and quotes
+        -- the code as it is (IDManager passes it on untouched for that reason),
+        -- with TLuaInterpreter::compile's reason in compileErrorAsPlainText form.
         local body = fn
         if type(fn) == 'string' then
             local err = __mudlet_timer_compile_error(fn, "tempTimer")
             if err then
-                return -1, "tempTimer: failed to compile the code string: " .. err
+                return -1, 'unable to compile "' .. fn .. '", reason: Lua syntax error:' .. err
             end
             body = loadstring(fn)
         end
@@ -8345,7 +8348,8 @@ do
                 .. " nil or a number, got " .. type(value) .. "!)", 3)
         end
         if count < 1 then
-            return funcName .. ": trigger expiration count must be nil or greater than zero, got " .. tostring(count)
+            -- warnArgumentValue: the message alone, no function name
+            return "trigger expiration count must be nil or greater than zero, got " .. tostring(count)
         end
         return nil, count
     end
