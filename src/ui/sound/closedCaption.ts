@@ -1,3 +1,5 @@
+import { mediaDirectionCaption } from './mediaDirection';
+
 /**
  * Closed captions for media (Mudlet's `enableClosedCaption`). When enabled,
  * each sound / music / video that starts or stops prints a short text line into
@@ -27,6 +29,9 @@ export interface MediaCaptionInfo {
     key?: string;
     /** Explicit caption from the media packet / Lua `caption` arg, if any. */
     caption?: string;
+    /** Sounds only: where it comes from (canonical), shown after the caption
+     *  so where a sound comes from never depends on hearing it. */
+    direction?: string;
     action: CaptionAction;
 }
 
@@ -40,11 +45,12 @@ export interface MediaCaptionInfo {
  */
 export function formatClosedCaption(info: MediaCaptionInfo): string {
     const action = info.action;
+    const placement = info.kind === 'sound' && info.direction ? ` (${mediaDirectionCaption(info.direction)})` : '';
     const caption = info.caption?.trim();
-    if (caption) return `[${caption} ${action}]`;
+    if (caption) return `[${caption}${placement} ${action}]`;
 
     const filename = info.name.split(/[\\/]/).pop() || info.name;
     const key = info.key?.trim();
-    if (key) return `[${info.kind} ${key} "${filename}" ${action}]`;
-    return `[${info.kind} "${filename}" ${action}]`;
+    if (key) return `[${info.kind} ${key} "${filename}"${placement} ${action}]`;
+    return `[${info.kind} "${filename}"${placement} ${action}]`;
 }

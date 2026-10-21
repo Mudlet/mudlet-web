@@ -9,7 +9,7 @@
 //      on desktop (`mKeepFiring = mStayOpen` after the script), so it does not
 //      keep firing — Mudlet Web let it fire on every following line;
 //   3. tempButton / tempButtonToolbar refuse a name that is already taken, and
-//      return no value for a refusal rather than -1.
+//      answer nil and desktop's message for a refusal rather than -1.
 //
 // Node env + a stubbed LuaRuntime for the ScriptingEngine half, as
 // permItemsInModule.test.ts does. The Lua wrappers' return values are covered
@@ -218,12 +218,14 @@ describe('mudlet-web#238 item 3 — tempButton / tempButtonToolbar duplicates', 
             expect(engine.createTempButtonToolbar('VT', 0, 0)).toBe(-1);
             const button = engine.createTempButton('VT', 'VB', 0);
             expect(button).toBeGreaterThan(0);
-            expect(engine.createTempButton('VT', 'VB', 0)).toBe(-1);
+            expect(engine.createTempButton('VT', 'VB', 0)).toBe(-3);
             // findAction(name) is not limited to one kind: a button's name
             // blocks a toolbar and a toolbar's name blocks a button.
             expect(engine.createTempButtonToolbar('VB', 0, 0)).toBe(-1);
-            expect(engine.createTempButton('VT', 'VT', 0)).toBe(-1);
+            expect(engine.createTempButton('VT', 'VT', 0)).toBe(-3);
             expect(engine.createTempButton('missing', 'VC', 0)).toBe(-1);
+            // the first action of the toolbar's name is a plain button
+            expect(engine.createTempButton('VB', 'VC', 0)).toBe(-2);
             expect(buttons().map(b => b.name)).toEqual(['VT', 'VB']);
         });
     });

@@ -20,6 +20,7 @@ class StubVFS {
     /** Every path readBinaryFile was asked for, in order. */
     reads: string[] = [];
     resolvePath(p: string): string { return p.startsWith('/') ? p : `${this.profilePath}/${p}`; }
+    nameTooLong(): boolean { return false; }
     exists(p: string): boolean { return this.files.has(this.resolvePath(p)); }
     readBinaryFile(p: string): Uint8Array {
         this.reads.push(this.resolvePath(p));

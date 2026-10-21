@@ -101,17 +101,9 @@ describe('custom line getters and removal on failure', () => {
 });
 
 describe('map labels', () => {
-    // createMapImageLabel needs no readable image for its flags; a missing file
-    // still makes a (transparent) label.
-    it('reads createMapImageLabel\'s tenth argument as temporary; image labels always scale', () => {
-        const a = env.run('return (addAreaName("img381"))') as number;
-        env.run(`createMapImageLabel(${a}, "nope.png", 0, 0, 0, 10, 10, 1, true, true)`);
-        env.run(`createMapImageLabel(${a}, "nope.png", 0, 0, 0, 10, 10, 1, true, false)`);
-        const flags = (id: number) => env.run(`local l = getMapLabel(${a}, ${id}) return tostring(l.Temporary) .. "," .. tostring(l.Scaling)`);
-        expect(flags(0)).toBe('true,true');
-        expect(flags(1)).toBe('false,true');
-    });
-
+    // createMapImageLabel's temporary argument is covered with a readable
+    // image in tests/map/mapFileDesktopParity.test.ts: a missing file is now
+    // refused rather than made into a transparent label.
     it('truncates a fractional label id in getMapLabel', () => {
         const a = env.run('return (addAreaName("lab381"))') as number;
         env.run(`createMapLabel(${a}, "hello", 0, 0, 0, 255, 255, 255, 0, 0, 0)`);

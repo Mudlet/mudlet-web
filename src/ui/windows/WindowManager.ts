@@ -4,7 +4,7 @@ import type { Console } from '../../mud/text/Console';
 import type { AnsiAwareBuffer } from '../../mud/text/FormatState';
 import type { DockSide, MxpTabPage, WindowHandle, WindowOpenOptions, ScriptWindowRenderData } from './types';
 import { MAP_VIEW_ID_RE, MAP_WIDGET_ID, mapViewWindowId, migrateClientWindowHints } from './types';
-import { MapStore } from '../../map/MapStore';
+import { MapStore, type MapIssue } from '../../map/MapStore';
 import { centerviewAreaChange } from './panels/mapAreaChange';
 import { parseXmlMap } from '../../map/xmlMapImport';
 import { exportAreaImage } from '../../map/mapImageExport';
@@ -19,6 +19,7 @@ import { OverlayLayerOrder } from '../layout/overlayLayerOrder';
 import { TIMESTAMP_GUTTER_COLUMNS } from '../../mud/connection/TelnetNegotiator';
 import { DEFAULT_CMD_LINE_HOST, SubCommandLine, type CmdLineHost } from '../cmdline/subCommandLine';
 import { cssEscape } from '../labels/qtCss';
+import { DEFAULT_SPLIT_PANE_HEIGHT } from '../output/clearSplit';
 import { outputRows } from '../output/outputRows';
 
 interface ScriptWindowData extends ScriptWindowRenderData {
@@ -646,6 +647,19 @@ export class WindowManager {
         return this.mainViewportEl;
     }
 
+    /**
+     * The box the main window's size is read from: the `.main-viewport` host,
+     * which the console viewport spans (`inset: 0`) but which carries none of
+     * its padding. The borders are that padding, and desktop's borders are
+     * insets inside a console whose size they leave alone — measuring the
+     * padded viewport instead let a border wider than the console widen the
+     * "window" (setBorderRight(1000000) answered a window a million pixels
+     * wide), which every attached Adjustable.Container then took for a resize.
+     */
+    getMainSizeElement(): HTMLElement | null {
+        return this.mainViewportHostEl ?? this.mainViewportEl;
+    }
+
     /** The `.main-viewport` box the console viewport and the overlay root both
      *  span (`inset: 0`). It is the one element that can be given a size — the
      *  two inside it are absolutely positioned against it, so sizing either of
@@ -656,8 +670,19 @@ export class WindowManager {
         this.mainViewportHostEl = element;
         // A remount arrives with the override still in force — re-apply it, or a
         // script's sizing would silently come undone by a layout switch.
-        if (element && this.mainViewportSize) {
+        if (element && this.mainViewportSize && !this.mainWindowFrameEl) {
             this.applyMainViewportSize(element, this.mainViewportSize.width, this.mainViewportSize.height);
+        }
+    }
+
+    /** The `.content-layout` column — button bars, docks, the console and the
+     *  command bar — which stands in for desktop's application window: what
+     *  setMainWindowSize sizes, the console taking what the rest leaves. */
+    private mainWindowFrameEl: HTMLElement | null = null;
+    registerMainWindowFrame(element: HTMLElement | null): void {
+        this.mainWindowFrameEl = element;
+        if (element && this.mainViewportSize) {
+            this.applyMainWindowFrameSize(element, this.mainViewportSize.width, this.mainViewportSize.height);
         }
     }
 
@@ -670,23 +695,34 @@ export class WindowManager {
         host.style.height = `${height}px`;
     }
 
+    private applyMainWindowFrameSize(frame: HTMLElement, width: number, height: number): void {
+        // `.content-layout` is `flex: 1` in its column; fixed on both axes
+        // instead, and the console inside it keeps its `flex: 1`.
+        frame.style.flex = '0 0 auto';
+        frame.style.width = `${width}px`;
+        frame.style.height = `${height}px`;
+    }
+
     /**
      * Mudlet `setMainWindowSize(width, height)`. Desktop resizes the application
      * window; a browser tab cannot resize itself — `window.resizeTo` is refused
-     * for anything the script did not open — so what is sized is the main
-     * viewport, which is what `getMainWindowSize` has always measured. The two
-     * therefore agree exactly, with none of the window chrome between them that
-     * desktop has to account for.
+     * for anything the script did not open — so what is sized is the column
+     * that stands in for that window ({@link registerMainWindowFrame}): the
+     * console in it is what `getMainWindowSize` measures, and the command bar
+     * and button bars take their room from it as they grow, as on desktop.
+     * Before that column has mounted, the console's own box is sized.
      *
      * Returns false only when there is no viewport to size (before mount).
      */
     setMainWindowSize(width: number, height: number): boolean {
         const host = this.mainViewportHostEl;
-        if (!host) return false;
+        const frame = this.mainWindowFrameEl;
+        if (!host && !frame) return false;
         const w = Math.max(0, Math.round(width));
         const h = Math.max(0, Math.round(height));
         this.mainViewportSize = { width: w, height: h };
-        this.applyMainViewportSize(host, w, h);
+        if (frame) this.applyMainWindowFrameSize(frame, w, h);
+        else if (host) this.applyMainViewportSize(host, w, h);
         // ResizeObserver would deliver this through the browser's event loop,
         // and a script that resizes and then measures is still sitting on top of
         // that loop — so it would read the old size and Geyser would not have
@@ -901,7 +937,15 @@ export class WindowManager {
         // resizeEvent resizes its text pane first, whose own resizeEvent
         // raises the grid event, and only then raises sysWindowResizeEvent.
         this.emitConsoleGridIfChanged(id, w, h, element);
-        this.emitWindowSize(id, w, h);
+        // The main window's size is its unpadded box's, as getMainWindowSize
+        // reads it (see getMainSizeElement).
+        const sizeEl = id === 'main' ? this.getMainSizeElement() : null;
+        if (sizeEl && sizeEl !== element) {
+            const box = sizeEl.getBoundingClientRect();
+            this.emitWindowSize(id, Math.round(box.width), Math.round(box.height));
+        } else {
+            this.emitWindowSize(id, w, h);
+        }
     }
 
     /** Raise sysWindowResizeEvent/sysUserWindowResizeEvent for `id` at w×h,
@@ -962,7 +1006,8 @@ export class WindowManager {
      * {@link pumpCreatedSizes}, whichever comes first. It carries the size
      * getUserWindowSize() gives at that moment, the mounted box or the stored
      * one, and the dedup in emitWindowSize keeps the observer's own first tick
-     * from repeating it.
+     * from repeating it. resizeWindow() queues one the same way, for the size
+     * a script just gave the window.
      */
     announceCreatedSize(id: string): void {
         this.createdSizesDue.add(id);
@@ -1363,7 +1408,7 @@ export class WindowManager {
 
     registerMapControl(id: string, ctrl: MapControl): void {
         this.mapControls.set(id, ctrl);
-        this.mapperCreated = true;
+        if (!MAP_VIEW_ID_RE.test(id)) this.mapperCreated = true;
     }
 
     /** Whether a mapper has been created this session — Mudlet's
@@ -1615,10 +1660,10 @@ export class WindowManager {
      * map as Mudlet's TMap::audit does (MapStore.auditMap), so the report is
      * already collected; this only decides whether the player sees it.
      */
-    private reportMapIssues(): void {
+    private reportMapIssues(taken?: MapIssue[]): void {
         // Take the report either way: it is owed to this load, and leaving it in
         // the store would hand it to the next one instead.
-        const collected = this.mapStore.takeAuditIssues();
+        const collected = taken ?? this.mapStore.takeAuditIssues();
         if (!this._connectionId) return;
         if (!selectProfileField(useAppStore.getState(), this._connectionId, 'reportMapIssues')) return;
 
@@ -1968,11 +2013,29 @@ export class WindowManager {
      * open map panel to re-render. Returns false on parse failure or when the
      * JSON doesn't carry the expected MudletMap shape.
      */
-    loadJsonMap(json: string): boolean {
+    loadJsonMap(json: string, source = ''): boolean {
         if (!this.mapStore.loadFromJsonString(json)) return false;
-        this.reportMapIssues();
+        const issues = this.mapStore.takeAuditIssues();
+        // TMap::importJsonMapFile: what an import found goes to the profile's
+        // log/errors.txt under a title naming the file, and the console names
+        // that report whether or not it shows the details.
+        this.lastMapReport = '';
+        if (issues.length > 0) {
+            const title = `Importing JSON map "${source}" at ${new Date().toISOString().replace('T', ' ').slice(0, 19)}`;
+            this.lastMapReport = [title, ...issues.map(i => `[ ${i.severity === 'warn' ? 'WARN' : 'INFO'} ]  - ${i.message}`), ''].join('\n');
+        }
+        this.reportMapIssues(issues);
         this.mapLoadCallback?.();
         return true;
+    }
+
+    private lastMapReport = '';
+
+    /** The report the last loadJsonMap wrote for log/errors.txt, once. */
+    takeMapReport(): string {
+        const report = this.lastMapReport;
+        this.lastMapReport = '';
+        return report;
     }
 
     /**
@@ -2036,6 +2099,12 @@ export class WindowManager {
         this.mxpFrameIds.add(id);
         this.setScrollBarVisible(id, false);
         this.notify();
+    }
+
+    /** Whether `id` is an MXP frame's own console — false once a script has
+     *  deleted it, even if it then made a window of its own under the name. */
+    isMxpFrame(id: string): boolean {
+        return this.mxpFrameIds.has(id);
     }
 
     /** Install (or replace) an MXP frame's tab strip. An empty `pages` list
@@ -2442,6 +2511,18 @@ export class WindowManager {
             if (child.classList.contains('output-sticky')) return child.getBoundingClientRect().height;
         }
         return 0;
+    }
+
+    /** The height the split view's lower pane takes off `id`'s upper pane
+     *  while it is open — the console scrolled back, by hand or by script —
+     *  and 0 while the console follows its output. A console with no panel to
+     *  measure yet, scrolled back by a script, has the pane at the height it
+     *  opens at. */
+    openSplitPaneHeight(id: string): number {
+        const el = this.elements.get(id);
+        if (!el) return this.scriptScrollLine.has(id) ? DEFAULT_SPLIT_PANE_HEIGHT : 0;
+        if (!this.scriptScrollLine.has(id) && !this.scrolledBack.get(el)) return 0;
+        return this.splitPaneHeight(el);
     }
 
     /** Mudlet's scroll position for `id`'s wrapper, or null while it follows
@@ -3126,7 +3207,9 @@ export class WindowManager {
             this.touchOverlayWindows(existing);
             this.notify();
             if (existing.kind === 'map') {
-                this.mapperCreated = true;
+                // A map view (createMapView) is a second look at the map, not
+                // the mapper itself: desktop leaves mpMapper unmade for it.
+                if (!MAP_VIEW_ID_RE.test(id)) this.mapperCreated = true;
                 this.onMapOpen?.(id);
             }
             return this.makeHandle(id);
@@ -3226,7 +3309,7 @@ export class WindowManager {
         this.saveHint(id, win);
         this.notify();
         if (kind === 'map') {
-            this.mapperCreated = true;
+            if (!MAP_VIEW_ID_RE.test(id)) this.mapperCreated = true;
             this.onMapOpen?.(id);
         }
         return this.makeHandle(id);

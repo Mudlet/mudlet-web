@@ -33,6 +33,7 @@ class StubVFS {
         }
         return '/' + out.join('/');
     }
+    nameTooLong(): boolean { return false; }
     exists(p: string): boolean { const a = this.resolvePath(p); return this.files.has(a) || this.dirs.has(a); }
     readBinaryFile(p: string): Uint8Array {
         const bytes = this.files.get(this.read(this.resolvePath(p)));

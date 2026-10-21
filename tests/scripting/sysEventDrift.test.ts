@@ -67,6 +67,7 @@ function stubVfs() {
     return {
         profilePath: PROFILE,
         exists: (p: string) => dirs.has(p) || files.has(p),
+        stat: (p: string) => (files.has(p) ? { type: 'file' } : dirs.has(p) ? { type: 'dir' } : null),
         mkdir: (p: string) => { dirs.add(p.replace(/\/$/, '')); },
         rmdir: (p: string) => {
             for (const d of [...dirs]) if (under(p, d)) dirs.delete(d);
@@ -120,7 +121,15 @@ describe('system events match desktop (#260)', () => {
         (engine as unknown as { vfs: ProfileVFS }).vfs = vfs;
         vfs.writeBinaryFile(MOD_ARCHIVE, moduleArchive());
 
-        expect(engine.installModuleFromPath(MOD_ARCHIVE)).toEqual({ ok: true, error: null });
+        // The install events go out on the next pass of the event loop, as
+        // Host::installPackage's zero-timer sends them.
+        vi.useFakeTimers();
+        try {
+            expect(engine.installModuleFromPath(MOD_ARCHIVE)).toEqual({ ok: true, error: null });
+            vi.runAllTimers();
+        } finally {
+            vi.useRealTimers();
+        }
 
         const installs = raised.filter(([e]) => /Install/.test(e));
         expect(installs).toEqual([

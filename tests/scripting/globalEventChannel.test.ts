@@ -40,8 +40,8 @@ describe('GlobalEventChannel', () => {
 
     it('throws on a non-serializable arg type (matches Mudlet)', () => {
         const ch = new GlobalEventChannel(() => {}, () => 'P');
-        expect(() => ch.raise('e', [{}])).toThrow(/bad argument type/);
-        expect(() => ch.raise('e', [() => 0])).toThrow(/bad argument type/);
+        expect(() => ch.raise('e', [{}])).toThrow(/bad argument #\d+ type/);
+        expect(() => ch.raise('e', [() => 0])).toThrow(/bad argument #\d+ type/);
     });
 
     it('dispatches incoming messages to the onEvent callback', () => {

@@ -152,6 +152,18 @@ export class LineAssembler {
         return stripLeadingPromptNewline(block);
     }
 
+    /**
+     * The fix-up above for text posted ahead of an encoding change in a read
+     * (cTelnet::postHeldDataBeforeEncodingChange): it may open a prompt whose
+     * GA the posting hides it from, so once GA-driven its leading newline is
+     * dropped there instead. Null when the fix does not apply — then the GA
+     * still judges the rest of the block.
+     */
+    stripPostedPromptStart(text: string): string | null {
+        if (!this.fixUnnecessaryLinebreaks || !this._gaDriver) return null;
+        return stripLeadingPromptNewline(text);
+    }
+
     /** Mudlet `setConfig("undoServerWrap", …)`. Turning it off commits anything
      *  held on the spot rather than stranding it until the next line. */
     setUndoServerWrap(enabled: boolean): void {

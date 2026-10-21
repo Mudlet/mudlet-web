@@ -1,7 +1,9 @@
 import { unzipSync, strFromU8 } from 'fflate';
+import { zipEntryComponents } from './zipEntries';
 import type { ProfileVFS } from '../scripting/vfs/ProfileVFS';
-import type { PackageKind, PackageManifest } from '../storage/schema';
+import type { PackageKind, PackageManifest, ProfileSettings } from '../storage/schema';
 import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
+import { parseMudletHost } from './mudletHost';
 
 export interface InstallResult {
     manifest: PackageManifest;
@@ -23,6 +25,30 @@ export interface InstallResult {
      * knows what is on disk.
      */
     occupiedFolder?: string;
+    /**
+     * Set when the archive cannot be moved into a folder of its name that is
+     * already in the profile: one of its files would land where that folder
+     * has a folder, or one of its folders where it has a file. Desktop moves
+     * an archive into such a folder entry by entry, keeping everything else
+     * in it, and is refused by a clash; the reason is this.
+     */
+    moveClash?: string;
+    /**
+     * The profile settings a package XML's `<HostPackage>` carries. Desktop's
+     * XMLimport reads a package's HostPackage into the profile as it reads a
+     * profile's own, so a package exported from a profile brings its settings.
+     */
+    hostSettings?: Partial<ProfileSettings>;
+}
+
+/** The settings the first `<Host>` among `documents` carries, if any. */
+function packageHostSettings(documents: string[]): Partial<ProfileSettings> | undefined {
+    for (const xml of documents) {
+        if (!xml.includes('<HostPackage')) continue;
+        const host = new DOMParser().parseFromString(xml, 'text/xml').getElementsByTagName('Host')[0];
+        if (host) return parseMudletHost(host);
+    }
+    return undefined;
 }
 
 /**
@@ -137,6 +163,20 @@ function assertPackageNameStaysInProfile(name: string, source: string): void {
     }
 }
 
+/**
+ * The profile folders that hold the profile's own data (Host.cpp's
+ * `theProfileKeepsItsOwnDataIn`) — its maps, logs, current save and downloaded
+ * media. A package folder is named after the package, so a package by one of
+ * these names would put itself in among the profile's own files, and an
+ * uninstall would take them with it. The VFS tells case apart, as desktop's
+ * Linux build does.
+ */
+const PROFILE_OWN_FOLDERS = new Set(['map', 'log', 'current', 'media']);
+
+export function profileKeepsItsOwnDataIn(name: string): boolean {
+    return PROFILE_OWN_FOLDERS.has(name);
+}
+
 function isXmlEntry(path: string): boolean {
     return /\.xml$/i.test(path);
 }
@@ -174,7 +214,44 @@ function mergeImportResults(results: MudletImportResult[]): MudletImportResult {
         if (r.parseError) errors.push(r.parseError);
     }
     if (errors.length > 0) merged.parseError = errors.join('; ');
+    // Nothing read only when no document gave anything: a stray unreadable
+    // file beside the package's own does not turn the package away, whichever
+    // of the two is read first.
+    if (results.every(r => r.nothingRead)) {
+        merged.nothingRead = results.some(r => r.nothingRead === 'newer') ? 'newer' : 'unreadable';
+    }
     return merged;
+}
+
+/** Whether unpacking `paths` into `folder` would put a file where the folder
+ *  has a folder, or a folder (or the way to one) where it has a file. */
+function archiveClashesWithFolder(paths: readonly string[], folder: string, vfs: ProfileVFS): boolean {
+    const typeOf = (rel: string): 'file' | 'dir' | null => {
+        const st = vfs.stat(`${folder}/${rel}`);
+        return st ? (st.type === 'dir' ? 'dir' : 'file') : null;
+    };
+    for (const path of paths) {
+        const isDir = path.endsWith('/');
+        const parts = path.split('/').filter(Boolean);
+        for (let i = 1; i < parts.length; i++) {
+            if (typeOf(parts.slice(0, i).join('/')) === 'file') return true;
+        }
+        const own = typeOf(parts.join('/'));
+        if (own && (own === 'dir') !== isDir) return true;
+    }
+    return false;
+}
+
+/** "<package>[/<file>]: <error>" for each document that could not be read
+ *  whole, as Host::installPackage lists them for the caller and the install
+ *  events. An empty label is a bare XML, named by the package alone. */
+function loadErrorsOf(packageName: string, results: readonly MudletImportResult[], labels: readonly string[]): string[] {
+    const out: string[] = [];
+    results.forEach((r, i) => {
+        if (!r.xmlError) return;
+        out.push(`${labels[i] ? `${packageName}/${labels[i]}` : packageName}: ${r.xmlError}`);
+    });
+    return out;
 }
 
 const TEXT_EXT = /\.(xml|lua|txt|json|md|css|html|htm|js|csv|ini|cfg|conf|yml|yaml)$/i;
@@ -229,6 +306,10 @@ export function preparePackageInstall(
     /** One document per XML the package is read from — an archive may hold
      *  several, each imported in turn. */
     let xmlContent: string[];
+    /** What each of {@link xmlContent} is called in a load error: the
+     *  package and the file for an archive's, the package alone for a bare
+     *  XML (Host::installPackage's two loadErrors forms). */
+    let xmlLabels: string[];
     let xmlRelPath: string | undefined;
     let manifestExtras: Partial<PackageManifest> & { configProblem?: string } = {};
     /** Set when config.lua gave up nothing; see InstallResult.configProblem. */
@@ -238,6 +319,8 @@ export function preparePackageInstall(
     let occupiedFolder: string | undefined;
     /** The unpacked archive, held in memory until commit. Null for a plain XML. */
     let entries: Record<string, Uint8Array> | null = null;
+    /** An archive with no package XML in it, refused once its name is settled. */
+    let noPackageFound = false;
 
     // The extension decides, as it does in Mudlet: a .mpackage/.zip is unpacked,
     // and anything else is read as a plain package XML. Sniffing the bytes
@@ -249,6 +332,12 @@ export function preparePackageInstall(
 
         try { entries = unzipSync(buf); }
         catch { throw new Error('could not unzip package'); }
+        // An entry whose name climbs out of the package's folder is refused with
+        // the whole archive, as mudlet::unzip refuses it, before anything is
+        // written — rather than unpacked wherever the name points.
+        if (Object.keys(entries).some(name => !zipEntryComponents(name))) {
+            throw new Error('could not unzip package');
+        }
         // Every .xml at the archive's root, as Host::installPackage imports them
         // (a QDir listing of the unpacked folder, sorted by name ignoring case).
         // Taking only the first left everything in the others silently missing.
@@ -257,8 +346,12 @@ export function preparePackageInstall(
         const xmlEntries = archiveXmlEntries(Object.keys(entries));
         // Mudlet's wording: an archive that unpacked fine but held nothing it could
         // install is a different complaint from one that would not unpack.
-        if (xmlEntries.length === 0) throw new Error(`no package found in ${filename}`);
+        // ...but only once its name has been found to be one it may have: an
+        // archive named after one of the profile's own folders is turned away
+        // for that before anything is read out of it (below).
+        noPackageFound = xmlEntries.length === 0;
         xmlContent = xmlEntries.map(e => strFromU8(entries![e]));
+        xmlLabels = xmlEntries.map(e => e.substring(e.lastIndexOf('/') + 1));
         xmlRelPath = xmlEntries[0];
 
         manifestExtras = readConfigLua(entries, opts.readConfig);
@@ -328,8 +421,23 @@ export function preparePackageInstall(
             // record where it will actually be once the commit has run.
             if (sourceInsidePkgDir && sourcePath) sourcePath = pkgDir + sourcePath.slice(stagedDir.length);
         }
+        // An archive unpacks into the folder of its name, so one of the
+        // profile's own is refused — whether that folder is there yet or not:
+        // map, current and media are only made when first needed, and a
+        // package let in first would share the folder from then on. A bare XML
+        // has no folder, so any name is let in for it. Renaming the archive
+        // only helps when the name did not come from its config.lua.
+        if (profileKeepsItsOwnDataIn(packageName)) {
+            throw new Error(declared && !configProblem
+                ? `The config.lua of this package asks to be installed as "${packageName}",`
+                    + ' but the profile keeps its own files in the folder of that name.'
+                : `A package cannot be installed as "${packageName}", as the profile keeps its own files`
+                    + ' in the folder of that name. Please rename it and try again.');
+        }
+        if (noPackageFound) throw new Error(`no package found in ${filename}`);
     } else {
         xmlContent = [strFromU8(buf)];
+        xmlLabels = [''];
         // Modules need an on-disk XML to reload from on profile open; plain XML
         // packages keep nothing on disk.
         if (kind === 'module') xmlRelPath = filename;
@@ -337,8 +445,9 @@ export function preparePackageInstall(
 
     // Parsed here, not after the files land: an XML that will not parse is
     // refused with the profile untouched rather than unpacked and then rejected.
-    const data = mergeImportResults(
-        xmlContent.map(xml => parseMudletXml(xml, { packageName, reportParseError: true })));
+    const results = xmlContent.map(xml => parseMudletXml(xml, { packageName, reportParseError: true }));
+    const data = mergeImportResults(results);
+    data.loadErrors = loadErrorsOf(packageName, results, xmlLabels);
 
     const manifest: PackageManifest = {
         ...manifestExtras,
@@ -354,11 +463,18 @@ export function preparePackageInstall(
         ...(kind === 'module' ? { kind: 'module' as const, sync: false } : {}),
     };
 
+    // A folder of the package's name already in the profile - one an
+    // uninstall could not empty, one a crash left before the profile was
+    // saved, or the module's own on a reload - is moved into, not replaced:
+    // what else is in it (a file, a link, an empty folder) stays as it was.
+    // Only a clash between a file and a folder of the same path stops that.
+    const moveClash = entries && !sourceInsidePkgDir && vfs.exists(pkgDir)
+        && archiveClashesWithFolder(Object.keys(entries), pkgDir, vfs)
+        ? `could not move the files of package "${packageName}" into the folder of that name already in the profile`
+        : undefined;
+
     const commit = (): void => {
-        // Wipe any previous install of the same package (re-install is a clean
-        // slate). Reached only once the install is certain to go through.
-        if (!sourceInsidePkgDir && vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
-        else if (sourceInsidePkgDir && pkgDir !== stagedDir) {
+        if (sourceInsidePkgDir && pkgDir !== stagedDir) {
             // A staged install that config.lua renamed: the contents are under
             // the filename's directory and belong under the declared one. The
             // destination is cleared first, or the rename would fail (or merge)
@@ -375,6 +491,8 @@ export function preparePackageInstall(
             return;
         }
 
+        // Only a folder this commit made may be taken away again below.
+        const folderWasThere = vfs.exists(pkgDir);
         vfs.mkdir(pkgDir);
         try {
             // Write every entry to VFS preserving the archive's directory layout.
@@ -396,12 +514,12 @@ export function preparePackageInstall(
             // package that never installed, and `getMudletHomeDir()/<name>`
             // existing is how scripts (and the uninstaller) decide a package
             // has files.
-            if (!sourceInsidePkgDir) { try { vfs.rmdir(pkgDir); } catch { /* nothing to undo */ } }
+            if (!sourceInsidePkgDir && !folderWasThere) { try { vfs.rmdir(pkgDir); } catch { /* nothing to undo */ } }
             throw err;
         }
     };
 
-    return { manifest, data, configProblem, occupiedFolder, commit };
+    return { manifest, data, configProblem, occupiedFolder, moveClash, hostSettings: packageHostSettings(xmlContent), commit };
 }
 
 /**
@@ -587,6 +705,9 @@ export async function uninstallPackageFiles(manifest: PackageManifest, vfs: Prof
     // ever removes them, and a later install of the same name then found a
     // folder for a module that was not installed.
     if (manifest.kind === 'module' && manifest.xmlVfsPath) return;
+    // A bare XML package may carry one of the profile's own folder names, and
+    // the folder of that name is the profile's data, not the package's.
+    if (profileKeepsItsOwnDataIn(manifest.name)) return;
     const pkgDir = `${vfs.profilePath}/${manifest.name}`;
     if (vfs.exists(pkgDir)) vfs.rmdir(pkgDir);
     await vfs.flush();
@@ -611,6 +732,9 @@ export function reloadModuleFromVfs(
     manifest: PackageManifest,
     vfs: ProfileVFS,
     readConfig?: InstallOptions['readConfig'],
+    /** Filled in with the manifest an archive's config.lua now gives, which
+     *  may name the module differently than it was installed as. */
+    out?: { manifest?: PackageManifest },
 ): MudletImportResult {
     // A module installed FROM AN ARCHIVE is reloaded from that archive, not from
     // the XML the last install left behind. Writing a different archive over
@@ -620,23 +744,31 @@ export function reloadModuleFromVfs(
     const source = manifest.sourcePath;
     if (source && archiveExtension.test(source) && vfs.exists(source)) {
         const buf = vfs.readBinaryFile(source);
-        if (looksLikeZip(buf)) {
-            const filename = source.substring(source.lastIndexOf('/') + 1);
-            const prepared = preparePackageInstall(filename, buf, vfs, {
-                kind: 'module', sourcePath: source, readConfig,
-            });
-            // The rename lands on the folder the module already has, which is
-            // why a sync's uninstall leaves that folder alone: this is the write
-            // it was left standing for.
-            prepared.commit();
-            return prepared.data;
-        }
+        // An archive that no longer unzips is a failed reload, as on desktop
+        // (Host::reloadModule installs the file again and is refused), not a
+        // cue to read back the XML the last install left behind - that put
+        // back what the module already held and called it reloaded.
+        if (!looksLikeZip(buf)) throw new Error('could not unzip package');
+        const filename = source.substring(source.lastIndexOf('/') + 1);
+        const prepared = preparePackageInstall(filename, buf, vfs, {
+            kind: 'module', sourcePath: source, readConfig,
+        });
+        // The rename lands on the folder the module already has, which is
+        // why a sync's uninstall leaves that folder alone: this is the write
+        // it was left standing for.
+        prepared.commit();
+        if (out) out.manifest = prepared.manifest;
+        return prepared.data;
     }
     const path = moduleXmlAbsolutePath(manifest, vfs);
     if (!path) throw new Error(`Module "${manifest.name}" has no xmlPath; cannot reload from disk`);
     if (!vfs.exists(path)) throw new Error(`Module "${manifest.name}" XML not found at ${path}`);
     const xmlContent = vfs.readFile(path);
-    return parseMudletXml(xmlContent, { packageName: manifest.name });
+    // Read as an install reads it: what comes before a break is kept, and the
+    // break is reported rather than thrown (Host::reloadModule is an install).
+    const data = parseMudletXml(xmlContent, { packageName: manifest.name, reportParseError: true });
+    data.loadErrors = loadErrorsOf(manifest.name, [data], ['']);
+    return data;
 }
 
 /**
@@ -685,6 +817,7 @@ export function prepareModuleInstallFromVfsPath(
     const xmlContent = strFromU8(buf);
     const packageName = packageNameFromFile(filename);
     const data = parseMudletXml(xmlContent, { packageName, reportParseError: true });
+    data.loadErrors = loadErrorsOf(packageName, [data], ['']);
 
     const manifest: PackageManifest = {
         name: packageName,

@@ -4,6 +4,7 @@ import { MIN_CONSOLE_BUFFER_SIZE, MAX_CONSOLE_BUFFER_SIZE } from '../mud/text/Co
 import { parseMudletXml, type MudletImportResult } from './mudletXmlImport';
 import { parseVariablePackageXml, type MudletVariablePackage } from './mudletVariables';
 import type { SavedStopwatch } from '../scripting/StopwatchManager';
+import { MAP_STYLES, DEFAULT_MAP_STYLE } from '../map/mapStyle';
 
 // Maps the `<HostPackage><Host>` block of a Mudlet profile XML onto Mudlet Web's
 // ProfileSettings. This is the settings half of a full Mudlet-profile import —
@@ -59,6 +60,8 @@ const CONFIG_BOOL_ATTR: ReadonlyArray<readonly [string, string]> = [
     ['mFORCE_GA_OFF', 'specialForceGAOff'],
     ['CompactInputLine', 'compactInputLine'],
     ['f3SearchEnabled', 'f3SearchEnabled'],
+    // XMLimport reads it as yes when absent, as getConfig's default does.
+    ['mMapperStitchAreas', 'mapStitchAreas'],
 ];
 
 // Host::CommandEchoMode, by its integer value (Never = 0, ScriptControl = 1,
@@ -106,6 +109,10 @@ function parseHostConfig(host: Element): Record<string, unknown> {
     // but only a present attribute is recorded, so a merge keeps what was there.
     const control = attrNum(host, 'ControlCharacterHandling');
     if (control !== undefined) config.controlCharacterHandling = CONTROL_CHARACTER_MODES[control] ?? 'asis';
+    // Only a present attribute is recorded, as above; XMLimport puts one that
+    // names a style this build does not know on the default.
+    const style = host.getAttribute('mapStyle');
+    if (style !== null) config.mapStyle = MAP_STYLES.includes(style) ? style : DEFAULT_MAP_STYLE;
     return config;
 }
 
@@ -136,6 +143,10 @@ function applyHostConfig(host: Element, config: Record<string, unknown>): void {
     // XMLexport leaves the attribute out for AsIs, the default.
     if (control > 0) host.setAttribute('ControlCharacterHandling', String(control));
     else if (control === 0) host.removeAttribute('ControlCharacterHandling');
+    // XMLexport writes the style on every save, the default included.
+    const style = typeof config.mapStyle === 'string' && MAP_STYLES.includes(config.mapStyle)
+        ? config.mapStyle : DEFAULT_MAP_STYLE;
+    host.setAttribute('mapStyle', style);
 }
 
 // Mudlet's mDisplayFont is "Family,pointSize,…" (a serialized QFont). We only
@@ -152,6 +163,9 @@ function parseFontSpec(spec: string): { family?: string; size?: number } {
  * present in the XML are set, so the result can be merged over existing/default
  * settings without clobbering anything Mudlet didn't specify.
  */
+/** The largest border, either way, Mudlet's border setters accept. */
+const BORDER_LIMIT = 1000000;
+
 export function parseMudletHost(host: Element): Partial<ProfileSettings> {
     const out: Partial<ProfileSettings> = {};
 
@@ -224,17 +238,20 @@ export function parseMudletHost(host: Element): Partial<ProfileSettings> {
     if (useMaxBuffer !== undefined) out.useMaxConsoleBufferSize = useMaxBuffer.trim() === 'yes';
 
     // ── borders ──────────────────────────────────────────────────────────
-    const top = Number(childText(host, 'borderTopHeight') ?? '');
-    const bottom = Number(childText(host, 'borderBottomHeight') ?? '');
-    const left = Number(childText(host, 'borderLeftWidth') ?? '');
-    const right = Number(childText(host, 'borderRightWidth') ?? '');
-    if ([top, bottom, left, right].some(n => Number.isFinite(n) && n > 0)) {
-        out.outputBorders = {
-            top: Number.isFinite(top) ? top : 0,
-            bottom: Number.isFinite(bottom) ? bottom : 0,
-            left: Number.isFinite(left) ? left : 0,
-            right: Number.isFinite(right) ? right : 0,
-        };
+    // Bounded to the range the setters accept, as XMLimport reads them: a save
+    // from an older build can hold one no setter takes any more, and the
+    // console takes opposite borders off its own size. A negative border is a
+    // border too, so any border given is read, not only a positive one.
+    const border = (tag: string): number | undefined => {
+        const n = Number(childText(host, tag) ?? '');
+        return Number.isFinite(n) ? Math.min(BORDER_LIMIT, Math.max(-BORDER_LIMIT, Math.trunc(n))) : undefined;
+    };
+    const top = border('borderTopHeight');
+    const bottom = border('borderBottomHeight');
+    const left = border('borderLeftWidth');
+    const right = border('borderRightWidth');
+    if ([top, bottom, left, right].some(n => n !== undefined && n !== 0)) {
+        out.outputBorders = { top: top ?? 0, bottom: bottom ?? 0, left: left ?? 0, right: right ?? 0 };
     }
 
     // ── font ─────────────────────────────────────────────────────────────

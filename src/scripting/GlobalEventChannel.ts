@@ -57,7 +57,7 @@ export class GlobalEventChannel {
                 out.push(a);
             } else {
                 throw new Error(
-                    `raiseGlobalEvent: bad argument type #${i + 1} (boolean, number, string or nil expected, got ${typeof a}!)`,
+                    `raiseGlobalEvent: bad argument #${i + 1} type (boolean, number, string or nil expected, got a ${typeof a}!)`,
                 );
             }
         }

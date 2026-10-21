@@ -20,9 +20,6 @@ function raised(t: TestRuntime, chunk: string): string | null {
 /** Desktop names the C++ function, which is not always the Lua one. */
 const MESSAGE_NAME: Record<string, string> = {
     clearWindow: 'clearUserWindow',
-    setMiniConsoleFontSize: 'setFontSize',
-    setCommandBackgroundColor: 'setBackgroundColor',
-    setCommandForegroundColor: 'setBackgroundColor',
 };
 
 /** A table is a valid first argument for these — to the C function, or to the
@@ -71,8 +68,8 @@ describe('argument contracts (#277)', () => {
         // GUIUtils.lua puts its own check in front, on desktop too.
         ['setLabelClickCallback("lbl", 5)', 'setLabelClickCallback: bad argument #2 type (function expected, got number!)'],
         ['setLink({}, "hint")', 'setLink: bad argument #1 type (command as string or function expected, got table!)'],
-        ['setRoomArea("x", 1)', 'setRoomArea: bad argument #1 type (roomID as number or table of roomIDs\nexpected, got string!)'],
-        ['deleteArea({})', 'deleteArea: bad argument #1 type (area Id as number or area name as string\nexpected, got table!)'],
+        ['setRoomArea("x", 1)', 'setRoomArea: bad argument #1 type (roomID as number or table of roomIDs expected, got string!)'],
+        ['deleteArea({})', 'deleteArea: bad argument #1 type (area Id as number or area name as string expected, got table!)'],
         ['exportAreaImage("nope", "a.png")', 'exportAreaImage: bad argument #1 type (areaID as number expected, got string!)'],
         ['getMudletVersion({})', 'getMudletVersion: bad argument #1 type (style as string is optional, got table!)'],
     ])('%s raises with desktop\'s message', (call, message) => {
@@ -132,8 +129,10 @@ describe('the soft answers desktop gives (#277)', () => {
     it('getTextFormat names the window it could not find, or the invalid selection', () => {
         expect(t.run('local f, e = getTextFormat("nope") return tostring(f) .. "|" .. e')).toBe("nil|window 'nope' not found");
         t.run('clearWindow()');
-        expect(t.run('local f, e = getTextFormat() return tostring(f) .. "|" .. e')).toBe("nil|current selection invalid in window ''");
-        expect(t.run('local f, e = getTextFormat("main") return tostring(f) .. "|" .. e')).toBe("nil|current selection invalid in window 'main'");
+        // nothing selected and nothing under the cursor; every name for main
+        // is named 'main'
+        expect(t.run('local f, e = getTextFormat() return tostring(f) .. "|" .. e')).toBe("nil|no character under cursor or selection in window 'main'");
+        expect(t.run('local f, e = getTextFormat("main") return tostring(f) .. "|" .. e')).toBe("nil|no character under cursor or selection in window 'main'");
         t.run('echo("format me\\n")');
         expect(t.run('return type((getTextFormat()))')).toBe('table');
     });

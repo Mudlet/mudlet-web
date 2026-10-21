@@ -1,5 +1,6 @@
 import { ViewportModeProvider } from './hooks/useViewportMode';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { MAP_WIDGET_ID } from './ui/windows/types';
 import { normaliseShortcut, type AddonCommand } from './ui/commands/addonCommands';
 import { boundShortcuts, shortcutPlatform } from './ui/commands/appShortcuts';
@@ -666,12 +667,16 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 passwordStashRef.current = stash;
                 stashWasSelectedRef.current = selected;
                 typedDuringPasswordRef.current = false;
+                // Scripts go on reading the command line, which still holds
+                // what was in the bar; the bar is the hidden-input box now.
+                engineRef.current?.beginHiddenInput(text ?? '');
                 swap(partialPassword);
             } else {
                 // Cleared first whatever happens, so the password never survives
                 // the prompt; the command only comes back if the player did not
                 // start typing something of their own over it.
                 const restore = typedDuringPasswordRef.current ? '' : passwordStashRef.current;
+                engineRef.current?.endHiddenInput();
                 swap(restore);
                 // Selected again if it was selected when put aside, else the
                 // caret at its end. Requested rather than done here: the
@@ -692,16 +697,25 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         // printCmdLine and appendCmdLine end at the end of the text with
         // nothing selected; sendCmdLine selects it all, so the player can
         // overtype it.
+        // Rendered before the script goes on, and the main console measured
+        // again: the bar grows with the lines it is given and takes its room
+        // from the console, which a script reads straight back with
+        // getMainWindowSize() and hears of through sysWindowResizeEvent — and a
+        // script holds the event loop a deferred render would wait for.
+        const scriptedCommand = (update: () => void) => {
+            flushSync(update);
+            session.windows.primeMainResize();
+        };
         const unsub1 = session.events.on('script.appendcmd', (text: string) => {
-            setCommand(prev => prev + text);
+            scriptedCommand(() => setCommand(prev => prev + text));
             requestCmdLineSelection('end');
         });
         const unsub2 = session.events.on('script.setcmd', (text: string, selectAll?: boolean) => {
-            setCommand(text);
+            scriptedCommand(() => setCommand(text));
             requestCmdLineSelection(selectAll ? 'all' : 'end');
         });
         const unsub3 = session.events.on('script.clearcmd', () => {
-            setCommand('');
+            scriptedCommand(() => setCommand(''));
             requestCmdLineSelection(null);
         });
         const unsub4 = session.events.on('script.openvfs', (path: string) => {

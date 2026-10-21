@@ -37,3 +37,14 @@ export function unarmor(s: string): string {
     if (s.charCodeAt(0) === RAW) return payload;
     return payload.replace(/%([0-9A-Fa-f]{2})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
 }
+
+/**
+ * An event argument that is bytes rather than text — desktop's
+ * ARGUMENT_TYPE_BYTES (sysTelnetEvent's payload). Handed to
+ * `LuaRuntime.emitEvent` in place of a string, it crosses armored and reaches
+ * the handlers as a Lua string of exactly those bytes, NULs and 0x80–0xFF
+ * included, where a plain string argument would be UTF-8-encoded on the way.
+ */
+export class LuaBytes {
+    constructor(readonly bytes: string) {}
+}

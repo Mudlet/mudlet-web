@@ -3,7 +3,7 @@ import type { KeyNode } from '../../storage/schema';
 import { buildEffectivelyEnabledIds, inTreeOrder } from '../../storage/schema';
 import {
     bindingQtModifiers, domCodeToQtKey, isKeypadBinding, isPrintableQtKey, isQtKeypadEvent,
-    keypadEventQtKey, printableEventQtKey,
+    keypadEventQtKey, printableEventQtKey, QT_KEY_UNKNOWN,
 } from './qtKeys';
 
 export type { KeyNode };
@@ -79,8 +79,9 @@ interface TempKey {
     enabled: boolean;
     /** Killed, but not yet reaped. Mudlet frees a killed key in the deferred
      *  cleanup its unit runs at the end of a line, so until then the key is
-     *  still findable while no longer firing: `exists` says 1, `isActive` says
-     *  0, and a second `killKey` finds a corpse and answers false. */
+     *  held while no longer firing: `exists` and `isActive` say 0 (desktop
+     *  skips an item pending deletion), getProfileStats still counts it, and
+     *  a second `killKey` finds a corpse and answers false. */
     dead?: boolean;
     /** Its script did not compile. Mudlet still makes the key, but
      *  TKey::setScript leaves it unable to fire or report active, however it
@@ -92,10 +93,13 @@ interface TempKey {
 
 /** A permanent key's getKeyCode answer: the Qt::Key it was made with when
  *  known, else its code's, and the mask with the Keypad bit a Numpad* code
- *  implies. */
-export function permKeyCode(node: Pick<KeyNode, 'key' | 'modifiers' | 'qtKey'>): KeyCodeInfo {
+ *  implies. A group has no key of its own, and a code outside Qt's range — a
+ *  group's -1 in a package, or a number no key has — reads as Key_unknown, as
+ *  desktop's TKey keeps it. */
+export function permKeyCode(node: Pick<KeyNode, 'key' | 'modifiers' | 'qtKey'> & { isGroup?: boolean }): KeyCodeInfo {
+    const keyCode = node.isGroup ? QT_KEY_UNKNOWN : node.qtKey ?? domCodeToQtKey(node.key) ?? 0;
     return {
-        keyCode: node.qtKey ?? domCodeToQtKey(node.key) ?? 0,
+        keyCode: keyCode < 0 || keyCode > QT_KEY_UNKNOWN ? QT_KEY_UNKNOWN : keyCode,
         modifiers: bindingQtModifiers(node.key, node.modifiers),
     };
 }
@@ -122,11 +126,18 @@ export class KeyEngine {
 
     // ── Temp keybindings (session-scoped, created by scripts) ─────────────────
 
-    /** Number of live session-scoped temp keys (Mudlet `getProfileStats` temp
-     *  count). Killed-but-unreaped keys are not live and don't count. */
+    /** Number of session-scoped temp keys the unit holds (Mudlet
+     *  `getProfileStats` temp count). A killed key still counts until the
+     *  reap: desktop's KeyUnit::assembleReport walks the tree, and the key
+     *  stays in it until the deferred cleanup frees it. */
     get tempCount(): number {
+        return this.temp.size;
+    }
+
+    /** Of {@link tempCount}, the keys that are active — a killed one is not. */
+    get tempActiveCount(): number {
         let n = 0;
-        for (const t of this.temp.values()) if (!t.dead) n++;
+        for (const t of this.temp.values()) if (!t.dead && t.enabled && !t.uncompiled) n++;
         return n;
     }
 
@@ -139,8 +150,30 @@ export class KeyEngine {
         return id;
     }
 
+    /** The temp key a NAME refers to, or null. Desktop names a temporary key
+     *  after its own id, so `killKey(tostring(id))` and friends reach it. */
+    tempIdNamed(name: string): number | null {
+        if (!/^\d+$/.test(name)) return null;
+        const id = Number(name);
+        return this.temp.has(id) ? id : null;
+    }
+
     /** Whether a temp key with this id is live — backs exists(id, "key"). */
-    hasTemp(id: number): boolean { return this.temp.has(id); }
+    /** A temp key with this id that has not been killed. A corpse waiting for
+     *  the reap is still held, but exists()/isActive()/findItems() skip it, as
+     *  desktop's skip anything KeyUnit has marked `pendingDeletion`. */
+    hasTemp(id: number): boolean {
+        const t = this.temp.get(id);
+        return t !== undefined && !t.dead;
+    }
+
+    /** Whether a temp key with this id is present and not killed — backs
+     *  exists(id, "key") and findItems(), which do not count a killed key
+     *  waiting for the cleanup to free it. */
+    hasLiveTemp(id: number): boolean {
+        const t = this.temp.get(id);
+        return !!t && !t.dead;
+    }
 
     /** Whether a live temp key is enabled — backs isActive(id, "key"). */
     isTempEnabled(id: number): boolean {
@@ -281,9 +314,15 @@ export class KeyEngine {
         // (Key_Eacute from an AZERTY profile has no US position at all).
         // Tree order, not store order: a key added later to an older group
         // sits inside that group, ahead of root keys made since (#336).
-        this.perm = inTreeOrder(keybindings).filter(k => enabledIds.has(k.id) && (k.key || isPrintableQtKey(k.qtKey)));
+        const ordered = inTreeOrder(keybindings);
+        const bound = (k: KeyNode) => !k.isGroup && (k.key || isPrintableQtKey(k.qtKey));
+        this.perm = ordered.filter(k => enabledIds.has(k.id) && (k.key || isPrintableQtKey(k.qtKey)));
+        this.permHolders = ordered.filter(bound);
         this.permRootSeq = new Map(this.perm.map(k => [k.id, rootSeq(k)]));
     }
+
+    /** Every saved binding with a key, switched on or not — see {@link holderOf}. */
+    private permHolders: KeyNode[] = [];
 
     /**
      * Give the profile's saved keys their place in the firing order before any
@@ -324,6 +363,10 @@ export class KeyEngine {
      * list in Mudlet's key unit), and a temporary one answers with no name: it
      * is named after its own id, which names nothing a player could go and look
      * for.
+     *
+     * A switched-off binding still holds its key — on its own or through its
+     * group — since scripts switch bindings on and off and enableKey() does not
+     * look for commands; one killed does not, as it can never fire again.
      */
     holderOf(key: string, modifiers: string[]): { name: string; temporary: boolean } | null {
         const same = (bindingKey: string, bindingMods: string[]): boolean =>
@@ -331,10 +374,10 @@ export class KeyEngine {
             && bindingMods.length === modifiers.length
             && bindingMods.every(m => modifiers.includes(m));
         for (const t of this.temp.values()) {
-            if (!t.enabled || t.dead || t.uncompiled) continue;
+            if (t.dead || t.uncompiled) continue;
             if (same(t.key, t.modifiers)) return { name: '', temporary: true };
         }
-        for (const binding of this.perm) {
+        for (const binding of this.permHolders) {
             if (same(binding.key, binding.modifiers)) return { name: binding.name, temporary: false };
         }
         return null;
@@ -343,6 +386,7 @@ export class KeyEngine {
     destroy(): void {
         this.temp.clear();
         this.perm = [];
+        this.permHolders = [];
         this.permRootSeq = new Map();
     }
 }

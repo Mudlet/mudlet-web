@@ -138,10 +138,10 @@ export default function mudlet(): PluginOption[] {
                 // import analysis), but `?inline` — which the busted fixtures
                 // use to carry an archive into the VFS — reaches the asset
                 // pipeline and needs the extension declared.
-                // The map fixtures are plain `.zip`, and scoping that to the
-                // fixture tree keeps a bare `.zip` import anywhere else meaning
-                // what it means today.
-                assetsInclude: ['**/*.mpackage', '**/specs/fixtures/**/*.zip'],
+                // The map fixtures are plain `.zip` and binary `.dat`, and scoping
+                // those to the fixture tree keeps a bare import of either anywhere
+                // else meaning what it means today.
+                assetsInclude: ['**/*.mpackage', '**/specs/fixtures/**/*.zip', '**/specs/fixtures/**/*.dat'],
                 optimizeDeps: {
                     // 'Mudlet Web': the library entry carries relative `?url` asset
                     // imports (external in the lib build); the dep optimizer's

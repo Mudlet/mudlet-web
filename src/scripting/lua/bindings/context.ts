@@ -64,7 +64,10 @@ export interface BindingContext {
     /** Park the dispatch state (`command`, `matches`, …) the calling script is
      *  holding before running an alias pass of its own, and hand it back at the
      *  depth the push answered with. See LuaRuntime.pushNestedDispatchState. */
-    pushNestedDispatchState(): number;
+    pushNestedDispatchState(parkCommand?: boolean): number;
+    /** Whether an alias or trigger pass is running a script now — the
+     *  nesting desktop's feedTriggers parks the caller's captures for. */
+    inDispatchPass(): boolean;
     popNestedDispatchState(depth: number): void;
 
     /** Whether `matches`/`multimatches` are being built — see
@@ -75,6 +78,11 @@ export interface BindingContext {
      *  Never reassigned after the runtime is constructed, so a plain reference
      *  is safe here. */
     readonly vfs: ProfileVFS | null;
+
+    /** The bytes behind a path in the read-only `/lua/` namespace (the bundled
+     *  Lua, and in busted builds the spec corpus and its fixtures), or null
+     *  for any other path. See LuaRuntime.readBuiltinBytes. */
+    readBuiltinBytes(path: string): Uint8Array | null;
 
     /** Drop a Lua-side callback registration by id (the registry slot behind
      *  `__mudlet_register_cb`). Distinct from {@link releaseCb}, which goes

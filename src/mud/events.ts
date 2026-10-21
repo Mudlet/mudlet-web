@@ -203,7 +203,8 @@ export type MudClientEvents = {
     /** Mudlet `sysTelnetEvent(type, option, message)` — fired for every
      *  telnet IAC command except GA/EOR, handled options included. `type` is
      *  the command byte (251 WILL, 252 WONT, 253 DO, 254 DONT, 250 SB, …),
-     *  `message` the SB body for a subnegotiation. */
+     *  `message` a byte-string: a subnegotiation's unescaped payload without
+     *  its framing, any other command whole. */
     'telnet.event': [type: number, option: number, message: string];
     /** Mudlet `raiseProtocolEvent("sysProtocolRejected", name)` — a telnet
      *  option Mudlet Web deliberately refuses. Mudlet Web, like Mudlet, operates in line
