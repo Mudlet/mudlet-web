@@ -2827,16 +2827,15 @@ export class ScriptingAPI {
         return this.host.toggleScriptByName(name, false);
     }
 
-    // A numeric argument names a script-created temp item, which lives in the
-    // runtime rather than the saved tree; Mudlet toggles either kind.
+    // Desktop's enableTrigger takes a NAME: a number is read as its string
+    // form, which is how a temp trigger is named (after its id). Temporary and
+    // permanent triggers share the one name table, so either kind answers.
     enableTrigger(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.host.setTempItemEnabled(nameOrId, true);
-        return this.host.toggleTriggerByName(nameOrId, true);
+        return this.host.toggleTriggerByName(String(nameOrId), true);
     }
 
     disableTrigger(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.host.setTempItemEnabled(nameOrId, false);
-        return this.host.toggleTriggerByName(nameOrId, false);
+        return this.host.toggleTriggerByName(String(nameOrId), false);
     }
 
     // A temp timer's name is the id tempTimer returned (Mudlet names it so), so
@@ -2856,14 +2855,13 @@ export class ScriptingAPI {
         return perm || temp;
     }
 
+    // By name, as enableTrigger: a number is the name a temp alias carries.
     enableAlias(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.host.setTempItemEnabled(nameOrId, true);
-        return this.host.toggleAliasByName(nameOrId, true);
+        return this.host.toggleAliasByName(String(nameOrId), true);
     }
 
     disableAlias(nameOrId: string | number): boolean {
-        if (typeof nameOrId === 'number') return this.host.setTempItemEnabled(nameOrId, false);
-        return this.host.toggleAliasByName(nameOrId, false);
+        return this.host.toggleAliasByName(String(nameOrId), false);
     }
 
     /** The saved keybinding carrying this numeric id, or null. Backs
@@ -2872,20 +2870,14 @@ export class ScriptingAPI {
         return this.host.savedKeyNode(idOrName);
     }
 
-    // A numeric argument names a script-created temp key, which lives in the key
-    // engine rather than the saved tree; Mudlet's enableKey/disableKey toggle
-    // either kind. A temp key is also named after its id, so its id as a
-    // string reaches it too.
+    // By name, as enableTrigger: a number is the name a temp key carries (its
+    // id), and temporary and permanent keys share the one name table.
     enableKey(nameOrId: string | number): boolean {
-        const tempId = typeof nameOrId === 'number' ? nameOrId : this.keys.tempIdNamed(nameOrId);
-        if (tempId !== null) return this.keys.setTempEnabled(tempId, true);
-        return this.host.toggleKeyByName(nameOrId as string, true);
+        return this.host.toggleKeyByName(String(nameOrId), true);
     }
 
     disableKey(nameOrId: string | number): boolean {
-        const tempId = typeof nameOrId === 'number' ? nameOrId : this.keys.tempIdNamed(nameOrId);
-        if (tempId !== null) return this.keys.setTempEnabled(tempId, false);
-        return this.host.toggleKeyByName(nameOrId as string, false);
+        return this.host.toggleKeyByName(String(nameOrId), false);
     }
 
     /**

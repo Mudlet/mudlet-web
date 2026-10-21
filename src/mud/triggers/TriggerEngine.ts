@@ -1,6 +1,7 @@
 import PCRE, { ENGINE_MATCH_LIMIT_VERB, pcreSubject } from './pcre/Pcre2';
 import type { TriggerNode, TriggerPattern } from '../../storage/schema';
-import { isColorizing } from '../../storage/schema';
+import { isColorizing, isTempParentRef, tempParentRef } from '../../storage/schema';
+import { ItemIdSequence } from '../ItemIdSequence';
 import { COLOR_DEFAULT, COLOR_IGNORED, parseColorPattern } from './legacyColorPatterns';
 import type { RgbColor } from '../text/FormatState';
 import { parseQColor } from '../../ui/labels/qColor';
@@ -312,31 +313,72 @@ interface SameLineChain {
 }
 
 /** A session-scoped temporary trigger. `seq` is its registration order in the
- *  unified list (see TriggerEngine's ordering notes). */
+ *  unified list (see TriggerEngine's ordering notes).
+ *
+ *  Temporary triggers live in the same tree as the permanent ones, as on
+ *  desktop (one mTriggerRootNodeList / mTriggerMap / mLookupTable for both):
+ *  each is keyed by the numeric id the script was handed and carries a tree
+ *  `node` under the key `temp:<id>` (see TEMP_PARENT_PREFIX in schema.ts), so a
+ *  permanent trigger created under it walks its chain exactly as it would
+ *  under a permanent parent. Its state — switched on or off, killed, a body
+ *  that did not compile — is the engine's, not a store node's: some scripts
+ *  make a temp trigger per line, and that has to stay cheap. */
 type TempEntryBase = {
+    /** The id the script was handed. */
+    id: number;
+    /** `temp:<id>` — its key in the tree (allById, pass state, hasChildren). */
+    key: string;
+    /** The tree node standing for this trigger: a synthetic one carrying just
+     *  what the chain walk reads of a parent (name, patterns), or a complex
+     *  trigger's full node. Always a root — no temp* API takes a parent. */
+    node: TriggerNode;
     fn: TempFn;
     seq: number;
     sameLine?: SameLineChain;
-    name?: string;
+    /** Mudlet names a temp trigger after its id (startTemp*Trigger:
+     *  setName(QString::number(id))); tempComplexRegexTrigger takes a name. */
+    name: string;
     /** Lines this trigger has been asked to go on firing for even without a
      *  match — Mudlet mKeepFiring, set by setTriggerStayOpen. Spent one line
      *  at a time, and only on lines the pattern did NOT match. */
     keepFiring?: number;
     /** Run when the ENGINE stops this trigger of its own accord (a runaway
-     *  lineage), so its owner can tear down what it holds — the Lua callback,
-     *  the id isActive() reads. Not called for an ordinary disposal, where the
-     *  owner is the one doing the stopping. */
+     *  lineage), so its owner can tear down what it holds. */
     onStopped?: () => void;
+    /** Run once when the trigger is killed, expires or is removed, so its owner
+     *  can release the callback. */
+    onFree?: () => void;
+    freed?: boolean;
     /** See {@link TempOptions.accept}. */
     accept?: () => boolean;
+    /** enableTrigger/disableTrigger — Tree::mActive. */
+    enabled: boolean;
+    /** Killed (or expired), waiting for the deferred cleanup — desktop's
+     *  mCleanupSet. It no longer fires, and it and everything under it read as
+     *  gone to exists/isActive/findItems, but it is still in the tree (and
+     *  counted by getProfileStats) until {@link TriggerEngine.reapKilled}. */
+    dead: boolean;
+    /** Its script did not compile: made, numbered and findable, but it never
+     *  fires and isActive() says 0 (TTrigger::setScript). */
+    uncompiled: boolean;
+    /** Its pattern did not compile (mOK_init false): it never fires, and so
+     *  never lets a line through to its children either. */
+    invalid?: boolean;
 };
 
 /** What a caller can tell the engine about a temp trigger beyond its pattern. */
 export interface TempOptions {
-    /** As the runaway report names it. Mudlet uses the trigger's id when the
-     *  call carried no name of its own. */
+    /** The id to file it under, drawn by the caller from the profile's shared
+     *  sequence. The engine draws its own when absent. */
+    id?: number;
+    /** As exists()/killTrigger() and the runaway report know it. Mudlet uses
+     *  the trigger's id when the call carried no name of its own. */
     name?: string;
     onStopped?: () => void;
+    /** See TempEntryBase.onFree. */
+    onFree?: () => void;
+    /** See TempEntryBase.uncompiled. */
+    uncompiled?: boolean;
     /** A further condition the line has to meet once the pattern matched —
      *  a colour trigger's colour, which the engine cannot see. A line that
      *  fails it is a line the trigger did NOT match, so a stay-open window
@@ -350,7 +392,26 @@ type TempEntry =
     | ({ kind: 'startOfLine'; pattern: string } & TempEntryBase)
     | ({ kind: 'exactMatch'; pattern: string } & TempEntryBase)
     | ({ kind: 'prompt' } & TempEntryBase)
-    | ({ kind: 'line'; countdown: number; remaining: number; skipFirst: boolean } & TempEntryBase);
+    | ({ kind: 'line'; countdown: number; remaining: number; skipFirst: boolean } & TempEntryBase)
+    /** Never fires: an empty pattern (compacted away, as
+     *  TTrigger::setRegexCodeList does — the trigger is then a structural node
+     *  whose children see every line) or one that would not compile
+     *  (`invalid`, which keeps its children out as well). */
+    | ({ kind: 'none' } & TempEntryBase)
+    /** tempComplexRegexTrigger: everything a permanent trigger can have, so it
+     *  is compiled and walked exactly like one (see loadPerm) — its `node` is
+     *  a full TriggerNode, whose code runs through the ordinary exec path. */
+    | ({ kind: 'complex' } & TempEntryBase);
+
+/** A minimal tree node for a simple temp trigger: a root with a name and
+ *  patterns, which is all the chain walk reads of a parent. */
+function tempTreeNode(key: string, name: string, patterns: TriggerPattern[]): TriggerNode {
+    return {
+        id: key, name, enabled: true, isGroup: false, parentId: null, patterns,
+        code: '', language: 'lua', fireLength: 0, multipleMatches: false,
+        multiline: false, delta: 0, isFilter: false,
+    };
+}
 
 /**
  * One node in the unified processing list — either a permanent compiled entry
@@ -796,9 +857,29 @@ export function colorPatternProblem(text: string): 'noColors' | 'noMatch' | null
 }
 
 export class TriggerEngine {
+    /** Every temporary trigger, by the id the script was handed — the
+     *  temporary half of desktop's one mTriggerMap. Insertion order is
+     *  creation order (Map), which is id order too. */
     private readonly temp = new Map<number, TempEntry>();
-    /** Key for this engine's own temp map — see PatternEngine.nextInternalId. */
-    private nextInternalId = 1;
+    /** The same entries by their tree key (`temp:<id>`). */
+    private readonly tempByKey = new Map<string, TempEntry>();
+    /** Temp trigger ids, shared with every other engine in the profile — see
+     *  ItemIdSequence. A bare engine (unit tests) draws from its own. */
+    private idSeq = new ItemIdSequence();
+    setIdSequence(seq: ItemIdSequence): void { this.idSeq = seq; }
+    /** The store's trigger list and blocked set as the last loadPerm was given
+     *  them, so a complex temp trigger can be compiled into the same tree
+     *  without the store being involved. */
+    private storeItems: TriggerNode[] = [];
+    private storeBlocked: ReadonlySet<string> = new Set();
+    /** Whether loadPerm has run (PCRE is ready by then): a complex temp trigger
+     *  made before it is compiled by that first load instead. */
+    private permLoaded = false;
+    /** Tree keys of freed temp triggers that had permanent children: the owner
+     *  of the store removes those subtrees (see takeOrphanedParents). */
+    private orphanedParents = new Set<string>();
+    /** Called when a temp trigger with permanent children has been freed. */
+    private onOrphans: (() => void) | null = null;
     // True while processTemp is iterating. A `line` temp trigger created during
     // a handler (mid-pass) sets skipFirst so it doesn't tick on the line it was
     // created on — `from` then counts from the next line regardless of whether
@@ -939,9 +1020,20 @@ export class TriggerEngine {
         return pcreReadyPromise.then(() => undefined);
     }
 
-    /** Number of live session-scoped temp triggers (Mudlet `getProfileStats` temp count). */
+    /** Temp triggers in the tree — killed ones too, until the deferred cleanup
+     *  frees them: desktop's getProfileStats walks the live root list
+     *  unfiltered (Host::assembleReport), so a killed trigger still counts
+     *  until doCleanup() deletes it. */
     get tempCount(): number {
         return this.temp.size;
+    }
+
+    /** Patterns the temp triggers carry, for getProfileStats' pattern tally: one
+     *  per simple temp trigger, a complex one's own list. */
+    get tempPatternCount(): number {
+        let n = 0;
+        for (const t of this.temp.values()) n += t.kind === 'complex' ? t.node.patterns.length : 1;
+        return n;
     }
 
     /**
@@ -964,44 +1056,55 @@ export class TriggerEngine {
      *                     (Mudlet `tempPromptTrigger`); `pattern` is ignored.
      *                     Callback receives `[]` — match_prompt sets no
      *                     capture groups.
-     * Invalid regex patterns return a no-op disposer so callers don't need
-     * to special-case compile failures.
+     *   - `'none'`      — never fires: the trigger an empty pattern makes once
+     *                     Mudlet has compacted the blank away.
+     * An invalid regex still makes the trigger — numbered, findable, killable —
+     * but one that never fires, as desktop leaves a trigger whose pattern
+     * failed to compile in place. Returns a disposer that removes it at once.
      */
     addTemp(
         pattern: string,
         fn: TempFn,
-        kind: 'regex' | 'substring' | 'startOfLine' | 'exactMatch' | 'prompt' = 'regex',
+        kind: 'regex' | 'substring' | 'startOfLine' | 'exactMatch' | 'prompt' | 'none' = 'regex',
         opts: TempOptions = {},
     ): () => void {
-        const id = this.nextInternalId++;
-        const seq = this.regCounter++;
-        const { name, onStopped, accept } = opts;
+        const id = this.createTemp(pattern, fn, kind, opts);
+        return () => this.removeTemp(id);
+    }
+
+    /** {@link addTemp}, handing back the trigger's id rather than a disposer. */
+    createTemp(
+        pattern: string,
+        fn: TempFn,
+        kind: 'regex' | 'substring' | 'startOfLine' | 'exactMatch' | 'prompt' | 'none' = 'regex',
+        opts: TempOptions = {},
+    ): number {
+        const base = this.tempBase(fn, opts);
+        const { key, name } = base;
+        let entry: TempEntry;
         if (kind === 'prompt') {
-            this.temp.set(id, { kind, fn, seq, name, onStopped, accept });
+            entry = { ...base, kind, node: tempTreeNode(key, name, [{ type: 'prompt', text: '' }]) };
+        } else if (kind === 'none') {
+            entry = { ...base, kind, node: tempTreeNode(key, name, []) };
         } else if (kind === 'substring' || kind === 'startOfLine' || kind === 'exactMatch') {
-            this.temp.set(id, { kind, pattern, fn, seq, name, onStopped, accept });
+            entry = { ...base, kind, pattern, node: tempTreeNode(key, name, [{ type: kind, text: pattern }]) };
         } else {
+            const node = tempTreeNode(key, name, [{ type: 'regex', text: pattern }]);
             const re = compilePcre(pattern, reason => {
                 // Same channel as a permanent trigger's bad pattern — a
                 // tempRegexTrigger that will never fire must not be silent
                 // either (mudlet-web#60). There is no store node behind a temp,
                 // so the report carries no jump-to-source.
-                const who = name ? ` in "${name}"` : '';
+                const who = opts.name ? ` in "${opts.name}"` : '';
                 compileErrorRef.fn?.(
                     `Error: perl regex "${pattern}"${who} failed to compile, reason: "${reason}".`);
             });
-            if (!re) return () => {};
-            this.temp.set(id, { kind: 'regex', re, fn, seq, name, onStopped, accept });
+            entry = re
+                ? { ...base, kind: 'regex', re, node }
+                : { ...base, kind: 'none', node, invalid: true };
         }
-        this.registerSameLineCreation(id);
-        this.orderDirty = true;
-        return () => {
-            const entry = this.temp.get(id);
-            if (!entry) return;
-            if (entry.kind === 'regex') entry.re.destroy();
-            this.temp.delete(id);
-            this.orderDirty = true;
-        };
+        this.insertTemp(entry);
+        return entry.id;
     }
 
     /**
@@ -1011,8 +1114,14 @@ export class TriggerEngine {
      * self-expires after the last fire. Returns a disposer for early
      * cancellation.
      */
-    addTempLine(from: number, howMany: number, fn: TempFn): () => void {
-        const id = this.nextInternalId++;
+    addTempLine(from: number, howMany: number, fn: TempFn, opts: TempOptions = {}): () => void {
+        const id = this.createTempLine(from, howMany, fn, opts);
+        return () => this.removeTemp(id);
+    }
+
+    /** {@link addTempLine}, handing back the trigger's id. */
+    createTempLine(from: number, howMany: number, fn: TempFn, opts: TempOptions = {}): number {
+        const base = this.tempBase(fn, opts);
         // `from` lines are skipped before the first fire, counted from the
         // first line the trigger is offered: the one being processed when it
         // is armed mid-pass, the next one to arrive otherwise. Desktop's
@@ -1021,17 +1130,227 @@ export class TriggerEngine {
         // handler skips the next line rather than firing on it — treating 0
         // and 1 alike there fired one line early (mudlet-web#327).
         const ahead = Math.max(0, Math.trunc(from) || 0);
-        this.temp.set(id, {
+        this.insertTemp({
+            ...base,
             kind: 'line',
             countdown: ahead + 1,
             remaining: Math.max(1, Math.trunc(howMany) || 1),
             skipFirst: false,
-            fn,
-            seq: this.regCounter++,
+            // A line trigger returns from TTrigger::match before its children
+            // loop, so nothing under it is ever reached: a pattern (so the
+            // chain walk wants it open) that never opens.
+            node: tempTreeNode(base.key, base.name, [{ type: 'lineSpacer', text: '' }]),
         });
-        this.registerSameLineCreation(id);
+        return base.id;
+    }
+
+    /**
+     * Mudlet `tempComplexRegexTrigger`: a temporary trigger with everything a
+     * permanent one can have — an AND chain across lines, a filter, a fire
+     * length, a line delta, colour patterns, a highlight. It is compiled and
+     * walked exactly like a permanent trigger, from a node the engine holds
+     * itself rather than one in the store, and fires through the same `exec`
+     * the permanent ones do (its `code` is the caller's dispatch stub).
+     * `node.id` and `parentId` are the engine's to set.
+     */
+    createTempComplex(node: Omit<TriggerNode, 'id' | 'parentId' | 'enabled'>, opts: TempOptions = {}): number {
+        const base = this.tempBase(() => {}, { ...opts, name: node.name });
+        this.insertTemp({
+            ...base,
+            kind: 'complex',
+            node: { ...node, id: base.key, name: base.name, parentId: null, enabled: true },
+        });
+        this.recompile();
+        return base.id;
+    }
+
+    private tempBase(fn: TempFn, opts: TempOptions): TempEntryBase {
+        const id = opts.id ?? this.idSeq.next();
+        const key = tempParentRef(id);
+        const name = opts.name ?? String(id);
+        return {
+            id, key, fn, name,
+            node: tempTreeNode(key, name, []),
+            seq: this.regCounter++,
+            onStopped: opts.onStopped,
+            onFree: opts.onFree,
+            accept: opts.accept,
+            enabled: true,
+            dead: false,
+            uncompiled: !!opts.uncompiled,
+        };
+    }
+
+    private insertTemp(entry: TempEntry): void {
+        this.temp.set(entry.id, entry);
+        this.tempByKey.set(entry.key, entry);
+        this.allById.set(entry.key, entry.node);
+        this.registerSameLineCreation(entry.id);
         this.orderDirty = true;
-        return () => { this.temp.delete(id); this.orderDirty = true; };
+    }
+
+    /** Rebuild the compiled tree from the store's last list plus the complex
+     *  temp triggers — after one of those came or went. */
+    private recompile(): void {
+        if (this.permLoaded) this.loadPerm(this.storeItems, this.storeBlocked);
+    }
+
+    /**
+     * Take a temp trigger out of the tree now. Its permanent children, if it
+     * has any, are left orphaned in the store for its owner to remove (see
+     * {@link takeOrphanedParents}); until then nothing reaches them.
+     */
+    removeTemp(id: number): void {
+        const entry = this.temp.get(id);
+        if (!entry) return;
+        this.release(entry);
+        if (entry.kind === 'regex') entry.re.destroy();
+        this.temp.delete(id);
+        this.tempByKey.delete(entry.key);
+        this.allById.delete(entry.key);
+        this.keepFiring.delete(entry.key);
+        this.orderDirty = true;
+        if (this.hasChildren.has(entry.key)) {
+            this.orphanedParents.add(entry.key);
+            this.onOrphans?.();
+        }
+        // A killed complex one is already out of the compiled tree (see killTemp).
+        if (entry.kind === 'complex' && !entry.dead) this.recompile();
+    }
+
+    private release(entry: TempEntry): void {
+        if (entry.freed) return;
+        entry.freed = true;
+        entry.onFree?.();
+    }
+
+    /**
+     * Mudlet `killTrigger` on a temp trigger: it stops firing at once — for the
+     * rest of the line being walked too — and is queued for the deferred
+     * cleanup (TriggerUnit::markCleanup), which frees it with its whole subtree.
+     * False for an unknown id or one already waiting to be freed.
+     */
+    killTemp(id: number): boolean {
+        const entry = this.temp.get(id);
+        if (!entry || entry.dead) return false;
+        entry.dead = true;
+        this.release(entry);
+        if (entry.kind === 'complex') this.recompile();
+        return true;
+    }
+
+    /** Mudlet `killTrigger(name)` for the temporaries: the newest live temp
+     *  trigger carrying the name (TriggerUnit::killTrigger walks the lookup
+     *  table, newest first, skipping permanent items and corpses). */
+    killTempByName(name: string): boolean {
+        const id = this.newestTempByName(name, false);
+        return id !== null && this.killTemp(id);
+    }
+
+    /**
+     * Free every temp trigger killed since the last call — desktop's
+     * TriggerUnit::doCleanup, which runs once no line is being processed.
+     * The engine runs it itself as the outermost pass ends; the owner runs it
+     * at the other points desktop does (after a batch, after a timer).
+     */
+    reapKilled(): void {
+        if (this.processingDepth > 0) return;
+        for (const [id, entry] of [...this.temp]) {
+            if (entry.dead) this.removeTemp(id);
+        }
+    }
+
+    /** The tree keys of freed temp triggers that had permanent children, since
+     *  the last call. Their owner removes those subtrees from the store, as
+     *  desktop's ~TTrigger deletes its children with it. */
+    takeOrphanedParents(): string[] {
+        if (this.orphanedParents.size === 0) return [];
+        const out = [...this.orphanedParents];
+        this.orphanedParents.clear();
+        return out;
+    }
+
+    /** Told when {@link takeOrphanedParents} has something to hand over. */
+    setOrphanListener(fn: (() => void) | null): void {
+        this.onOrphans = fn;
+    }
+
+    /** Whether a temp trigger with this id is in the tree, killed or not. */
+    hasTemp(id: number): boolean {
+        return this.temp.has(id);
+    }
+
+    /** Whether a temp trigger with this id is in the tree and not killed — what
+     *  exists() counts (TriggerUnit::pendingDeletion). */
+    hasLiveTemp(id: number): boolean {
+        const entry = this.temp.get(id);
+        return !!entry && !entry.dead;
+    }
+
+    /** Whether a live temp trigger is switched on and able to fire — isActive(). */
+    tempIsActive(id: number): boolean {
+        const entry = this.temp.get(id);
+        if (!entry || entry.dead || !entry.enabled || entry.uncompiled) return false;
+        // A complex one whose pattern will not compile is left switched off,
+        // as a permanent trigger is (mOK_init false: Tree::isActive wants state()).
+        return !this.invalidPatterns.has(entry.key);
+    }
+
+    /** A live temp trigger's name, or null. */
+    tempName(id: number): string | null {
+        const entry = this.temp.get(id);
+        return entry && !entry.dead ? entry.name : null;
+    }
+
+    /** A temp trigger's patterns (its node's), or null for an unknown id. */
+    tempPatterns(id: number): TriggerPattern[] | null {
+        return this.temp.get(id)?.node.patterns ?? null;
+    }
+
+    /** Live temp trigger ids, ascending, whose name passes `test`. */
+    liveTempIds(test: (name: string) => boolean): number[] {
+        const out: number[] = [];
+        for (const entry of this.temp.values()) {
+            if (!entry.dead && test(entry.name)) out.push(entry.id);
+        }
+        return out;
+    }
+
+    /**
+     * The newest temp trigger carrying `name` — desktop's findTrigger, a
+     * QMultiMap lookup whose newest entry comes first. `includeDead` keeps one
+     * waiting for cleanup in the running, as findTrigger does (perm* parent
+     * resolution); killTrigger and friends skip it.
+     */
+    newestTempByName(name: string, includeDead: boolean): number | null {
+        let found: number | null = null;
+        for (const entry of this.temp.values()) {
+            if (entry.name === name && (includeDead || !entry.dead)) found = entry.id;
+        }
+        return found;
+    }
+
+    /** enableTrigger/disableTrigger on a temp trigger by id. False for an
+     *  unknown id or a killed one — re-enabling a corpse would resurrect it. */
+    setTempEnabled(id: number, enabled: boolean): boolean {
+        const entry = this.temp.get(id);
+        if (!entry || entry.dead) return false;
+        entry.enabled = enabled;
+        return true;
+    }
+
+    /** Whether the temp trigger behind a tree key can let a line through: in
+     *  the tree, not killed, switched on, compiled. False for a freed one. */
+    private tempKeyActive(key: string): boolean {
+        const entry = this.tempByKey.get(key);
+        return !!entry && !entry.dead && entry.enabled && !entry.uncompiled && !entry.invalid;
+    }
+
+    /** `isActive()` of a tree node as the walk reads it: a temp trigger's own
+     *  state, or a permanent trigger's switch (see selfEnabledIds). */
+    private isSelfEnabled(id: string): boolean {
+        if (isTempParentRef(id)) return this.tempKeyActive(id) && !this.invalidPatterns.has(id);
+        return this.selfEnabledIds.has(id);
     }
 
     /**
@@ -1061,10 +1380,12 @@ export class TriggerEngine {
     reorderAfterPackageImport(items: TriggerNode[]): void {
         this.reserveOrder(items);
         const moved: { seq: number; assign: (seq: number) => void }[] = [];
+        // Every temp trigger, complex ones included — they are all roots.
         for (const t of this.temp.values()) {
             moved.push({ seq: t.seq, assign: seq => { t.seq = seq; } });
         }
-        // A tempComplexTrigger is a temporary node in the tree, not a temp entry.
+        // An isTempTrigger="yes" root from a package XML is a temporary node in
+        // the store rather than an engine temp.
         for (const item of items) {
             if (!item.temporary || item.parentId) continue;
             const seq = this.permReg.get(item.id);
@@ -1082,8 +1403,28 @@ export class TriggerEngine {
      * inactive, as desktop's `Tree::isActive` wants `state()` — they never
      * match, so their children are never looked at either.
      */
-    loadPerm(items: TriggerNode[], blocked: ReadonlySet<string> = new Set()): void {
+    loadPerm(storeItems: TriggerNode[], blocked: ReadonlySet<string> = new Set()): void {
+        this.storeItems = storeItems;
+        this.storeBlocked = blocked;
+        this.permLoaded = true;
+        // The complex temp triggers are compiled into the same tree, from the
+        // nodes the engine holds for them. Their seqs are their own (see
+        // seqOf), so they stay out of permReg.
+        let complex: TriggerNode[] | null = null;
+        // A killed one is left out: it can never fire again, and its compiled
+        // patterns are freed now rather than at the cleanup — a trigger that
+        // re-creates itself under its own name (tempComplexRegexTrigger
+        // extends and kills its namesake) would otherwise pile up a growing
+        // pattern list per generation until the wasm heap gave out. It stays
+        // in allById below, so what hangs under it still sees it as killed.
+        for (const t of this.temp.values()) {
+            if (t.kind === 'complex' && !t.dead) (complex ??= []).push(t.node);
+        }
+        const items = complex ? [...storeItems, ...complex] : storeItems;
         this.allById = new Map(items.map(i => [i.id, i]));
+        // Every temp trigger is a node of the tree a permanent child can hang
+        // off (see TEMP_PARENT_PREFIX).
+        for (const t of this.temp.values()) this.allById.set(t.key, t.node);
 
         // Assign each permanent node a stable registration seq the first time we
         // see it (in store/document order, where a parent always precedes its
@@ -1091,8 +1432,8 @@ export class TriggerEngine {
         // edits/toggles; a node added at runtime draws the current counter, so
         // it sorts after temps created before it — matching Mudlet's appended
         // root list. Prune seqs for nodes that were deleted.
-        this.reserveOrder(items);
-        const liveIds = new Set(items.map(i => i.id));
+        this.reserveOrder(storeItems);
+        const liveIds = new Set(storeItems.map(i => i.id));
         for (const id of this.permReg.keys()) {
             if (!liveIds.has(id)) this.permReg.delete(id);
         }
@@ -1322,6 +1663,7 @@ export class TriggerEngine {
             // temp-only equivalent of what `process()` needs its
             // addedWhileProcessing loop for.
             for (const [id, entry] of this.temp) {
+                if (entry.kind === 'complex') continue;
                 this.fireTempEntry(id, entry, haystack, isPrompt);
             }
         } finally {
@@ -1345,6 +1687,9 @@ export class TriggerEngine {
         this.addedWhileProcessing = [];
         this.permSameLine.clear();
         this.sameLineChainStarters.clear();
+        // TriggerUnit::processDataStream ends its outermost pass with
+        // doCleanup(): what was killed while the line was walked is freed now.
+        this.reapKilled();
     }
 
     /** Match + fire a single temp trigger against `line`. Self-expiring `line`
@@ -1353,23 +1698,39 @@ export class TriggerEngine {
         // Named as the trigger whose script is running, and carrying its
         // lineage, so anything it arms is enrolled behind it rather than
         // starting a lineage of its own.
-        this.runAsTrigger(entry.name ?? '', entry.sameLine, () =>
+        this.runAsTrigger(entry.name, entry.sameLine, () =>
             this.fireTempEntryInner(id, entry, line, isPrompt));
     }
 
     private fireTempEntryInner(id: number, entry: TempEntry, line: string, isPrompt: boolean): void {
+        // Desktop's `if (isActive())` at the top of TTrigger::match: a temp
+        // trigger switched off, killed or uncompiled is not looked at, and so
+        // nothing under it is either. What it read is what its children go by
+        // for the rest of the line (see PassState).
+        const active = this.tempKeyActive(entry.key);
+        this.pass?.active.set(entry.key, active);
+        if (!active) return;
         if (this.fireTempEntryMatch(id, entry, line, isPrompt)) {
             // Desktop's `mKeepFiring = mStayOpen` once the script has run, and a
             // temporary trigger's mStayOpen is 0: a match closes the window, and
             // the callback cannot hold its own trigger open (mudlet-web#238).
             entry.keepFiring = 0;
+            // A match lets the line through to its children — except a line
+            // trigger's, which returns before TTrigger::match reaches them.
+            if (entry.kind !== 'line') this.pass?.open.add(entry.key);
             return;
         }
         // No match. A trigger held open by setTriggerStayOpen fires anyway,
         // with nothing captured, and spends one of its lines doing it
-        // (TTrigger::match: ).
+        // (TTrigger::match: the mKeepFiring branch) — or, when it has
+        // children, holds the chain open for them instead of re-running its own
+        // script, as a permanent chain head does (see applyFireLength).
         if (!entry.keepFiring || entry.keepFiring <= 0) return;
         entry.keepFiring--;
+        if (this.hasChildren.has(entry.key)) {
+            this.pass?.open.add(entry.key);
+            return;
+        }
         entry.fn([]);
     }
 
@@ -1383,7 +1744,9 @@ export class TriggerEngine {
             if (entry.countdown > 1) { entry.countdown--; return false; }
             entry.fn([stripEol(line)]);
             entry.remaining--;
-            if (entry.remaining <= 0) { this.temp.delete(id); this.orderDirty = true; }
+            // Spent: deactivate() + markCleanup(), so it is freed with the
+            // rest of the line's corpses.
+            if (entry.remaining <= 0) this.killTemp(id);
             return true;
         }
         const accepted = () => !entry.accept || entry.accept();
@@ -1411,6 +1774,7 @@ export class TriggerEngine {
             entry.fn([text]);
             return true;
         }
+        if (entry.kind !== 'regex') return false;
         const m = entry.re.tryMatchFrom(pcreSubject(line), 0) as PcreMatch | null;
         if (!m || !accepted()) return false;
         const result = pcreToMatchResult(m);
@@ -1516,7 +1880,7 @@ export class TriggerEngine {
         // rather than by leaving the trigger out of the list — see
         // selfEnabledIds. What it read is what this trigger's children go by
         // for the rest of the line.
-        const active = this.selfEnabledIds.has(item.id);
+        const active = this.isSelfEnabled(item.id);
         pass.active.set(item.id, active);
         if (!active) return;
         if (!this.isChainAccessible(item, currentLine)) return;
@@ -1732,10 +2096,15 @@ export class TriggerEngine {
                 }
                 if (added.kind === 'temp') {
                     const entry = this.temp.get(added.id);
-                    if (entry) this.fireTempEntry(added.id, entry, line, isPrompt);
-                    continue;
+                    // A complex temp trigger is walked as the permanent ones are.
+                    if (entry && entry.kind !== 'complex') {
+                        this.fireTempEntry(added.id, entry, line, isPrompt);
+                        continue;
+                    }
+                    if (!entry) continue;
                 }
-                const perm = this.permCompiled.find(e => e.item.id === added.id);
+                const nodeId = added.kind === 'temp' ? tempParentRef(added.id) : added.id;
+                const perm = this.permCompiled.find(e => e.item.id === nodeId);
                 if (!perm) continue;
                 matches.length = 0;
                 this.matchPermEntry(perm, line, isPrompt, currentLine, seen, matches);
@@ -1768,10 +2137,19 @@ export class TriggerEngine {
      * behalf, and reading the child's own (always empty) lineage instead would
      * start a fresh one every round — which never deepens and so never trips.
      */
-    notePermCreated(node: TriggerNode, root: TriggerNode): void {
+    notePermCreated(node: TriggerNode): void {
         if (this.processingDepth === 0) return;
-        if (!this.permSameLine.has(root.id)) this.permSameLine.set(root.id, this.nextSameLineChain());
+        // The root may be a temp trigger (a permanent child under it); its
+        // lineage is then the temp trigger's own when it has one.
+        const root = this.rootIdOf(this.allById.get(node.id) ?? node);
+        if (!this.lineageOfRoot(root)) this.permSameLine.set(root, this.nextSameLineChain());
         this.addedWhileProcessing.push({ kind: 'perm', id: node.id });
+    }
+
+    /** The lineage recorded against a root: a temp trigger's own, or the one
+     *  a permanent root was given as something under it was created. */
+    private lineageOfRoot(rootId: string): SameLineChain | undefined {
+        return this.tempByKey.get(rootId)?.sameLine ?? this.permSameLine.get(rootId);
     }
 
     /** Join the lineage of the trigger whose script is running, a generation on;
@@ -1789,7 +2167,7 @@ export class TriggerEngine {
     private sameLineOf(added: SameLineEntry): SameLineChain | undefined {
         if (added.kind === 'temp') return this.temp.get(added.id)?.sameLine;
         const node = this.allById.get(added.id);
-        return node ? this.permSameLine.get(this.rootIdOf(node)) : undefined;
+        return node ? this.lineageOfRoot(this.rootIdOf(node)) : undefined;
     }
 
     /** The root ancestor's id — the node a lineage is recorded against. */
@@ -1810,7 +2188,7 @@ export class TriggerEngine {
     private execPerm(m: TriggerMatch, exec: (match: TriggerMatch) => void): void {
         this.runAsTrigger(
             m.trigger.name,
-            this.permSameLine.get(this.rootIdOf(m.trigger)),
+            this.lineageOfRoot(this.rootIdOf(m.trigger)),
             () => exec(m));
         const after = this.stayOpenAfterScript.get(m);
         if (!after) return;
@@ -1861,10 +2239,7 @@ export class TriggerEngine {
                 // gone to isActive() and to the Lua callback registry is its
                 // owner's teardown, not this entry disappearing.
                 entry.onStopped?.();
-                if (this.temp.has(added.id)) {
-                    if (entry.kind === 'regex') entry.re.destroy();
-                    this.temp.delete(added.id);
-                }
+                this.removeTemp(added.id);
             } else {
                 // A permanent trigger is switched off rather than removed —
                 // there is no removal API for one, and the player's own copy of
@@ -1948,7 +2323,8 @@ export class TriggerEngine {
             entries.push({ kind: 'perm', perm, path: this.permPath(perm.item) });
         }
         for (const [id, t] of this.temp) {
-            entries.push({ kind: 'temp', id, path: [t.seq] });
+            // A complex one is compiled, and so already in permCompiled.
+            if (t.kind !== 'complex') entries.push({ kind: 'temp', id, path: [t.seq] });
         }
         entries.sort((a, b) => comparePath(a.path, b.path));
         this.unified = entries;
@@ -1962,10 +2338,17 @@ export class TriggerEngine {
         const guard = new Set<string>();
         while (cur && !guard.has(cur.id)) {
             guard.add(cur.id);
-            chain.push(this.permReg.get(cur.id) ?? 0);
+            chain.push(this.seqOf(cur.id));
             cur = cur.parentId ? this.allById.get(cur.parentId) : undefined;
         }
         return chain.reverse();
+    }
+
+    /** A node's registration seq: a temp trigger's own, or a permanent one's. */
+    private seqOf(id: string): number {
+        const temp = this.tempByKey.get(id);
+        if (temp) return temp.seq;
+        return this.permReg.get(id) ?? 0;
     }
 
     setLuaEval(fn: ((code: string, line: string) => boolean) | null): void {
@@ -1986,9 +2369,14 @@ export class TriggerEngine {
 
     destroy(): void {
         for (const entry of this.temp.values()) {
+            this.release(entry);
             if (entry.kind === 'regex') entry.re.destroy();
         }
         this.temp.clear();
+        this.tempByKey.clear();
+        this.orphanedParents.clear();
+        this.storeItems = [];
+        this.permLoaded = false;
         this.permCompiled = [];
         for (const e of this.cache.values()) {
             for (const re of e.pcreInstances) re.destroy();
@@ -2293,7 +2681,9 @@ export class TriggerEngine {
         let found = false;
         for (const entry of this.temp.values()) {
             if (entry.name !== name) continue;
-            entry.keepFiring = Math.max(0, Math.trunc(lines));
+            // A complex one keeps its window where a permanent trigger does.
+            if (entry.kind === 'complex') this.setStayOpen([entry.key], lines);
+            else entry.keepFiring = Math.max(0, Math.trunc(lines));
             found = true;
         }
         return found;
@@ -2355,12 +2745,15 @@ export class TriggerEngine {
         let parentId = item.parentId;
         while (parentId) {
             const parent = this.allById.get(parentId);
-            if (!parent) break;
+            // A freed temp parent took its subtree with it (desktop deletes the
+            // children with the parent); what is left in the store until its
+            // owner removes it is reached by nothing.
+            if (!parent) return !isTempParentRef(parentId);
             let active = pass.active.get(parentId);
             if (active === undefined) {
                 // Not walked (a pattern-less folder): its match() runs as its
                 // first descendant is reached, which is now.
-                active = this.selfEnabledIds.has(parentId);
+                active = this.isSelfEnabled(parentId);
                 pass.active.set(parentId, active);
             }
             if (!active) return false;

@@ -386,21 +386,6 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 'the lazyCaptureGlobals setting / leaves them out again once switched back on',
             ].map(name => ({ name: lazy + name, reason })),
             {
-                name: 'Trigger processing / deferred deletion / does not count the children of a killed temporary item either',
-                reason:
-                    'Hangs a permanent trigger and timer under a temporary one, naming the parent by its id — '
-                    + 'on desktop a temporary item is named by its id and lives in the same tree as the permanent '
-                    + 'ones, so permRegexTrigger/permTimer can parent to it, and killing it frees the children. '
-                    + 'Mudlet Web keeps temporary items in the trigger and timer engines only, never in the stored '
-                    + 'tree, so a permanent item cannot name one as its parent: perm* refuses with "parent \'N\' '
-                    + 'not found", as for any other missing parent. Matching would mean making engine-only items '
-                    + 'parents in the stored tree, chain semantics included — a child trigger runs only when its '
-                    + 'parent matches — and a half measure (linking only the child\'s lifetime to the parent) would '
-                    + 'leave the child firing on its own, a worse divergence than the refusal. Everything else '
-                    + 'deferred deletion pins about killed temporary items — not counted by exists, isActive or '
-                    + 'findItems, still counted by getProfileStats until freed — passes.',
-            },
-            {
                 name: 'Trigger processing / triggers ruled out from a copy of their pattern / leaves the pinned filters alone when a trigger creates another trigger',
                 reason:
                     'Reads getProfileStats().triggers.rootFilterEpoch, a test-mode-only counter of how often '

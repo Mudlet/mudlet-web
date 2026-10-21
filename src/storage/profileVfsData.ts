@@ -212,10 +212,10 @@ export function serializeProfileData(connectionId: string): string {
     const payload: PersistedProfileData = {
         version: PROFILE_DATA_VERSION,
         scripts: s.connectionScripts[connectionId] ?? [],
-        aliases: s.connectionAliases[connectionId] ?? [],
+        aliases: persistableNodes(s.connectionAliases[connectionId] ?? []),
         triggers: persistableNodes(s.connectionTriggers[connectionId] ?? []),
         timers: persistableNodes(s.connectionTimers[connectionId] ?? []),
-        keybindings: s.connectionKeybindings[connectionId] ?? [],
+        keybindings: persistableNodes(s.connectionKeybindings[connectionId] ?? []),
         buttons: s.connectionButtons[connectionId] ?? [],
         packages: s.connectionPackages[connectionId] ?? [],
         variables: s.connectionVariables[connectionId],

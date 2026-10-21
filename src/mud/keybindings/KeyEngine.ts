@@ -1,6 +1,6 @@
 import { ItemIdSequence } from '../ItemIdSequence';
 import type { KeyNode } from '../../storage/schema';
-import { buildEffectivelyEnabledIds, inTreeOrder } from '../../storage/schema';
+import { buildEffectivelyEnabledIds, inTreeOrder, isTempParentRef, tempParentRef, tempRootOf } from '../../storage/schema';
 import {
     bindingQtModifiers, domCodeToQtKey, isKeypadBinding, isPrintableQtKey, isQtKeypadEvent,
     keypadEventQtKey, printableEventQtKey, QT_KEY_UNKNOWN,
@@ -126,19 +126,88 @@ export class KeyEngine {
 
     // ── Temp keybindings (session-scoped, created by scripts) ─────────────────
 
-    /** Number of session-scoped temp keys the unit holds (Mudlet
-     *  `getProfileStats` temp count). A killed key still counts until the
-     *  reap: desktop's KeyUnit::assembleReport walks the tree, and the key
-     *  stays in it until the deferred cleanup frees it. */
+    /** Temp keys in the tree (Mudlet `getProfileStats` temp count) — killed
+     *  ones too, until the cleanup frees them: KeyUnit::assembleReport walks
+     *  the tree, and a killed key stays in it until doCleanup(). */
     get tempCount(): number {
         return this.temp.size;
     }
 
-    /** Of {@link tempCount}, the keys that are active — a killed one is not. */
+    /** Of {@link tempCount}, the keys that are still active. */
     get tempActiveCount(): number {
         let n = 0;
-        for (const t of this.temp.values()) if (!t.dead && t.enabled && !t.uncompiled) n++;
+        for (const id of this.temp.keys()) if (this.tempIsActive(id)) n++;
         return n;
+    }
+
+    /** Each permanent key hanging off a temporary one (as of the last
+     *  loadPerm) → that temporary root's id; and the parent refs in use. */
+    private permTempRoot = new Map<string, number>();
+    private tempParentRefs = new Set<string>();
+    private orphanedParents = new Set<string>();
+    private onOrphans: (() => void) | null = null;
+
+    /** Tree keys of freed temp keys that had permanent children, since the
+     *  last call. Their owner removes those subtrees from the store. */
+    takeOrphanedParents(): string[] {
+        if (this.orphanedParents.size === 0) return [];
+        const out = [...this.orphanedParents];
+        this.orphanedParents.clear();
+        return out;
+    }
+
+    /** Told when {@link takeOrphanedParents} has something to hand over. */
+    setOrphanListener(fn: (() => void) | null): void {
+        this.onOrphans = fn;
+    }
+
+    /** In the tree and not killed — what exists() and findItems() count. */
+    hasLiveTemp(id: number): boolean {
+        const t = this.temp.get(id);
+        return !!t && !t.dead;
+    }
+
+    /** Live, switched on and compiled — isActive(). */
+    tempIsActive(id: number): boolean {
+        const t = this.temp.get(id);
+        return !!t && !t.dead && t.enabled && !t.uncompiled;
+    }
+
+    /** Live temp key ids, ascending, whose name — the id itself — passes `test`. */
+    liveTempIds(test: (name: string) => boolean): number[] {
+        const out: number[] = [];
+        for (const [id, t] of this.temp) if (!t.dead && test(String(id))) out.push(id);
+        return out.sort((a, b) => a - b);
+    }
+
+    /** The temp key named `name` — a temp key is named after its id — or
+     *  null; a killed one only when `includeDead` (perm* parent resolution). */
+    newestTempByName(name: string, includeDead: boolean): number | null {
+        const id = Number(name);
+        if (!Number.isInteger(id) || String(id) !== name) return null;
+        const t = this.temp.get(id);
+        return t && (includeDead || !t.dead) ? id : null;
+    }
+
+    /** `killKey(name)` for the temporaries. */
+    killTempByName(name: string): boolean {
+        const id = this.newestTempByName(name, false);
+        return id !== null && this.killKey(id);
+    }
+
+    /** The order seq of a permanent key's root — for one hanging off a
+     *  temporary key, that key's. */
+    private rootSeqOf(id: string): number {
+        const temp = this.permTempRoot.get(id);
+        if (temp !== undefined) return this.temp.get(temp)?.seq ?? Number.MAX_SAFE_INTEGER;
+        return this.permRootSeq.get(id) ?? Number.MAX_SAFE_INTEGER;
+    }
+
+    /** Whether a permanent key is reached at all: under a temporary key only
+     *  while that key is active (TKey::match tests its children only then). */
+    private reachable(id: string): boolean {
+        const temp = this.permTempRoot.get(id);
+        return temp === undefined || this.tempIsActive(temp);
     }
 
     addTemp(key: string, modifiers: string[], fn: TempFn, qt?: { keyCode: number; modifier: number; uncompiled?: boolean }): number {
@@ -150,30 +219,8 @@ export class KeyEngine {
         return id;
     }
 
-    /** The temp key a NAME refers to, or null. Desktop names a temporary key
-     *  after its own id, so `killKey(tostring(id))` and friends reach it. */
-    tempIdNamed(name: string): number | null {
-        if (!/^\d+$/.test(name)) return null;
-        const id = Number(name);
-        return this.temp.has(id) ? id : null;
-    }
-
     /** Whether a temp key with this id is live — backs exists(id, "key"). */
-    /** A temp key with this id that has not been killed. A corpse waiting for
-     *  the reap is still held, but exists()/isActive()/findItems() skip it, as
-     *  desktop's skip anything KeyUnit has marked `pendingDeletion`. */
-    hasTemp(id: number): boolean {
-        const t = this.temp.get(id);
-        return t !== undefined && !t.dead;
-    }
-
-    /** Whether a temp key with this id is present and not killed — backs
-     *  exists(id, "key") and findItems(), which do not count a killed key
-     *  waiting for the cleanup to free it. */
-    hasLiveTemp(id: number): boolean {
-        const t = this.temp.get(id);
-        return !!t && !t.dead;
-    }
+    hasTemp(id: number): boolean { return this.temp.has(id); }
 
     /** Whether a live temp key is enabled — backs isActive(id, "key"). */
     isTempEnabled(id: number): boolean {
@@ -229,7 +276,15 @@ export class KeyEngine {
     /** Free every key killed since the last call. Runs once per processed line
      *  batch, mirroring the deferred cleanup Mudlet's TKeyUnit does. */
     reapKilled(): void {
-        for (const [id, t] of this.temp) if (t.dead) this.temp.delete(id);
+        for (const [id, t] of this.temp) {
+            if (!t.dead) continue;
+            this.temp.delete(id);
+            const ref = tempParentRef(id);
+            if (this.tempParentRefs.has(ref)) {
+                this.orphanedParents.add(ref);
+                this.onOrphans?.();
+            }
+        }
     }
 
     /** @param all Mudlet's "React to all keybindings on the same key": run
@@ -269,7 +324,7 @@ export class KeyEngine {
         const steps: { seq: number; at: number; temp?: TempKey; perm?: KeyNode }[] = [];
         for (const t of this.temp.values()) steps.push({ seq: t.seq, at: 0, temp: t });
         this.perm.forEach((binding, i) => {
-            steps.push({ seq: this.permRootSeq.get(binding.id) ?? Number.MAX_SAFE_INTEGER, at: i + 1, perm: binding });
+            steps.push({ seq: this.rootSeqOf(binding.id), at: i + 1, perm: binding });
         });
         steps.sort((a, b) => a.seq - b.seq || a.at - b.at);
         let fired = false;
@@ -277,7 +332,7 @@ export class KeyEngine {
             if (step.temp) {
                 if (!this.fireTemp(step.temp, event)) continue;
             } else if (step.perm) {
-                if (!matchesEvent(step.perm, event)) continue;
+                if (!this.reachable(step.perm.id) || !matchesEvent(step.perm, event)) continue;
                 firePerm(step.perm);
             }
             if (!all) return true;
@@ -297,6 +352,16 @@ export class KeyEngine {
         const byId = new Map(keybindings.map(k => [k.id, k]));
         for (const id of this.permReg.keys()) {
             if (!byId.has(id)) this.permReg.delete(id);
+        }
+        // Permanent keys hanging off a temporary one (see TEMP_PARENT_PREFIX).
+        this.permTempRoot = new Map();
+        this.tempParentRefs.clear();
+        for (const k of keybindings) if (isTempParentRef(k.parentId)) this.tempParentRefs.add(k.parentId);
+        if (this.tempParentRefs.size > 0) {
+            for (const k of keybindings) {
+                const root = tempRootOf(k, byId);
+                if (root !== null) this.permTempRoot.set(k.id, root);
+            }
         }
         const rootSeq = (node: KeyNode): number => {
             let cur = node;
@@ -341,14 +406,14 @@ export class KeyEngine {
      *  permanent half of {@link process}, for callers that ask about the
      *  saved keys alone. */
     matchPerm(event: KeyboardEvent): KeyNode | null {
-        return this.perm.find(b => matchesEvent(b, event)) ?? null;
+        return this.perm.find(b => this.reachable(b.id) && matchesEvent(b, event)) ?? null;
     }
 
     /** Every permanent keybinding the event matches, in tree order. The list
      *  form of {@link matchPerm}, for Mudlet's "React to all keybindings on the
      *  same key". */
     matchAllPerm(event: KeyboardEvent): KeyNode[] {
-        return this.perm.filter(b => matchesEvent(b, event));
+        return this.perm.filter(b => this.reachable(b.id) && matchesEvent(b, event));
     }
 
     /**
@@ -385,6 +450,9 @@ export class KeyEngine {
 
     destroy(): void {
         this.temp.clear();
+        this.orphanedParents.clear();
+        this.tempParentRefs.clear();
+        this.permTempRoot = new Map();
         this.perm = [];
         this.permHolders = [];
         this.permRootSeq = new Map();

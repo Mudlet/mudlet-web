@@ -242,7 +242,7 @@ describe('mudlet-web#327 — temp trigger/alias parity with desktop', () => {
             scripts.selfName = m => out.push(`self ${m[0]} ${api.killByName('trigger', 'selfName')}`);
             // expireAfter = 1, as the Bridge.lua wrapper spends it: kill by id
             // once the body has run.
-            scripts.exp1 = m => { out.push(`exp1 ${m[0]}`); api.removeTemporaryTrigger(exp1); };
+            scripts.exp1 = m => { out.push(`exp1 ${m[0]}`); triggers.killTemp(exp1); };
 
             feed('kq 1\nkq 2\nkq 3\n');
 

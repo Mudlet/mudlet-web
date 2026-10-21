@@ -189,8 +189,8 @@ describe('Lua error handling matches desktop (#330)', () => {
   });
 
   // ScriptingEngine.isActive(id, "trigger"/"keybind") answers from these two —
-  // the runtime's temp registry and the key engine — and this runtime has no
-  // engine wired, so they are asked directly.
+  // the trigger engine's tree and the key engine — and this runtime has no
+  // ScriptingEngine wired, so they are asked directly.
   describe('4. temp items whose code string does not compile', () => {
     it.each([
       ['tempTrigger', 'tempTrigger("X", "x = = 1")'],
@@ -202,11 +202,11 @@ describe('Lua error handling matches desktop (#330)', () => {
     ])('%s is made but not active', (_fn, call) => {
       const id = t.run(`return ${call}`) as number;
       expect(typeof id).toBe('number');
-      expect(t.rt.tempItemExists(id, 'trigger')).toBe(true);
-      expect(t.rt.tempItemEnabled(id)).toBe(false);
+      expect(t.api.triggers.hasLiveTemp(id)).toBe(true);
+      expect(t.api.triggers.tempIsActive(id)).toBe(false);
       // Switching it on doesn't make it active, or run, either.
       t.run(`enableTrigger(${id})`);
-      expect(t.rt.tempItemEnabled(id)).toBe(false);
+      expect(t.api.triggers.tempIsActive(id)).toBe(false);
       feed('X');
       expect(errors).toEqual([]);
       expect(t.run(`return killTrigger(${id})`)).toBe(true);
@@ -219,13 +219,13 @@ describe('Lua error handling matches desktop (#330)', () => {
     ])('%s is made but not active, and does not fire on a line of its colour (#371)', (_fn, call) => {
       const id = t.run(`return ${call}`) as number;
       expect(typeof id).toBe('number');
-      expect(t.rt.tempItemExists(id, 'trigger')).toBe(true);
-      expect(t.rt.tempItemEnabled(id)).toBe(false);
+      expect(t.api.triggers.hasLiveTemp(id)).toBe(true);
+      expect(t.api.triggers.tempIsActive(id)).toBe(false);
       t.run(`enableTrigger(${id})`);
-      expect(t.rt.tempItemEnabled(id)).toBe(false);
+      expect(t.api.triggers.tempIsActive(id)).toBe(false);
       // A compiling one on the same colour proves the line is one it matches.
       const good = t.run(`return tempAnsiColorTrigger(1, -1, "rec('colour')")`) as number;
-      expect(t.rt.tempItemEnabled(good)).toBe(true);
+      expect(t.api.triggers.tempIsActive(good)).toBe(true);
       feed('\x1b[31mX\x1b[0m');
       expect(record()).toBe('colour');
       expect(errors).toEqual([]);
@@ -246,7 +246,7 @@ describe('Lua error handling matches desktop (#330)', () => {
 
     it('a compiling body is still active, and fires', () => {
       const id = t.run(`return tempTrigger("X", "rec('fired')")`) as number;
-      expect(t.rt.tempItemEnabled(id)).toBe(true);
+      expect(t.api.triggers.tempIsActive(id)).toBe(true);
       feed('X');
       expect(record()).toBe('fired');
     });

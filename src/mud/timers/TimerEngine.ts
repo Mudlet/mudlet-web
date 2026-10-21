@@ -1,6 +1,6 @@
 import { ItemIdSequence } from '../ItemIdSequence';
 import type { TimerNode } from '../../storage/schema';
-import { buildEffectivelyEnabledIds } from '../../storage/schema';
+import { buildEffectivelyEnabledIds, isTempParentRef, tempParentRef, tempRefId } from '../../storage/schema';
 import { workerClock, type Clock, type ClockHandle } from './workerClock';
 
 export type { TimerNode };
@@ -57,6 +57,11 @@ function permTree(timers: TimerNode[]): PermTree {
     }
     const isOffset = (t: TimerNode): boolean => {
         if (t.isGroup || !t.parentId) return false;
+        // A permanent timer under a temporary one: a temp timer is never a
+        // folder, so this is an offset timer (TTimer::isOffsetTimer: a parent
+        // that is not a folder) — one its parent never arms, since a temp
+        // timer's execute() returns before the offset-children loop.
+        if (isTempParentRef(t.parentId)) return true;
         const parent = byId.get(t.parentId);
         return !!parent && !parent.isGroup;
     };
@@ -91,9 +96,9 @@ export class TimerEngine {
     /** Number of live session-scoped temp timers (Mudlet `getProfileStats` temp
      *  count). Killed-but-unreaped timers are not live and don't count. */
     get tempCount(): number {
-        let n = 0;
-        for (const entry of this.temp.values()) if (!entry.dead) n++;
-        return n;
+        // Killed ones too, until the cleanup frees them: desktop's
+        // getProfileStats walks the live root list unfiltered.
+        return this.temp.size;
     }
 
     addTemp(seconds: number, fn: TempFn, repeat = false): number {
@@ -216,25 +221,16 @@ export class TimerEngine {
     }
 
     /**
-     * Whether a temporary timer with this id is still present.
-     *
-     * Backs `exists(id, "timer")`. Temp timers aren't in the store and — unlike
-     * temp triggers and aliases — aren't tracked in LuaRuntime's tempIds either,
-     * so this map is the only thing that knows.
+     * Whether a temporary timer with this id is still present — killed or not.
+     * Temp timers aren't in the store: this map is the temporary half of the
+     * one timer tree (exists() asks {@link hasLiveTemp}, which skips a killed
+     * one).
      *
      * Present is not running: a killed timer stays here until the reap, and a
      * disabled one until it is killed — see {@link tempIsActive}.
      */
     hasTemp(id: number): boolean {
         return this.temp.has(id);
-    }
-
-    /** Whether a temporary timer with this id is present and not killed —
-     *  `exists(id, "timer")` and findItems(), which do not count a killed
-     *  item waiting for the cleanup to free it. */
-    hasLiveTemp(id: number): boolean {
-        const entry = this.temp.get(id);
-        return !!entry && !entry.dead;
     }
 
     /** Whether a temporary timer is present *and* still running — `isActive(id,
@@ -281,8 +277,54 @@ export class TimerEngine {
      *  cleanup Mudlet's TimerUnit does (Host::incomingStreamProcessor and
      *  TimerUnit::timerFired). */
     reapKilled(): void {
-        for (const [id, entry] of this.temp) if (entry.dead) this.temp.delete(id);
+        for (const [id, entry] of this.temp) {
+            if (!entry.dead) continue;
+            this.temp.delete(id);
+            // Its permanent children go with it (~TTimer deletes them): their
+            // owner removes them from the store — see takeOrphanedParents.
+            const ref = tempParentRef(id);
+            if (this.tempParentRefs.has(ref)) {
+                this.orphanedParents.add(ref);
+                this.onOrphans?.();
+            }
+        }
     }
+
+    /** Temp parent refs some permanent timer hangs off, as of the last loadPerm. */
+    private tempParentRefs = new Set<string>();
+    private orphanedParents = new Set<string>();
+    private onOrphans: (() => void) | null = null;
+
+    /** Tree keys of freed temp timers that had permanent children, since the
+     *  last call. Their owner removes those subtrees from the store. */
+    takeOrphanedParents(): string[] {
+        if (this.orphanedParents.size === 0) return [];
+        const out = [...this.orphanedParents];
+        this.orphanedParents.clear();
+        return out;
+    }
+
+    /** Told when {@link takeOrphanedParents} has something to hand over. */
+    setOrphanListener(fn: (() => void) | null): void {
+        this.onOrphans = fn;
+    }
+
+    /** Live temp timer ids, ascending, whose name — the id itself — passes `test`. */
+    liveTempIds(test: (name: string) => boolean): number[] {
+        const out: number[] = [];
+        for (const [id, entry] of this.temp) if (!entry.dead && test(String(id))) out.push(id);
+        return out.sort((a, b) => a - b);
+    }
+
+    /** Whether a temp timer is present and not killed — what exists() counts. */
+    hasLiveTemp(id: number): boolean {
+        const entry = this.temp.get(id);
+        return !!entry && !entry.dead;
+    }
+
+    /** The executeFn the last loadPerm was given, for a timer started from
+     *  outside it (an offset timer under a temporary parent, see switchOne). */
+    private executeFn: ExecuteFn | null = null;
 
     /**
      * Cached previous load. `nodes` is the TimerNode keyed by id, `desc` is the
@@ -338,6 +380,9 @@ export class TimerEngine {
 
     loadPerm(timers: TimerNode[], executeFn: ExecuteFn, broken: ReadonlySet<string> = new Set()): void {
         this.broken = broken;
+        this.executeFn = executeFn;
+        this.tempParentRefs.clear();
+        for (const t of timers) if (isTempParentRef(t.parentId)) this.tempParentRefs.add(t.parentId);
         const tree = permTree(timers);
         const { enabledIds, isOffset } = tree;
         const runnable = (t: TimerNode): boolean => enabledIds.has(t.id) && !broken.has(t.id);
@@ -504,8 +549,15 @@ export class TimerEngine {
             return;
         }
         // An offset timer is reported by its switch, and its own flag belongs
-        // to its parent's firing (TTimer::execute).
-        if (isOffset(t)) return;
+        // to its parent's firing (TTimer::execute). Under a TEMPORARY parent
+        // nothing ever arms it — a temp timer's execute() returns before its
+        // children loop — so the enable is all there is: TTimer::enableTimer
+        // starts its QTimer once (when it and its parent can be unlocked), and
+        // its own execute() deactivates it after that one fire.
+        if (isOffset(t)) {
+            if (isTempParentRef(t.parentId)) this.startUnderTemp(t);
+            return;
+        }
         // setIsActive(true) raises the flag whatever the ancestors say...
         if (t.enabled) this.activePerm.add(t.id);
         // ...and a folder then walks its non-offset descendants with
@@ -557,6 +609,20 @@ export class TimerEngine {
     private reportsActive(node: TimerNode, tree: PermTree): boolean {
         if (!node.enabled || this.broken.has(node.id)) return false;
         return tree.isOffset(node) || this.activePerm.has(node.id);
+    }
+
+    /** Start a permanent offset timer under a temporary parent, once — see
+     *  switchOne. Not while its parent is killed or switched off
+     *  (canBeUnlocked asks the parent too). */
+    private startUnderTemp(t: TimerNode): void {
+        const executeFn = this.executeFn;
+        if (!executeFn || !t.enabled || this.broken.has(t.id)) return;
+        const parent = this.temp.get(tempRefId(t.parentId)!);
+        if (!parent || parent.dead || parent.disabled) return;
+        this.killPermHandle(t.id);
+        this.startPerm(t, executeFn, false);
+        this.prevDesc.set(t.id, this.descOf(t));
+        if (!this.permNameToId.has(t.name)) this.permNameToId.set(t.name, t.id);
     }
 
     /** (Re)start every enabled offset timer hanging off `parentId`, each due
@@ -676,6 +742,8 @@ export class TimerEngine {
     destroy(): void {
         for (const { handle } of this.temp.values()) this.clock.clearTimeout(handle);
         this.temp.clear();
+        this.orphanedParents.clear();
+        this.tempParentRefs.clear();
         this.stopPerm();
     }
 }

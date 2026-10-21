@@ -1723,6 +1723,10 @@ describe('engine tempCount — live session-scoped temp items', () => {
     const id = e.addTemp(100, () => {});
     expect(e.tempCount).toBe(1);
     e.killTimer(id);
+    // Still in the tree, and counted, until the deferred cleanup frees it —
+    // desktop's getProfileStats walks the root list unfiltered.
+    expect(e.tempCount).toBe(1);
+    e.reapKilled();
     expect(e.tempCount).toBe(0);
   });
 
@@ -1732,8 +1736,7 @@ describe('engine tempCount — live session-scoped temp items', () => {
     const id = e.addTemp('KeyA', [], () => {});
     expect(e.tempCount).toBe(1);
     e.killKey(id);
-    // Held until the reap, as desktop's KeyUnit holds a killed key until its
-    // deferred cleanup — counted, but no longer active.
+    // Counted until the deferred cleanup frees it, as KeyUnit's report does.
     expect(e.tempCount).toBe(1);
     expect(e.tempActiveCount).toBe(0);
     e.reapKilled();

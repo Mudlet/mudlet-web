@@ -389,13 +389,14 @@ export function serializeMudletXml(input: SerializeInput, packageName?: string):
     // Package order matches Mudlet's XMLexport (Trigger, Timer, Alias, Action,
     // Script, Key) so a linked-profile write-back produces a minimal diff against
     // Mudlet's own saves.
-    // Temporary items are the session's alone: desktop's XMLexport skips them.
+    // Temporary items are the session's alone: desktop's XMLexport skips them,
+    // and with a temporary root the whole subtree under it (persistableNodes).
     emitTriggers(xml, persistableNodes(input.triggers), opts);
     emitTimers(xml,   persistableNodes(input.timers),   opts);
-    emitAliases(xml,  input.aliases,  opts);
+    emitAliases(xml,  persistableNodes(input.aliases),  opts);
     emitButtons(xml,  input.buttons,  opts);
     emitScripts(xml,  input.scripts,  opts);
-    emitKeys(xml,     input.keys,     opts);
+    emitKeys(xml,     persistableNodes(input.keys),     opts);
     xml.close('MudletPackage');
     return xml.build();
 }

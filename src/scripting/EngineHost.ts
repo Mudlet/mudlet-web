@@ -182,9 +182,6 @@ export interface EngineHost {
 
     /** Mudlet `exists(nameOrId, type)` — count of matching items. */
     existsByName(nameOrId: string | number, type: string): number;
-    /** enable/disable a script-created temp trigger or alias by its numeric id.
-     *  False when no live temp item has that id. */
-    setTempItemEnabled(id: number, enabled: boolean): boolean;
 
     /** Mudlet `isActive(nameOrId, type)` — count of matching *active* items. */
     isActiveByName(nameOrId: string | number, type: string, checkAncestors: boolean): number;
@@ -315,7 +312,6 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     savedKeyNode: () => null,
     setForceMxpProcessorOn: () => {},
     existsByName: () => 0,
-    setTempItemEnabled: () => false,
     isActiveByName: () => 0,
     ancestorsById: () => null,
     findItemsByName: () => [],

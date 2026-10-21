@@ -11,7 +11,7 @@ import { isPackageRemovable } from '../../../branding';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
 import { colorPatternText, parseColorPattern } from '../../../mud/triggers/legacyColorPatterns';
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, ButtonRotation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';
-import { asButtonRotation, clampFillerOffset, isColorizing, isEffectivelyEnabled, MAX_CONDITION_LINE_DELTA } from '../../../storage/schema';
+import { asButtonRotation, clampFillerOffset, isColorizing, isEffectivelyEnabled, MAX_CONDITION_LINE_DELTA, visibleTreeNodes } from '../../../storage/schema';
 import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../mud/MudSession';
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
@@ -848,10 +848,17 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     }, []);
 
     const scripts     = useAppStore(s => s.connectionScripts[connectionId] ?? EMPTY);
-    const aliases     = useAppStore(s => s.connectionAliases[connectionId] ?? EMPTY);
-    const triggers    = useAppStore(s => s.connectionTriggers[connectionId] ?? EMPTY);
-    const timers      = useAppStore(s => s.connectionTimers[connectionId] ?? EMPTY);
-    const keybindings = useAppStore(s => s.connectionKeybindings[connectionId] ?? EMPTY);
+    // A permanent item a script hung under a temporary one is the session's
+    // alone — desktop drops it with its temporary parent's subtree on save —
+    // so it is not offered for editing (see visibleTreeNodes).
+    const aliasesAll  = useAppStore(s => s.connectionAliases[connectionId] ?? EMPTY);
+    const triggersAll = useAppStore(s => s.connectionTriggers[connectionId] ?? EMPTY);
+    const timersAll   = useAppStore(s => s.connectionTimers[connectionId] ?? EMPTY);
+    const keysAll     = useAppStore(s => s.connectionKeybindings[connectionId] ?? EMPTY);
+    const aliases     = useMemo(() => visibleTreeNodes(aliasesAll), [aliasesAll]);
+    const triggers    = useMemo(() => visibleTreeNodes(triggersAll), [triggersAll]);
+    const timers      = useMemo(() => visibleTreeNodes(timersAll), [timersAll]);
+    const keybindings = useMemo(() => visibleTreeNodes(keysAll), [keysAll]);
     const buttons     = useAppStore(s => s.connectionButtons[connectionId] ?? EMPTY);
 
     const addScript        = useAppStore(s => s.addScript);
