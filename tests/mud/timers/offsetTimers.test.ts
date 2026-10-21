@@ -90,4 +90,59 @@ describe('TimerEngine — offset timers', () => {
         vi.advanceTimersByTime(500);
         expect(log).toEqual(['Parent 1.0', 'Offset 1.5']);
     });
+
+    // TimerUnit::enableTimer → TTimer::enableTimer(): enabling an offset timer
+    // starts it once on its own, when it and every ancestor are switched on;
+    // the parent's next fire then re-arms it as usual.
+    describe('enableTimer on an offset child under a permanent parent', () => {
+        const tree = (childOn: boolean, over: Partial<TimerNode> = {}, parentOn = true) => [
+            timer({ id: 'p', name: 'Pulse', seconds: 10, enabled: parentOn }),
+            timer({ id: 'o', name: 'Echo', seconds: 2, parentId: 'p', enabled: childOn, ...over }),
+        ];
+
+        it('starts the child once, its own interval from the enable', () => {
+            const timers = tree(true);
+            engine.loadPerm(timers, run);
+            vi.advanceTimersByTime(1000);
+            engine.applyPermSwitch(['o'], true, timers);
+            vi.advanceTimersByTime(11_500);
+            expect(log).toEqual(['Echo 3.0', 'Pulse 10.0', 'Echo 12.0']);
+        });
+
+        it('fires once when the switch flips, whichever of the reload and the switch comes first', () => {
+            engine.loadPerm(tree(false), run);
+            vi.advanceTimersByTime(1000);
+            const on = tree(true);
+            engine.loadPerm(on, run);
+            engine.applyPermSwitch(['o'], true, on);
+            vi.advanceTimersByTime(4000);
+            expect(log).toEqual(['Echo 3.0']);
+
+            engine.destroy();
+            engine = new TimerEngine();
+            log = [];
+            vi.setSystemTime(0);
+            engine.loadPerm(tree(false), run);
+            engine.applyPermSwitch(['o'], true, tree(true));
+            engine.loadPerm(tree(true), run);
+            vi.advanceTimersByTime(4000);
+            expect(log).toEqual(['Echo 2.0']);
+        });
+
+        it('leaves it alone while the parent is switched off', () => {
+            const timers = tree(true, {}, false);
+            engine.loadPerm(timers, run);
+            engine.applyPermSwitch(['o'], true, timers);
+            vi.advanceTimersByTime(12_000);
+            expect(log).toEqual([]);
+        });
+
+        it('leaves a command-only child to its parent', () => {
+            const timers = tree(true, { code: '', command: 'look' });
+            engine.loadPerm(timers, run);
+            engine.applyPermSwitch(['o'], true, timers);
+            vi.advanceTimersByTime(12_500);
+            expect(log).toEqual(['Pulse 10.0', 'Echo 12.0']);
+        });
+    });
 });
