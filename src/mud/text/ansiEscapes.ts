@@ -149,6 +149,22 @@ export function scanEscape(text: string, start: number): EscapeScan {
 }
 
 /**
+ * Where the escape sequence `text` leaves unfinished begins, scanning from
+ * `from`, or -1 when every sequence in it is complete. Sequences are walked
+ * from the start rather than from the last ESC, as an ESC inside an OSC or
+ * string payload belongs to that sequence.
+ */
+export function unfinishedEscapeStart(text: string, from = 0): number {
+    let i = text.indexOf(ESC, from);
+    while (i !== -1) {
+        const scan = scanEscape(text, i);
+        if (scan.kind === "incomplete") return i;
+        i = text.indexOf(ESC, Math.max(scan.end, i + 1));
+    }
+    return -1;
+}
+
+/**
  * How many spaces a `CSI n C` (CUF, cursor forward) stands for — the one cursor
  * movement Mudlet emulates (TBuffer::translateToPlainText's 'C' case, added for
  * games that column-align with it). The parameter has to read whole as a

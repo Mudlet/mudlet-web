@@ -6075,7 +6075,14 @@ export class ScriptingEngine implements EngineHost {
 
                 for (let i = 0; i < lines.length; i++) {
                     try {
-                        const line = lines[i];
+                        let line = lines[i];
+                        // A trigger on the line before may have fed an
+                        // unterminated line of its own; it sits in TBuffer's
+                        // mMudLine, which this line is then appended to.
+                        if (i > 0 && type === 'mud') {
+                            const held = this.api.takeHeldFeedText();
+                            if (held) line = held + line;
+                        }
                         const lineIsPrompt = this.promptPending && i === lines.length - 1;
                         if (lineIsPrompt) this.promptPending = false;
 

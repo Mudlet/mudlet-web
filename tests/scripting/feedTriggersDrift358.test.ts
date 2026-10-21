@@ -158,10 +158,12 @@ describe('mudlet-web#358 — feedTriggers placement', () => {
             expect(fired).toEqual(['pa:PA-partialSRV1']);
         });
 
-        it('keeps an escape sequence split across two feeds as one', () => {
+        // A feed arrives whole, so a sequence it leaves open ends with it
+        // (TBuffer::endLocalFeedSequences) and the next feed's text is text.
+        it('does not finish one feed\'s unfinished escape sequence with the next feed', () => {
             api.feedTriggers('SPLIT(\x1b[3');
             api.feedTriggers('1mred\x1b[0m)SPLIT\n');
-            expect(lines()).toEqual(['SPLIT(red)SPLIT']);
+            expect(lines()).toEqual(['SPLIT(1mred)SPLIT']);
         });
     });
 
