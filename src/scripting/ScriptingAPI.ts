@@ -24,7 +24,7 @@ import { TextEditManager } from '../ui/textedit/TextEditManager';
 import { userWindowQssToScopedCss, cssEscape, rewriteQtSelectors, patchStyleSheetBackgroundColor } from '../ui/labels/qtCss';
 import type { LogFormat } from '../logging/SessionLogger';
 import { AnsiAwareBuffer, type FormatColor, type FormatStateSnapshot, type FormatHyperlink, type RgbColor } from '../mud/text/FormatState';
-import { classifyHyperlinkUri } from '../mud/text/ansiEscapes';
+import { classifyHyperlinkUri, unfinishedEscapeStart } from '../mud/text/ansiEscapes';
 import { extractQuery, type LinkStateStyle, type UnderlineStyle } from '../mud/text/hyperlinkConfig';
 import { OscLinkManager } from '../mud/text/oscLinkManager';
 import { pumpDelayedReveals } from '../mud/text/hyperlinkVisibility';
@@ -4814,9 +4814,19 @@ export class ScriptingAPI {
         // every later feed and every server packet appends to, and draws it only
         // once a '\n' commits it. So it is not shown in the meantime (an echo
         // made before then lands above it), and its triggers see it whole, once.
-        // Re-joining the raw bytes also keeps an escape sequence split across two
-        // feedTriggers parsed as one — the rendered text would have lost it.
-        const joined = this.takeHeldFeedText() + text;
+        //
+        // The parser state is another matter. A feed arrives whole, so an escape
+        // sequence (or OSC, DCS/SOS/PM/APC string) it leaves open is never going
+        // to be finished: TBuffer::translateToPlainText parses local text with a
+        // state of its own, swapped in for the feed, and endLocalFeedSequences
+        // clears it as the feed ends — a nested feed's included, which also
+        // leaves the enclosing feed's state as it found it. So what such a
+        // sequence has read so far is dropped here, rather than held for the next
+        // feed (or the text after a nested one) to complete. The held text before
+        // this feed ended clean, so only its last line can hold one.
+        let joined = this.takeHeldFeedText() + text;
+        const open = unfinishedEscapeStart(joined, joined.lastIndexOf('\n') + 1);
+        if (open >= 0) joined = joined.slice(0, open);
         const cut = joined.lastIndexOf('\n');
         if (cut < 0) {
             this.heldFeedText = joined;

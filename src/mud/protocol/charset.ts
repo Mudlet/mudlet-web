@@ -282,7 +282,14 @@ export function decodeForServer(byteString: string, serverEncoding: string): str
     // A sequence running off the end of a complete payload is truncated data,
     // not data still arriving, so its bytes are dropped rather than held —
     // which is what Mudlet does for anything that did not come off the socket.
-    if (isMultiByteFramed(label)) return decodeMultiByte(byteString, label).text;
+    // The exception is a double-byte lead held across a colour code for its
+    // trail byte: TBuffer::endLocalFeedSequences flushes it as a replacement
+    // character (flushPendingLead), and the colour code still applies.
+    if (isMultiByteFramed(label)) {
+        const { text, pending } = decodeMultiByte(byteString, label);
+        if (pending.length > 1 && pending.charCodeAt(1) === 0x1b) return text + '\uFFFD' + pending.slice(1);
+        return text;
+    }
     const bytes = new Uint8Array(byteString.length);
     for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i) & 0xff;
     try {

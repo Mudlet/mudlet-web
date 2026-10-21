@@ -5217,11 +5217,14 @@ do
         -- A code string that doesn't compile is a *reported* failure here, not a
         -- raised one: Mudlet hands back (-1, message) so a script can react to a
         -- bad body it built at runtime. Every other bad argument still raises.
+        -- The message is startTempTimer's, which names no function and quotes
+        -- the code as it is (IDManager passes it on untouched for that reason),
+        -- with TLuaInterpreter::compile's reason in compileErrorAsPlainText form.
         local body = fn
         if type(fn) == 'string' then
             local err = __mudlet_timer_compile_error(fn, "tempTimer")
             if err then
-                return -1, "tempTimer: failed to compile the code string: " .. err
+                return -1, 'unable to compile "' .. fn .. '", reason: Lua syntax error:' .. err
             end
             body = loadstring(fn)
         end
@@ -5267,6 +5270,10 @@ do
         pattern = __mudlet_check_string(pattern, "tempAlias", 1, "regex-type pattern", true)
         -- An uncompilable script still makes an alias, one that never fires
         local compiled = __mudlet_to_fn(fn, "tempAlias", 2)
+        -- A pattern that will not compile is refused with desktop's
+        -- perlRegexCompileError message (warnArgumentValue: the text alone)
+        local bad = __mudlet_regex_compile_error(pattern, false)
+        if bad then return nil, bad end
         return _raw(pattern, __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true)
     end
 end
@@ -5287,8 +5294,15 @@ do
     -- report active, as tempAlias does — so the engine is told.
     -- The third answer is whether the body is the empty script, which desktop
     -- never calls: such a fire leaves `matches` as the last script left it.
-    local function body(fn, who, argN)
+    -- `pattern`, when given, is a perl one: after the body's type is checked
+    -- and before anything is registered, one that will not compile is refused
+    -- (the second answer is then desktop's message).
+    local function body(fn, who, argN, pattern)
         local compiled = __mudlet_to_fn(fn, who, argN)
+        if pattern then
+            local bad = __mudlet_regex_compile_error(pattern, true)
+            if bad then return nil, bad end
+        end
         return __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true, fn == ''
     end
     local _sub = __mudlet_tempTrigger
@@ -5300,7 +5314,8 @@ do
     local _re = __mudlet_tempRegexTrigger
     function tempRegexTrigger(pattern, fn, expirationCount)
         pattern = __mudlet_check_string(pattern, "tempRegexTrigger", 1, "pattern")
-        local cb, uncompiled, noScript = body(fn, "tempRegexTrigger", 2)
+        local cb, uncompiled, noScript = body(fn, "tempRegexTrigger", 2, pattern)
+        if cb == nil then return nil, uncompiled end
         return _re(pattern, cb, expirationCount, nil, uncompiled, noScript)
     end
     local _ex = __mudlet_tempExactMatchTrigger
@@ -5446,6 +5461,12 @@ do
     local SEP = '\1'
     function permRegexTrigger(name, parent, regexes, code)
         local rs = __mudlet_perm_patterns(regexes)
+        -- Every pattern is compiled before the trigger is made, and the first
+        -- that will not compile refuses it (TLuaInterpreter::permRegexTrigger)
+        for _, pattern in ipairs(rs) do
+            local bad = __mudlet_regex_compile_error(pattern, true)
+            if bad then return nil, bad end
+        end
         return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), table.concat(rs, SEP), tostring(code or "")),
             "permRegexTrigger", "trigger", parent)
@@ -5518,6 +5539,8 @@ do
         parent = __mudlet_check_string(parent, "permAlias", 2, "alias group/parent", true)
         regex = __mudlet_check_string(regex, "permAlias", 3, "regex")
         code = __mudlet_check_lua_code(code, "permAlias", 4)
+        local bad = __mudlet_regex_compile_error(regex, false)
+        if bad then return nil, bad end
         return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), regex, code),
             "permAlias", "alias", parent)
@@ -6698,6 +6721,52 @@ end
 -- "media/hit.wav") or may be an absolute http(s):// URL.
 -- Arity matters: no arguments at all is a raise, while an explicit nil filename
 -- is the softer (nil, "missing argument 1") return. select('#') tells them apart.
+-- ── Client.Media 2: where a sound comes from ──────────────────────────────
+-- A media table's keys are read in any case (desktop lowercases each one).
+function __mudlet_media_get(t, field)
+    local v = t[field]
+    if v ~= nil then return v end
+    for k, val in pairs(t) do
+        if type(k) == 'string' and k:lower() == field then return val end
+    end
+    return nil
+end
+
+-- mediaPanArg: a number (lua_isnumber, so a numeric string too) from -100 (left)
+-- to 100 (right), held to that range and rounded; NaN is refused.
+function __mudlet_media_pan(v, funcName)
+    local n = tonumber(v)
+    if n == nil or (type(v) ~= 'number' and type(v) ~= 'string') then
+        error(funcName .. ": bad argument #1 type (value for pan as number expected, got "
+            .. type(v) .. "!)", 3)
+    end
+    if n ~= n then
+        error(funcName .. ": bad argument value for pan (a number from -100 to 100 expected, got nan)", 3)
+    end
+    n = math.max(-100, math.min(100, n))
+    return n >= 0 and math.floor(n + 0.5) or math.ceil(n - 0.5)
+end
+
+-- mediaDirectionArg: a word or degrees, spelt as TMedia keeps it.
+function __mudlet_media_direction(v, funcName)
+    local t = type(v)
+    if t ~= 'number' and t ~= 'string' then
+        error(funcName .. ": bad argument type for direction (string or number expected, got " .. t .. ")", 3)
+    end
+    local canonical = __canonicalMediaDirection(v)
+    if canonical == nil or canonical == '' then
+        error(funcName .. ': bad argument value for direction (a compass direction such as "north" or "ne",'
+            .. ' up, down, ahead, behind, left, right or degrees expected, got "' .. tostring(v) .. '")', 3)
+    end
+    return canonical
+end
+
+-- pushMediaDirection: degrees go back as a number and a named way as its word.
+function __mudlet_media_direction_out(d)
+    if type(d) ~= 'string' or d == '' then return nil end
+    return tonumber(d:match('^%d+$')) or d
+end
+
 function playSoundFile(...)
     -- Count the caller's real arity: naming the parameters and passing them to
     -- select('#') would count those names, never yielding 0.
@@ -6708,6 +6777,15 @@ function playSoundFile(...)
     if type(a) == 'table' then
         __mudlet_check_media_table(a, "playSoundFile")
         __mudlet_check_media_name(a, "playSoundFile")
+        local pan, direction = __mudlet_media_get(a, 'pan'), __mudlet_media_get(a, 'direction')
+        if pan ~= nil or direction ~= nil then
+            -- a copy, so the caller's table keeps what it said
+            local opts = {}
+            for k, v in pairs(a) do opts[k] = v end
+            if pan ~= nil then opts.pan = __mudlet_media_pan(pan, "playSoundFile") end
+            if direction ~= nil then opts.direction = __mudlet_media_direction(direction, "playSoundFile") end
+            a = opts
+        end
         if __mudlet_media_deferred(a, __playSoundFile) then return true end
         return __playSoundFile(a)
     end
@@ -6719,6 +6797,90 @@ function playSoundFile(...)
     -- form's is.
     if __mudlet_media_deferred(opts, __playSoundFile) then return true end
     return __playSoundFile(opts)
+end
+
+-- Mudlet `updateSounds({name|key|tag, volume, pan, direction, duration})`
+-- (TLuaInterpreter::updateSounds): move the script's sounds that a key, name or
+-- tag picks out to a new volume, pan or direction, gliding over `duration`
+-- milliseconds. Naming nothing to choose them by is (nil, message); finding
+-- nothing to move is not an error, as stopping nothing is not.
+function updateSounds(t)
+    if type(t) ~= 'table' then
+        error("updateSounds: needs to be a table", 2)
+    end
+    __mudlet_check_media_table_keys(t, "updateSounds")
+    local req = {}
+    for k, v in pairs(t) do
+        local key = tostring(k):lower()
+        if key == 'name' or key == 'key' or key == 'tag' then
+            local str = __mudlet_str(v)
+            if str == nil then
+                error("updateSounds: bad argument #1 type (value for " .. key .. " as string expected, got "
+                    .. type(v) .. "!)", 2)
+            end
+            if str ~= '' then
+                req[key] = key == 'name' and (str:gsub('\\', '/')) or str
+            end
+        elseif key == 'volume' or key == 'duration' then
+            local n = tonumber(v)
+            if n == nil or (type(v) ~= 'number' and type(v) ~= 'string') then
+                error("updateSounds: bad argument #1 type (value for " .. key .. " as number expected, got "
+                    .. type(v) .. "!)", 2)
+            end
+            n = n >= 0 and math.floor(n) or math.ceil(n)
+            if key == 'volume' then
+                req.volume = math.max(1, math.min(100, n))
+            elseif n < 0 then
+                error("updateSounds: bad argument range for duration (values must be greater than or equal to 0, got value: "
+                    .. string.format("%d", n) .. ")", 2)
+            else
+                req.duration = n
+            end
+        elseif key == 'pan' then
+            req.pan = __mudlet_media_pan(v, "updateSounds")
+        elseif key == 'direction' then
+            req.direction = __mudlet_media_direction(v, "updateSounds")
+        end
+    end
+    if not (req.name or req.key or req.tag) then
+        return nil, "no key, name or tag to choose the sounds to update by"
+    end
+    __updateSounds(req)
+    return true
+end
+
+-- Mudlet `setMediaListener({facing = ...})`: the way the player faces, which
+-- turns every sound placed by a direction. A facing is a compass direction or
+-- degrees: up, down and the words relative to the player are refused.
+function setMediaListener(t)
+    if type(t) ~= 'table' then
+        error("setMediaListener: needs to be a table", 2)
+    end
+    local facing
+    for k, v in pairs(t) do
+        if type(k) == 'string' and k:lower() == 'facing' then
+            facing = v
+            break
+        end
+    end
+    if facing == nil then
+        error('setMediaListener: missing facing (add facing = "east" or a number of degrees)', 2)
+    end
+    local ft = type(facing)
+    if ft ~= 'number' and ft ~= 'string' then
+        error("setMediaListener: bad argument type for facing (string or number expected, got " .. ft .. ")", 2)
+    end
+    local canonical = __canonicalMediaDirection(facing)
+    if canonical == nil or canonical == '' or not __setMediaListener(canonical) then
+        error('setMediaListener: bad argument value for facing (a compass direction or degrees expected, got "'
+            .. tostring(facing) .. '")', 2)
+    end
+    return true
+end
+
+-- Mudlet `getMediaListener()` → {facing = "north" | degrees}.
+function getMediaListener()
+    return { facing = __mudlet_media_direction_out(__getMediaListener()) }
 end
 
 -- Mudlet `playVideoFile`. Table form only, like the rest of the video family:
@@ -6911,7 +7073,7 @@ function getPlayingSounds(a, b, c, d)
     if type(raw) == 'table' then
         for _, v in pairs(raw) do
             out[#out + 1] = { name = v.name, key = v.key, tag = v.tag, volume = v.volume,
-                priority = v.priority }
+                priority = v.priority, pan = v.pan, direction = __mudlet_media_direction_out(v.direction) }
         end
     end
     return out
@@ -6946,7 +7108,7 @@ local function reindexPaused(raw)
     if type(raw) == 'table' then
         for _, v in pairs(raw) do
             out[#out + 1] = { name = v.name, key = v.key, tag = v.tag, volume = v.volume,
-                priority = v.priority }
+                priority = v.priority, pan = v.pan, direction = __mudlet_media_direction_out(v.direction) }
         end
     end
     return out
@@ -8373,7 +8535,8 @@ do
                 .. " nil or a number, got " .. type(value) .. "!)", 3)
         end
         if count < 1 then
-            return funcName .. ": trigger expiration count must be nil or greater than zero, got " .. tostring(count)
+            -- warnArgumentValue: the message alone, no function name
+            return "trigger expiration count must be nil or greater than zero, got " .. tostring(count)
         end
         return nil, count
     end
@@ -8525,6 +8688,14 @@ do
             local err, count = __mudlet_check_expiry(args[14], "tempComplexRegexTrigger", 14)
             if err then return nil, err end
             args[14] = count
+        end
+        -- A perl pattern that will not compile is refused before the trigger of
+        -- that name is touched, so it keeps the patterns it had. Desktop judges
+        -- only a trigger that is no colour trigger: one whose foreground or
+        -- background argument (#5, #6) is a number.
+        if __mudlet_num(args[5]) ~= nil or __mudlet_num(args[6]) ~= nil then
+            local bad = __mudlet_regex_compile_error(args[2], true)
+            if bad then return nil, bad end
         end
         return _rawTempComplexRegexTrigger(unpack(args, 1, n))
     end

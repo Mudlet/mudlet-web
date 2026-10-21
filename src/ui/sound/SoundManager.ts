@@ -21,6 +21,7 @@
 //     just attenuated past the audible floor.
 
 import type { MediaCaptionInfo, MediaKind } from './closedCaption';
+import { isListenerFacing, stereoPan } from './mediaDirection';
 import { getBrand } from '../../branding';
 
 type LoaderFn = (path: string) => Promise<ArrayBuffer | null>;
@@ -61,6 +62,12 @@ export interface PlaySoundOptions {
      *  when closed captions are on; absent → a caption is synthesized from the
      *  kind + filename. */
     caption?: string;
+    /** Sounds only: -100 (left) to 100 (right), already held to that range —
+     *  Client.Media 2's `pan`. Wins over a direction. */
+    pan?: number;
+    /** Sounds only: where the sound comes from, as canonicalMediaDirection
+     *  spells it — panned by the way the listener faces. */
+    direction?: string;
 }
 
 export interface PlayMusicOptions extends PlaySoundOptions {
@@ -133,6 +140,12 @@ interface ActiveSource {
     origin: MediaOrigin;
     caption?: string;
     priority?: number;
+    /** Sounds only: the pan and direction it was placed by (see PlaySoundOptions). */
+    pan?: number;
+    direction?: string;
+    /** Sounds only, where the browser has one: what pans it, between its gain
+     *  and the output. */
+    panner?: StereoPannerNode;
     /**
      * `loading` from the play call until the file is decoded — it is listed as
      * playing already, as desktop lists a player from the moment it is asked
@@ -309,6 +322,11 @@ export class SoundManager {
      * tearing them down.
      */
     private muted: Record<MediaOrigin, boolean> = { api: false, game: false };
+    /** The way the listener faces (TMedia::mListenerFacing), and the one a
+     *  script last chose, which a game's Client.Media.Listener does not
+     *  overwrite (mScriptListenerFacing). */
+    private listenerFacing = 'north';
+    private scriptListenerFacing = '';
     /**
      * Raised when a tracked source starts playing. ScriptingEngine wires this
      * to Mudlet's `sysMediaStarted(file, path, mediaType, key, tag)` — the same
@@ -411,6 +429,91 @@ export class SoundManager {
         // matching the same key (or, when no key, the same name).
         this.stopMusicMatching(opts.name, opts.key);
         return this.play('music', opts);
+    }
+
+    /**
+     * Mudlet `updateSounds` / Client.Media.Update — TMedia::updateMedia for
+     * sounds. Moves the script- (or game-) started sounds `filter` names to a
+     * new volume (1..100), pan or direction, gliding over `glideMs`. A key or
+     * tag must be the sound's own; a name matches as a stop's does. Loading
+     * and paused sounds move too. A new direction takes over from a pan given
+     * earlier, or it would never be heard. Returns how many moved.
+     */
+    updateSounds(
+        filter: { name?: string; key?: string; tag?: string; origin: MediaOrigin },
+        change: { volume?: number; pan?: number; direction?: string; glideMs?: number },
+    ): number {
+        const glide = Math.max(0, change.glideMs ?? 0) / 1000;
+        const placing = change.pan !== undefined || !!change.direction;
+        let moved = 0;
+        for (const a of this.active.values()) {
+            if (a.kind !== 'sound' || a.stopping || a.origin !== filter.origin) continue;
+            if (filter.name && !nameMatches(a, filter.name)) continue;
+            if (filter.key && a.key !== filter.key) continue;
+            if (filter.tag && a.tag !== filter.tag) continue;
+            if (change.volume !== undefined) {
+                a.volume = clamp01(Math.max(1, Math.min(100, change.volume)) / 100);
+                const ctx = sharedContext;
+                if (ctx) {
+                    const now = ctx.currentTime;
+                    const g = a.gain.gain;
+                    g.cancelScheduledValues(now);
+                    g.setValueAtTime(g.value, now);
+                    if (glide > 0) g.linearRampToValueAtTime(this.effectiveGain(a), now + glide);
+                    else g.setValueAtTime(this.effectiveGain(a), now);
+                }
+            }
+            if (placing) {
+                a.pan = change.pan;
+                if (change.direction) a.direction = change.direction;
+                this.applyPan(a, glide);
+            }
+            moved++;
+        }
+        return moved;
+    }
+
+    /**
+     * Turn the listener to `facing` (canonical; a compass word or degrees) —
+     * TMedia::setListenerFacing. Refused (false) for up, down and the words
+     * relative to the player. Every placed sound without a pan of its own
+     * turns with it.
+     */
+    setListenerFacing(facing: string, setBy: 'script' | 'game'): boolean {
+        if (!isListenerFacing(facing)) return false;
+        if (setBy === 'script') this.scriptListenerFacing = facing;
+        this.listenerFacing = facing;
+        for (const a of this.active.values()) {
+            if (a.kind === 'sound' && a.pan === undefined && a.direction) this.applyPan(a, 0);
+        }
+        return true;
+    }
+
+    /** The way the listener faces now (TMedia::listenerFacing). */
+    getListenerFacing(): string {
+        return this.listenerFacing;
+    }
+
+    /** Face the way a script last chose, or north — TMedia::resetListenerFacing,
+     *  for a new connection. */
+    resetListenerFacing(): void {
+        this.listenerFacing = this.scriptListenerFacing || 'north';
+        for (const a of this.active.values()) {
+            if (a.kind === 'sound' && a.pan === undefined && a.direction) this.applyPan(a, 0);
+        }
+    }
+
+    private applyPan(a: ActiveSource, glideSec: number): void {
+        const panner = a.panner;
+        const ctx = sharedContext;
+        if (!panner || !ctx) return;
+        const target = (stereoPan(a.pan, a.direction, this.listenerFacing) ?? 0) / 100;
+        const now = ctx.currentTime;
+        const p = panner.pan;
+        p.cancelScheduledValues(now);
+        p.setValueAtTime(p.value, now);
+        if (glideSec > 0) p.linearRampToValueAtTime(target, now + glideSec);
+        else p.setValueAtTime(target, now);
     }
 
     /** Mudlet `stopSounds([filter])` — stop the sounds matching `filter`
@@ -539,7 +642,10 @@ export class SoundManager {
         const out: MediaListing[] = [];
         for (const a of this.active.values()) {
             if (a.kind !== kind || !keep(a) || !matchesFilter(a, filter, false)) continue;
-            out.push({ name: a.name, key: a.key, tag: a.tag, volume: Math.round(a.volume * 100), priority: a.priority });
+            out.push({
+                name: a.name, key: a.key, tag: a.tag, volume: Math.round(a.volume * 100), priority: a.priority,
+                pan: a.pan, direction: a.direction,
+            });
         }
         return out;
     }
@@ -615,7 +721,14 @@ export class SoundManager {
         // from the play call on, so getPlayingSounds right after playSoundFile
         // must already see it.
         const gain = ctx.createGain();
-        gain.connect(ctx.destination);
+        const placed = kind === 'sound';
+        const panner = placed && typeof ctx.createStereoPanner === 'function' ? ctx.createStereoPanner() : undefined;
+        if (panner) {
+            gain.connect(panner);
+            panner.connect(ctx.destination);
+        } else {
+            gain.connect(ctx.destination);
+        }
         const id = this.nextId++;
         const record: ActiveSource = {
             id,
@@ -627,6 +740,9 @@ export class SoundManager {
             origin,
             caption: opts.caption,
             priority,
+            pan: placed ? opts.pan : undefined,
+            direction: placed && opts.direction ? opts.direction : undefined,
+            panner,
             state: 'loading',
             gain,
             fadein: Math.max(0, opts.fadein ?? 0),
@@ -643,6 +759,7 @@ export class SoundManager {
             fading: false,
         };
         this.active.set(id, record);
+        this.applyPan(record, 0);
 
         let buffer: AudioBuffer;
         try {
@@ -732,7 +849,7 @@ export class SoundManager {
             }
             this.active.delete(a.id);
             if (a.kind === 'music') this.updateMediaSessionState();
-            this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, action: 'stops' });
+            this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, direction: a.direction, action: 'stops' });
             return;
         }
         this.end(a, false);
@@ -749,7 +866,7 @@ export class SoundManager {
         if (a.kind === 'music') this.updateMediaSessionState();
         if (!a.announced) return;
         const caption = () =>
-            this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, action: 'stops' });
+            this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, direction: a.direction, action: 'stops' });
         if (deferCaption) setTimeout(caption, 0);
         else caption();
         this.announceFinish(a);
@@ -767,7 +884,7 @@ export class SoundManager {
 
     private announceStart(a: ActiveSource): void {
         if (!a.announced) {
-            this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, action: 'plays' });
+            this.onMediaCaption?.({ kind: a.kind, name: a.name, key: a.key, caption: a.caption, direction: a.direction, action: 'plays' });
         }
         a.announced = true;
         this.onMediaStarted?.(...this.eventArgs(a));
@@ -934,6 +1051,8 @@ export interface MediaListing {
     tag?: string;
     volume: number;
     priority?: number;
+    pan?: number;
+    direction?: string;
 }
 
 function baseName(path: string): string {
