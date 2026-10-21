@@ -1169,9 +1169,14 @@ export class LuaRuntime implements IScriptingRuntime {
                 // profile VFS — see src/assets/qt-resources.
                 bytes = qtResourceBytes(p);
             } else {
-                if (!this.vfs) return false;
-                try { bytes = this.vfs.readBinaryFile(p); }
-                catch { return false; }
+                // The read-only /lua/ namespace first, as io.open sees it (the
+                // spec corpus keeps its fixture images there), then the profile.
+                bytes = this.readBuiltinBytes(p);
+                if (!bytes) {
+                    if (!this.vfs) return false;
+                    try { bytes = this.vfs.readBinaryFile(p); }
+                    catch { return false; }
+                }
             }
             if (!bytes) return false;
             const size = parseImageSize(bytes);

@@ -7688,8 +7688,18 @@ export class ScriptingAPI {
      * Returns true, or desktop's refusal message — one wording for a name
      * nothing answers to and for a label image that cannot be loaded, since
      * TLuaInterpreter::setBackgroundImage only learns that one of them failed.
+     *
+     * `fullWindow` is the trailing boolean of `(main, path, mode, true)`. The
+     * full-window background is the main console's here, but desktop's
+     * TConsole::setWindowBackgroundImage loads the picture for mode 5 ('cover')
+     * up front and refuses one that will not load, which a script (the starter
+     * UI's background picture) relies on to know it is not showing.
      */
-    setBackgroundImage(a: string, b?: string | number, c?: number): true | string {
+    setBackgroundImage(a: string, b?: string | number, c?: number, fullWindow?: unknown): true | string {
+        if (fullWindow === true && typeof b === 'string' && Number(c) === 5 && (a === 'main' || a === '')
+            && !this.labelImageLoads(b)) {
+            return `could not use '${b}' as a full window background image`;
+        }
         // 1 arg, or (path, mode): the main window, default border (mode 1).
         if (b === undefined) return this.applyBackgroundImage(undefined, a, 1);
         if (typeof b === 'number') return this.applyBackgroundImage(undefined, a, b);
