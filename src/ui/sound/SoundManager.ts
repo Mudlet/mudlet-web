@@ -432,22 +432,25 @@ export class SoundManager {
     }
 
     /**
-     * Mudlet `updateSounds` / Client.Media.Update — TMedia::updateMedia for
-     * sounds. Moves the script- (or game-) started sounds `filter` names to a
-     * new volume (1..100), pan or direction, gliding over `glideMs`. A key or
-     * tag must be the sound's own; a name matches as a stop's does. Loading
-     * and paused sounds move too. A new direction takes over from a pan given
+     * Mudlet `updateSounds` / Client.Media.Update — TMedia::updateMedia. Moves
+     * the script- (or game-) started media `filter` names to a new volume
+     * (1..100), pan or direction, gliding over `glideMs`. Sounds only, unless
+     * `filter.kinds` says otherwise: a Client.Media.Update without a type
+     * reaches music too. A key or tag must be the source's own; a name matches
+     * as a stop's does. Loading and paused sources move too. Pan and direction
+     * place sounds only, and a new direction takes over from a pan given
      * earlier, or it would never be heard. Returns how many moved.
      */
     updateSounds(
-        filter: { name?: string; key?: string; tag?: string; origin: MediaOrigin },
+        filter: { name?: string; key?: string; tag?: string; origin: MediaOrigin; kinds?: readonly ('sound' | 'music')[] },
         change: { volume?: number; pan?: number; direction?: string; glideMs?: number },
     ): number {
+        const kinds = filter.kinds ?? ['sound'];
         const glide = Math.max(0, change.glideMs ?? 0) / 1000;
         const placing = change.pan !== undefined || !!change.direction;
         let moved = 0;
         for (const a of this.active.values()) {
-            if (a.kind !== 'sound' || a.stopping || a.origin !== filter.origin) continue;
+            if (!kinds.includes(a.kind) || a.stopping || a.origin !== filter.origin) continue;
             if (filter.name && !nameMatches(a, filter.name)) continue;
             if (filter.key && a.key !== filter.key) continue;
             if (filter.tag && a.tag !== filter.tag) continue;
@@ -463,7 +466,7 @@ export class SoundManager {
                     else g.setValueAtTime(this.effectiveGain(a), now);
                 }
             }
-            if (placing) {
+            if (placing && a.kind === 'sound') {
                 a.pan = change.pan;
                 if (change.direction) a.direction = change.direction;
                 this.applyPan(a, glide);
