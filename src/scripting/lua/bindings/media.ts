@@ -1,4 +1,5 @@
 import type { TtsManager } from '../../../ui/tts/TtsManager';
+import { canonicalMediaDirection } from '../../../ui/sound/mediaDirection';
 import type { BindingContext } from './context';
 
 /**
@@ -59,10 +60,30 @@ export function installSoundBindings(ctx: BindingContext): void {
             tag: strOpt(o.tag),
             priority: numOpt(o.priority),
             caption: strOpt(o.caption),
+            // Bridge.lua has held the pan to -100..100 and spelt the
+            // direction as TMedia keeps it.
+            pan: numOpt(o.pan),
+            direction: strOpt(o.direction),
             origin: 'api',
         });
         return true;
     });
+    // updateSounds({name|key|tag, volume, pan, direction, duration}) —
+    // Bridge.lua validates and normalises the table first.
+    lua.global.set('__updateSounds', (t: unknown) => {
+        const o = detachOpts(t);
+        sounds.updateSounds(
+            { name: strOpt(o.name), key: strOpt(o.key), tag: strOpt(o.tag), origin: 'api' },
+            { volume: numOpt(o.volume), pan: numOpt(o.pan), direction: strOpt(o.direction), glideMs: numOpt(o.duration) },
+        );
+        return true;
+    });
+    // setMediaListener / getMediaListener — the way the player faces, which
+    // turns every placed sound. A canonical facing in, false when refused.
+    lua.global.set('__canonicalMediaDirection', (v: unknown) =>
+        canonicalMediaDirection(typeof v === 'number' ? v : String(v ?? '')));
+    lua.global.set('__setMediaListener', (facing: unknown) => sounds.setListenerFacing(String(facing ?? ''), 'script'));
+    lua.global.set('__getMediaListener', () => sounds.getListenerFacing());
     lua.global.set('__playMusicFile', (t: unknown) => {
         const o = detachOpts(t);
         void sounds.playMusic({

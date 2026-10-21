@@ -1229,7 +1229,7 @@ export class MudClient {
                 'Room 1',
                 'IRE.Rift 1',
                 'IRE.Composer 1',
-                'Client.Media 1',
+                'Client.Media 2',
                 'Char.Login 1',
             ]));
         } catch (error) {

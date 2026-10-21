@@ -6673,6 +6673,52 @@ end
 -- "media/hit.wav") or may be an absolute http(s):// URL.
 -- Arity matters: no arguments at all is a raise, while an explicit nil filename
 -- is the softer (nil, "missing argument 1") return. select('#') tells them apart.
+-- ── Client.Media 2: where a sound comes from ──────────────────────────────
+-- A media table's keys are read in any case (desktop lowercases each one).
+function __mudlet_media_get(t, field)
+    local v = t[field]
+    if v ~= nil then return v end
+    for k, val in pairs(t) do
+        if type(k) == 'string' and k:lower() == field then return val end
+    end
+    return nil
+end
+
+-- mediaPanArg: a number (lua_isnumber, so a numeric string too) from -100 (left)
+-- to 100 (right), held to that range and rounded; NaN is refused.
+function __mudlet_media_pan(v, funcName)
+    local n = tonumber(v)
+    if n == nil or (type(v) ~= 'number' and type(v) ~= 'string') then
+        error(funcName .. ": bad argument #1 type (value for pan as number expected, got "
+            .. type(v) .. "!)", 3)
+    end
+    if n ~= n then
+        error(funcName .. ": bad argument value for pan (a number from -100 to 100 expected, got nan)", 3)
+    end
+    n = math.max(-100, math.min(100, n))
+    return n >= 0 and math.floor(n + 0.5) or math.ceil(n - 0.5)
+end
+
+-- mediaDirectionArg: a word or degrees, spelt as TMedia keeps it.
+function __mudlet_media_direction(v, funcName)
+    local t = type(v)
+    if t ~= 'number' and t ~= 'string' then
+        error(funcName .. ": bad argument type for direction (string or number expected, got " .. t .. ")", 3)
+    end
+    local canonical = __canonicalMediaDirection(v)
+    if canonical == nil or canonical == '' then
+        error(funcName .. ': bad argument value for direction (a compass direction such as "north" or "ne",'
+            .. ' up, down, ahead, behind, left, right or degrees expected, got "' .. tostring(v) .. '")', 3)
+    end
+    return canonical
+end
+
+-- pushMediaDirection: degrees go back as a number and a named way as its word.
+function __mudlet_media_direction_out(d)
+    if type(d) ~= 'string' or d == '' then return nil end
+    return tonumber(d:match('^%d+$')) or d
+end
+
 function playSoundFile(...)
     -- Count the caller's real arity: naming the parameters and passing them to
     -- select('#') would count those names, never yielding 0.
@@ -6683,6 +6729,15 @@ function playSoundFile(...)
     if type(a) == 'table' then
         __mudlet_check_media_table(a, "playSoundFile")
         __mudlet_check_media_name(a, "playSoundFile")
+        local pan, direction = __mudlet_media_get(a, 'pan'), __mudlet_media_get(a, 'direction')
+        if pan ~= nil or direction ~= nil then
+            -- a copy, so the caller's table keeps what it said
+            local opts = {}
+            for k, v in pairs(a) do opts[k] = v end
+            if pan ~= nil then opts.pan = __mudlet_media_pan(pan, "playSoundFile") end
+            if direction ~= nil then opts.direction = __mudlet_media_direction(direction, "playSoundFile") end
+            a = opts
+        end
         if __mudlet_media_deferred(a, __playSoundFile) then return true end
         return __playSoundFile(a)
     end
@@ -6694,6 +6749,90 @@ function playSoundFile(...)
     -- form's is.
     if __mudlet_media_deferred(opts, __playSoundFile) then return true end
     return __playSoundFile(opts)
+end
+
+-- Mudlet `updateSounds({name|key|tag, volume, pan, direction, duration})`
+-- (TLuaInterpreter::updateSounds): move the script's sounds that a key, name or
+-- tag picks out to a new volume, pan or direction, gliding over `duration`
+-- milliseconds. Naming nothing to choose them by is (nil, message); finding
+-- nothing to move is not an error, as stopping nothing is not.
+function updateSounds(t)
+    if type(t) ~= 'table' then
+        error("updateSounds: needs to be a table", 2)
+    end
+    __mudlet_check_media_table_keys(t, "updateSounds")
+    local req = {}
+    for k, v in pairs(t) do
+        local key = tostring(k):lower()
+        if key == 'name' or key == 'key' or key == 'tag' then
+            local str = __mudlet_str(v)
+            if str == nil then
+                error("updateSounds: bad argument #1 type (value for " .. key .. " as string expected, got "
+                    .. type(v) .. "!)", 2)
+            end
+            if str ~= '' then
+                req[key] = key == 'name' and (str:gsub('\\', '/')) or str
+            end
+        elseif key == 'volume' or key == 'duration' then
+            local n = tonumber(v)
+            if n == nil or (type(v) ~= 'number' and type(v) ~= 'string') then
+                error("updateSounds: bad argument #1 type (value for " .. key .. " as number expected, got "
+                    .. type(v) .. "!)", 2)
+            end
+            n = n >= 0 and math.floor(n) or math.ceil(n)
+            if key == 'volume' then
+                req.volume = math.max(1, math.min(100, n))
+            elseif n < 0 then
+                error("updateSounds: bad argument range for duration (values must be greater than or equal to 0, got value: "
+                    .. string.format("%d", n) .. ")", 2)
+            else
+                req.duration = n
+            end
+        elseif key == 'pan' then
+            req.pan = __mudlet_media_pan(v, "updateSounds")
+        elseif key == 'direction' then
+            req.direction = __mudlet_media_direction(v, "updateSounds")
+        end
+    end
+    if not (req.name or req.key or req.tag) then
+        return nil, "no key, name or tag to choose the sounds to update by"
+    end
+    __updateSounds(req)
+    return true
+end
+
+-- Mudlet `setMediaListener({facing = ...})`: the way the player faces, which
+-- turns every sound placed by a direction. A facing is a compass direction or
+-- degrees: up, down and the words relative to the player are refused.
+function setMediaListener(t)
+    if type(t) ~= 'table' then
+        error("setMediaListener: needs to be a table", 2)
+    end
+    local facing
+    for k, v in pairs(t) do
+        if type(k) == 'string' and k:lower() == 'facing' then
+            facing = v
+            break
+        end
+    end
+    if facing == nil then
+        error('setMediaListener: missing facing (add facing = "east" or a number of degrees)', 2)
+    end
+    local ft = type(facing)
+    if ft ~= 'number' and ft ~= 'string' then
+        error("setMediaListener: bad argument type for facing (string or number expected, got " .. ft .. ")", 2)
+    end
+    local canonical = __canonicalMediaDirection(facing)
+    if canonical == nil or canonical == '' or not __setMediaListener(canonical) then
+        error('setMediaListener: bad argument value for facing (a compass direction or degrees expected, got "'
+            .. tostring(facing) .. '")', 2)
+    end
+    return true
+end
+
+-- Mudlet `getMediaListener()` → {facing = "north" | degrees}.
+function getMediaListener()
+    return { facing = __mudlet_media_direction_out(__getMediaListener()) }
 end
 
 -- Mudlet `playVideoFile`. Table form only, like the rest of the video family:
@@ -6886,7 +7025,7 @@ function getPlayingSounds(a, b, c, d)
     if type(raw) == 'table' then
         for _, v in pairs(raw) do
             out[#out + 1] = { name = v.name, key = v.key, tag = v.tag, volume = v.volume,
-                priority = v.priority }
+                priority = v.priority, pan = v.pan, direction = __mudlet_media_direction_out(v.direction) }
         end
     end
     return out
@@ -6921,7 +7060,7 @@ local function reindexPaused(raw)
     if type(raw) == 'table' then
         for _, v in pairs(raw) do
             out[#out + 1] = { name = v.name, key = v.key, tag = v.tag, volume = v.volume,
-                priority = v.priority }
+                priority = v.priority, pan = v.pan, direction = __mudlet_media_direction_out(v.direction) }
         end
     end
     return out

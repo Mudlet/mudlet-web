@@ -26,6 +26,7 @@ import { KNOWN_ITEM_TYPES, type EngineHost, type TempComplexTriggerSpec } from '
 import { ItemIdSequence } from '../mud/ItemIdSequence';
 import {formatClosedCaption, type MediaCaptionInfo} from '../ui/sound/closedCaption';
 import type {PlayMusicOptions} from '../ui/sound/SoundManager';
+import {canonicalMediaDirection} from '../ui/sound/mediaDirection';
 
 /** The fields every tree node (alias/trigger/timer/key/button/script) shares —
  *  enough for the tree-walking APIs (ancestors/findItems/isAncestorsActive/
@@ -3007,7 +3008,7 @@ export class ScriptingEngine implements EngineHost {
         // this is a hard block, not the `game` mute gate (which still fetches
         // and plays, silently). Mudlet drops the message just as early, in
         // cTelnet::setGMCPVariables and again atop TMedia::parseGMCP, and it
-        // still advertises "Client.Media 1" in Core.Supports.Set either way,
+        // still advertises "Client.Media 2" in Core.Supports.Set either way,
         // so MudClient's handshake stays untouched.
         if (useAppStore.getState().connectionProfile[this.connectionId]?.allowServerMedia === false) {
             if (debug) console.debug(`[mudlet.gmcp] media ${action} ignored (disabled in settings)`);
@@ -3085,6 +3086,54 @@ export class ScriptingEngine implements EngineHost {
             return;
         }
 
+        // Client.Media 2 placement: a pan is a number (or a string reading as
+        // one) held to -100..100; a direction a word or degrees. One that is
+        // neither is ignored (TMedia::parseJSONByMediaPan / ...Direction).
+        const panOf = (): number | undefined => {
+            const p = num('pan');
+            if (p === undefined) return undefined;
+            const held = Math.max(-100, Math.min(100, p));
+            return held >= 0 ? Math.floor(held + 0.5) : Math.ceil(held - 0.5);
+        };
+        const directionOf = (): string | undefined => {
+            const d = obj.direction;
+            const c = typeof d === 'number' ? canonicalMediaDirection(d)
+                : typeof d === 'string' ? canonicalMediaDirection(d) : '';
+            return c || undefined;
+        };
+
+        if (action === 'listener') {
+            // Client.Media.Listener { facing } — the way the player now faces.
+            // A script's own choice is remembered apart (TMedia::setListenerFacing).
+            const f = obj.facing;
+            const facing = typeof f === 'number' ? canonicalMediaDirection(f)
+                : typeof f === 'string' ? canonicalMediaDirection(f) : '';
+            if (!this.session.sounds.setListenerFacing(facing, 'game') && debug) {
+                console.debug('[mudlet.gmcp] media listener ignored (not a compass direction or degrees)');
+            }
+            return;
+        }
+
+        if (action === 'update') {
+            // Client.Media.Update { name|key|tag, volume, pan, direction,
+            // duration } — move the server's sounds that it picks out. One
+            // naming nothing would move every sound the game has, so it is
+            // ignored (TMedia::parseJSONForMediaUpdate).
+            const type = str('type').toLowerCase();
+            const filter = { name: str('name') || undefined, key: str('key') || undefined, tag: tagOf(), origin: 'game' as const };
+            if (!filter.name && !filter.key && !filter.tag) return;
+            if (type && type !== 'sound') return;
+            const volume = num('volume');
+            const duration = num('duration');
+            this.session.sounds.updateSounds(filter, {
+                volume: volume === undefined ? undefined : Math.round(Math.max(1, Math.min(100, volume))),
+                pan: panOf(),
+                direction: directionOf(),
+                glideMs: duration === undefined ? 0 : Math.max(0, Math.round(duration)),
+            });
+            return;
+        }
+
         if (action !== 'play' && action !== 'load') {
             if (debug) console.debug(`[mudlet.gmcp] media ${action} ignored (unknown message)`);
             return;
@@ -3145,6 +3194,13 @@ export class ScriptingEngine implements EngineHost {
         if (tag) opts.tag = tag;
         const priority = num('priority');
         if (priority !== undefined) opts.priority = priority;
+
+        if (type === 'sound') {
+            const pan = panOf();
+            if (pan !== undefined) opts.pan = pan;
+            const direction = directionOf();
+            if (direction) opts.direction = direction;
+        }
 
         if (type === 'music') {
             // Mudlet's music `continue` defaults to true — a repeat Play of the
@@ -6603,7 +6659,7 @@ export class ScriptingEngine implements EngineHost {
                 }
                 // Built-in Client.Media handler — Mudlet's GMCP media protocol
                 // (TMedia MediaProtocolGMCP). `Client.Media.Play/Load/Stop/
-                // Default` drive server-side audio; we advertise `Client.Media 1`
+                // Default` drive server-side audio; we advertise `Client.Media 2`
                 // in Core.Supports.Set, so a server may send these instead of MSP.
                 const lowerPath = path.toLowerCase();
                 if (lowerPath === 'client.media' || lowerPath.startsWith('client.media.')) {
