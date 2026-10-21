@@ -198,4 +198,48 @@ describe('GMCP Client.Media parity', () => {
         expect(resume).toHaveBeenLastCalledWith('music', { key: undefined, tag: 'a', origin: 'game' });
         expect(resolve).not.toHaveBeenCalled();
     });
+
+    it('moves music too when an Update names no type, and only music when it says so', async () => {
+        const update = vi.spyOn(session.sounds, 'updateSounds').mockReturnValue(0);
+        await media('update', { key: 'k', volume: 30 });
+        expect(update).toHaveBeenLastCalledWith(
+            expect.objectContaining({ key: 'k', origin: 'game', kinds: ['sound', 'music'] }),
+            expect.objectContaining({ volume: 30 }),
+        );
+        await media('update', { type: 'Music', key: 'k', volume: 30 });
+        expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ kinds: ['music'] }), expect.anything());
+        update.mockClear();
+        await media('update', { type: 'video', key: 'k', volume: 30 });
+        expect(update).not.toHaveBeenCalled();
+    });
+
+    it('applies an Update sent while the file downloads once the Play goes ahead', async () => {
+        let finish!: (path: string) => void;
+        vi.spyOn(internals(), 'resolveMediaFile').mockReturnValue(new Promise(r => { finish = r; }));
+        vi.spyOn(session.sounds, 'updateSounds').mockReturnValue(0);
+        const play = vi.spyOn(session.sounds, 'playSound').mockResolvedValue(1);
+        const played = media('play', { name: 'rain.wav', key: 'k', volume: 60, pan: -10 });
+        await media('update', { key: 'k', volume: 20, direction: 'east' });
+        await media('update', { key: 'other', volume: 90 });
+        finish('/profiles/p/media/rain.wav');
+        await played;
+        // The direction takes over from the Play's own pan, as on a playing sound.
+        expect(play).toHaveBeenCalledWith(expect.objectContaining({
+            name: '/profiles/p/media/rain.wav', key: 'k', volume: 20, pan: undefined, direction: 'east',
+        }));
+    });
+
+    it('leaves a Load alone while it downloads', async () => {
+        let finish!: (path: string) => void;
+        vi.spyOn(internals(), 'resolveMediaFile').mockReturnValue(new Promise(r => { finish = r; }));
+        vi.spyOn(session.sounds, 'updateSounds').mockReturnValue(0);
+        const preload = vi.spyOn(session.sounds, 'preload').mockReturnValue(undefined as never);
+        const play = vi.spyOn(session.sounds, 'playSound');
+        const loaded = media('load', { name: 'rain.wav', key: 'k' });
+        await media('update', { name: 'rain.wav', volume: 20 });
+        finish('/profiles/p/media/rain.wav');
+        await loaded;
+        expect(preload).toHaveBeenCalled();
+        expect(play).not.toHaveBeenCalled();
+    });
 });

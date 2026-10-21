@@ -116,6 +116,55 @@ import {DEFAULT_CMD_LINE_HOST, type CmdLineHost} from '../ui/cmdline/subCommandL
  *  localStorage gate, duplicated here because the engine and the client
  *  don't share a debug-flags module. Toggle in the browser console:
  *  `localStorage.setItem('mudlet.debugMsp', '1')`. */
+/** A Client.Media.Play still fetching its file, and what Updates sent
+ *  meanwhile changed about it. */
+class PendingGmcpPlay {
+    private volume?: number;
+    private placed = false;
+    private pan?: number;
+    private direction?: string;
+
+    constructor(
+        readonly kind: 'sound' | 'music',
+        readonly name: string,
+        readonly key: string | undefined,
+        readonly tag: string | undefined,
+    ) {}
+
+    apply(change: { volume?: number; pan?: number; direction?: string }): void {
+        if (change.volume !== undefined) this.volume = change.volume;
+        if (this.kind === 'sound' && (change.pan !== undefined || change.direction)) {
+            // A new direction takes over from a pan given earlier, as on a playing sound.
+            this.placed = true;
+            this.pan = change.pan;
+            if (change.direction) this.direction = change.direction;
+        }
+    }
+
+    applyTo(opts: { volume?: number; pan?: number; direction?: string }): void {
+        if (this.volume !== undefined) opts.volume = this.volume;
+        if (this.placed) {
+            opts.pan = this.pan;
+            if (this.direction) opts.direction = this.direction;
+        }
+    }
+}
+
+/** Whether an Update's selection picks out a play still downloading: a name
+ *  matches as for a playing source (whole, or by its bare file name), and a
+ *  key or tag must be the play's own. */
+function pendingPlayMatches(
+    pending: PendingGmcpPlay,
+    filter: { name?: string; key?: string; tag?: string; kinds: readonly ('sound' | 'music')[] },
+): boolean {
+    if (!filter.kinds.includes(pending.kind)) return false;
+    const bare = (path: string) => path.split(/[\\/]/).pop() || path;
+    if (filter.name && pending.name !== filter.name && bare(pending.name) !== bare(filter.name)) return false;
+    if (filter.key && pending.key !== filter.key) return false;
+    if (filter.tag && pending.tag !== filter.tag) return false;
+    return true;
+}
+
 function debugMspEnabled(): boolean {
     try {
         return typeof localStorage !== 'undefined' && localStorage.getItem('mudlet.debugMsp') === '1';
@@ -544,6 +593,10 @@ export class ScriptingEngine implements EngineHost {
     // `Client.Media.Default { "url": ... }` message. Used as the base directory
     // for any subsequent Play/Load whose payload omits its own `url`.
     private gmcpMediaDefaultUrl = '';
+    // A Client.Media.Play whose file is still being fetched has no source
+    // yet. An Update sent meanwhile is kept on it and applied once it plays,
+    // as TMedia::updateMedia does to its pending downloads.
+    private readonly gmcpMediaDownloads = new Set<PendingGmcpPlay>();
     // sysExitEvent must fire exactly once per engine — either on teardown
     // (destroy) or on page unload, whichever comes first.
     private exitFired = false;
@@ -3124,18 +3177,24 @@ export class ScriptingEngine implements EngineHost {
             // duration } — move the server's sounds that it picks out. One
             // naming nothing would move every sound the game has, so it is
             // ignored (TMedia::parseJSONForMediaUpdate).
+            // A type only narrows the selection: without one, music moves too.
             const type = str('type').toLowerCase();
-            const filter = { name: str('name') || undefined, key: str('key') || undefined, tag: tagOf(), origin: 'game' as const };
+            if (type && type !== 'sound' && type !== 'music') return;
+            const kinds: ('sound' | 'music')[] = type ? [type as 'sound' | 'music'] : ['sound', 'music'];
+            const filter = { name: str('name') || undefined, key: str('key') || undefined, tag: tagOf(), origin: 'game' as const, kinds };
             if (!filter.name && !filter.key && !filter.tag) return;
-            if (type && type !== 'sound') return;
             const volume = num('volume');
             const duration = num('duration');
-            this.session.sounds.updateSounds(filter, {
+            const change = {
                 volume: volume === undefined ? undefined : Math.round(Math.max(1, Math.min(100, volume))),
                 pan: panOf(),
                 direction: directionOf(),
                 glideMs: duration === undefined ? 0 : Math.max(0, Math.round(duration)),
-            });
+            };
+            this.session.sounds.updateSounds(filter, change);
+            for (const pending of this.gmcpMediaDownloads) {
+                if (pendingPlayMatches(pending, filter)) pending.apply(change);
+            }
             return;
         }
 
@@ -3169,7 +3228,17 @@ export class ScriptingEngine implements EngineHost {
             return;
         }
         const baseUrl = str('url') || this.gmcpMediaDefaultUrl || undefined;
-        const resolved = await this.resolveMediaFile(name, baseUrl, '[mudlet.gmcp] media', debug);
+        // A Load is left alone while it downloads: given a volume, it would play.
+        const pending = action === 'play' && type !== 'video'
+            ? new PendingGmcpPlay(type === 'music' ? 'music' : 'sound', name, str('key') || undefined, tagOf())
+            : null;
+        if (pending) this.gmcpMediaDownloads.add(pending);
+        let resolved: string | null;
+        try {
+            resolved = await this.resolveMediaFile(name, baseUrl, '[mudlet.gmcp] media', debug);
+        } finally {
+            if (pending) this.gmcpMediaDownloads.delete(pending);
+        }
         if (!resolved) return;
 
         if (action === 'load') {
@@ -3206,6 +3275,7 @@ export class ScriptingEngine implements EngineHost {
             const direction = directionOf();
             if (direction) opts.direction = direction;
         }
+        pending?.applyTo(opts);
 
         if (type === 'music') {
             // Mudlet's music `continue` defaults to true — a repeat Play of the

@@ -714,3 +714,29 @@ describe('SoundManager parity with desktop (#350)', () => {
         expect(mgr.getPaused({}, 'music')).toEqual([]);
     });
 });
+
+// TMedia::updateMedia: a volume reaches music as well as sounds when asked
+// to, while pan and direction only ever place sounds.
+describe('SoundManager updateSounds across media kinds', () => {
+    beforeAll(() => {
+        (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+    });
+
+    async function playMusicAndGetGain(mgr: SoundManager, opts: Parameters<SoundManager['playMusic']>[0]) {
+        createdGains.length = 0;
+        await mgr.playMusic(opts);
+        return createdGains[0];
+    }
+
+    it('moves sounds only, unless music is asked for too', async () => {
+        const mgr = new SoundManager();
+        mgr.setLoader(async () => new ArrayBuffer(8));
+        const music = await playMusicAndGetGain(mgr, { name: 'theme.mp3', key: 'k', volume: 50, origin: 'game' });
+        expect(mgr.updateSounds({ key: 'k', origin: 'game' }, { volume: 20 })).toBe(0);
+        expect(music.gain.value).toBeCloseTo(0.5);
+        expect(mgr.updateSounds({ key: 'k', origin: 'game', kinds: ['sound', 'music'] }, { volume: 20, pan: 30 })).toBe(1);
+        expect(music.gain.value).toBeCloseTo(0.2);
+        expect(mgr.getPlaying({ key: 'k' }, 'music')[0]?.pan).toBeUndefined();
+        mgr.destroy();
+    });
+});
