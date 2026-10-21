@@ -32,6 +32,7 @@ function stubVfs(): ProfileVFS & { files: Map<string, string | Uint8Array>; dirs
         files,
         dirs,
         exists: (p: string) => dirs.has(p) || files.has(p),
+        stat: (p: string) => (files.has(p) ? { type: 'file' } : dirs.has(p) ? { type: 'dir' } : null),
         mkdir: (p: string) => { dirs.add(p.replace(/\/$/, '')); },
         rmdir: (p: string) => {
             const hit = under(p);

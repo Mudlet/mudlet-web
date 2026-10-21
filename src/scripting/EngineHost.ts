@@ -1,4 +1,4 @@
-import type { TriggerPattern } from '../storage/schema';
+import type { KeyNode, TriggerPattern } from '../storage/schema';
 import type { InstallOutcome } from './ScriptingAPI';
 
 /**
@@ -93,9 +93,15 @@ export interface EngineHost {
 
     installPackageFromVfsPath(path: string): InstallOutcome;
     uninstallPackageByName(name: string): boolean;
+    /** Which package or module owns the code a Lua frame is running ('' for
+     *  the profile's own), from the frame's chunk source. */
+    packageOfCaller(source: string, isMain: boolean, calledFromMain: boolean): string;
+    /** Lua `uninstallPackage()`: the refusal, or null once it is uninstalled. */
+    uninstallPackageFromScript(name: string): string | null;
     getPackageNames(): string[];
     getPackageInfo(name: string): Record<string, string>;
-    setPackageInfo(name: string, key: string, value: string): boolean;
+    /** The refusal, or null once the field is set. */
+    setPackageInfo(name: string, key: string, value: string): string | null;
 
     // ── Modules ──────────────────────────────────────────────────────────────
 
@@ -106,19 +112,21 @@ export interface EngineHost {
     saveSyncedModules(): void;
     /** Write the profile out as a Mudlet-format XML save, answering with the
      *  full path written. The XML half of `saveProfile([location [, saveName]])`. */
-    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string };
+    /** A refusal names the file it could not write, when it got that far. */
+    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string; path?: string };
 
     /** Put package installs off until the turn that started a profile save has
      *  ended; see ScriptingEngine.markProfileSaveInFlight. */
     markProfileSaveInFlight(): void;
-    reloadModuleFromFile(name: string): boolean;
+    reloadModuleFromFile(name: string): InstallOutcome;
     setModuleSync(name: string, sync: boolean): void;
     getModuleSync(name: string): boolean;
     setModulePriority(name: string, priority: number): boolean;
     getModulePriority(name: string): number;
     getModuleNames(): string[];
     getModulePath(name: string): string | null;
-    setModuleInfo(name: string, key: string, value: string): boolean;
+    /** The refusal, or null once the field is set. */
+    setModuleInfo(name: string, key: string, value: string): string | null;
     /** Module manifest fields as a flat record, with any Lua-set overrides
      *  applied. Null when no module by that name is installed. */
     getModuleInfoRecord(name: string): Record<string, unknown> | null;
@@ -162,9 +170,11 @@ export interface EngineHost {
 
     // ── Automation tree: queries ─────────────────────────────────────────────
 
-    /** The saved keybinding carrying this numeric id, or null — getKeyCode
-     *  resolves a permanent key by the id permKey returned, not only by name. */
-    keyNodeByNumericId(numericId: number): { key: string; modifiers: string[] } | null;
+    /** The saved keybinding or key group carrying this numeric id or name, or
+     *  null — getKeyCode resolves a permanent key by the id permKey returned as
+     *  well as by name, and reaches the groups and switched-off keys the key
+     *  engine does not hold. */
+    savedKeyNode(idOrName: number | string): KeyNode | null;
 
     /** Mudlet's Host::setForceMXPProcessorOn — run the in-band MXP parser with
      *  no option-91 handshake. */
@@ -237,7 +247,7 @@ export interface EngineHost {
         areaId: number,
         filePath: string,
         zLevel?: number | true,
-    ): { path: string } | { error: string };
+    ): { path: string } | { error: string; target?: boolean };
 }
 
 /**
@@ -263,9 +273,11 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
 
     installPackageFromVfsPath: () => ({ ok: false, error: 'no package installer available' }),
     uninstallPackageByName: () => false,
+    packageOfCaller: () => '',
+    uninstallPackageFromScript: (name: string) => `package '${name}' is not installed`,
     getPackageNames: () => [],
     getPackageInfo: () => ({}),
-    setPackageInfo: () => false,
+    setPackageInfo: (name: string) => `package '${name}' not found`,
 
     installModuleFromPath: () => ({ ok: false, error: 'no module installer available' }),
     uninstallModuleByName: () => false,
@@ -273,14 +285,14 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     saveSyncedModules: () => {},
     saveProfileXml: () => ({ ok: false as const, err: 'no profile host available' }),
     markProfileSaveInFlight: () => {},
-    reloadModuleFromFile: () => false,
+    reloadModuleFromFile: () => ({ ok: false, error: "module doesn't exist" }),
     setModuleSync: () => {},
     getModuleSync: () => false,
     setModulePriority: () => false,
     getModulePriority: () => 0,
     getModuleNames: () => [],
     getModulePath: () => null,
-    setModuleInfo: () => false,
+    setModuleInfo: (name: string) => `module '${name}' not found`,
     getModuleInfoRecord: () => null,
 
     rewriteCss: (css: string) => css,
@@ -297,7 +309,7 @@ export const NULL_ENGINE_HOST: EngineHost = Object.freeze({
     toggleToolBarByName: (name: string) => `toolbar '${name}' not found`,
     setTriggerStayOpenByName: () => false,
 
-    keyNodeByNumericId: () => null,
+    savedKeyNode: () => null,
     setForceMxpProcessorOn: () => {},
     existsByName: () => 0,
     isActiveByName: () => 0,

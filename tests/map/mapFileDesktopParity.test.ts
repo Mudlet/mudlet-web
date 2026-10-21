@@ -52,6 +52,8 @@ describe('map files match desktop (issue #334)', () => {
         const Ctor = ProfileVFS as unknown as new (id: string, fs: unknown, source: string) => ProfileVFS;
         t = await createTestRuntime({ vfs: new Ctor('map-parity', {}, 'idb') });
         t.run(`H = getMudletHomeDir()`);
+        // saveJsonMap/loadJsonMap need a mapper showing the map, as on desktop.
+        t.run('openMapWidget()');
     });
 
     afterAll(() => t.dispose());
@@ -101,18 +103,16 @@ describe('map files match desktop (issue #334)', () => {
             expect(area.labels[0].image.join('')).toBe(PNG_1X1);
         });
 
-        // TMap::createMapImageLabel paints the image onto a transparent
-        // width*zoom x height*zoom pixmap; a file Qt cannot read leaves it
-        // transparent — still a picture, not nothing.
-        it('makes a missing or unreadable file a transparent pixmap of desktop\'s size', () => {
+        // TMap::createMapImageLabel refuses a file QPixmap cannot load, and
+        // makes no label for it.
+        it('refuses a missing or unreadable file', () => {
             const a = t.run('return (addAreaName("Missing"))') as number;
-            t.run(`createMapImageLabel(${a}, H .. "/nope.png", 0, 0, 0, 4, 5, 10, true)`);
-            t.run(`createMapImageLabel(${a}, H .. "/not-an-image.png", 0, 0, 0, 1, 1, 3, true)`);
-            const blank = decodePng(String(t.run(`return (getMapLabel(${a}, 0)).Pixmap`)));
-            expect([blank.width, blank.height]).toEqual([40, 50]);
-            expect(blank.pixels.every(v => v === 0)).toBe(true);
-            const junk = decodePng(String(t.run(`return (getMapLabel(${a}, 1)).Pixmap`)));
-            expect([junk.width, junk.height]).toEqual([3, 3]);
+            for (const name of ['nope.png', 'not-an-image.png']) {
+                expect(t.run(`local id, err = createMapImageLabel(${a}, H .. "/${name}", 0, 0, 0, 4, 5, 10, true)
+                    return tostring(id) .. "|" .. tostring(err)`))
+                    .toBe(`nil|image file '${PROFILE}/${name}' could not be read`);
+            }
+            expect(t.run(`return next(getMapLabels(${a}))`)).toBe(null);
         });
 
         // Upstream's Mapper_spec writes its label image as XPM, so a script can

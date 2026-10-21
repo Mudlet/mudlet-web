@@ -152,6 +152,17 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
     ],
     Miscallaneous: [
         {
+            name: 'Tests C++ functions in the Miscallaneous category / Tests the functionality of saveProfile / writes the application-wide settings to Mudlet.ini as well',
+            reason:
+                'Reads Mudlet.ini beside the profiles folder, above getMudletHomeDir(). Mudlet keeps its '
+                + 'application-wide settings in that file; Mudlet Web keeps settings in its app store (in '
+                + 'localStorage, outside any profile VFS) and writes no Mudlet.ini at all. Even a written one '
+                + 'could not be read here: a profile VFS is mounted AT its own directory and cannot see above it '
+                + '(the boundary the "leaves no file or folder of its own behind" entry rests on). What the spec '
+                + 'cares about — a setting such as showTabConnectionIndicators surviving a save — holds: '
+                + 'setConfig writes it straight to the store, which persists it without a save.',
+        },
+        {
             name: 'Tests C++ functions in the Miscallaneous category / Tests the functionality of getProfiles / lists a profile that is not loaded',
             reason:
                 'The spec mkdir()s a bare folder under the profiles directory and expects getProfiles() to list it. '
@@ -212,7 +223,48 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'is gated on MUDLET_TEST_MODE rather than on the peer fixture, so it runs and fails instead.',
         },
     ],
+    Other: [
+        {
+            name: 'Tests the timer API / Tests the functionality of tempTimer / runs nothing and reports nothing for a timer with no code',
+            reason:
+                SECOND_PROFILE_FROM_A_FOLDER
+                + 'What it pins — a timer whose code is empty runs nothing and reports nothing — is the same here as '
+                + 'in this profile; only the second profile it builds to watch that on a fresh console cannot be made.',
+        },
+        {
+            name: 'Tests Other.lua functions / Tests getConfig and setConfig round-trips / round-trips every boolean configuration option',
+            reason:
+                'Every boolean option round-trips except lazyCaptureGlobals, which setConfig refuses to set true. '
+                + 'That is the decision recorded under Trigger below: Mudlet Web always sets matches, multimatches '
+                + 'and line up front, which is Mudlet with lazyCaptureGlobals off, so getConfig answers false and '
+                + 'a true is refused rather than stored and then not honoured — a script reading the setting back '
+                + 'would otherwise be told about a deferral that never happens.',
+        },
+    ],
     Package: [
+        ...[
+            'Tests opening a profile whose script fails as it loads / names the scripts that failed on that profile\'s console, once',
+            'Tests opening a profile whose script fails as it loads / names them again after a reset, leaving out those fixed or disabled since',
+            'Tests opening a profile whose script fails as it loads / names a package\'s script when a module has the package\'s name too',
+        ].map(name => ({
+            name,
+            reason:
+                SECOND_PROFILE_FROM_A_FOLDER
+                + 'The report itself is made here, as desktop words it — the switched-on scripts that failed as the '
+                + 'profile loaded or reset are named once on its console (tests/scripting/scriptItemDrift338.test.ts) '
+                + '— but for the profile this tab runs; the spec watches it happen on another.',
+        })),
+        {
+            name: 'Tests exporting the profile to a file with saveProfile / says so on the console when the write fails after the call has answered',
+            reason:
+                'Desktop writes a profile save on a worker thread: saveProfile() answers first, and the spec moves '
+                + 'the target folder away before the write lands, then expects the console to report the late '
+                + 'failure. Here the XML is built and written before saveProfile() answers, so there is no window '
+                + 'between the answer and the write — the spec\'s own setup says so ("the write finished before '
+                + 'its folder was moved away") and stops. A failure here is reported synchronously instead, as '
+                + 'saveProfile\'s nil and message and the console line the neighbouring specs check. Making the '
+                + 'write late just to open that window would make every save slower to land for no gain.',
+        },
         {
             name: 'Tests installing an archive whose config.lua will not run / refuses a name that trims down to a step out of the profile',
             reason:
@@ -249,32 +301,39 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             + 'offer reaches the downloader (an incomplete one does not), its notice is on the main console, '
             + 'and a raw telnet offer leaves the gmcp table alone. The failure notice Mudlet posts ("Package download failed from ...") '
             + 'is implemented and is asserted instead by tests/scripting/clientGuiNotices.test.ts.';
-        return [
+        // These serve the package themselves, from a file:// url inside the
+        // profile, and need the install to have finished when the offer
+        // returns. The file is read straight from the VFS, but the install
+        // still settles later: it registers the package only once the VFS
+        // flush has landed (ScriptingEngine.handleClientGuiInstall), so a page
+        // killed mid-install leaves "not installed" rather than a package on
+        // record with its files missing — the f2ce-tools failure that ordering
+        // was written for. That flush is IndexedDB, so it resolves through the
+        // event loop the busted run is sitting on, as the download above does.
+        const servedReason =
+            'Needs a Client.GUI install to have finished before the spec looks. Mudlet Web registers a '
+            + 'downloaded package only once its files are flushed to the profile VFS, so a page closed mid-install '
+            + 'leaves it not installed rather than recorded with its files missing (which is how f2ce-tools lost '
+            + 'its bundled databases). That flush is IndexedDB and settles through the browser\'s event loop, which '
+            + 'a synchronous busted run is sitting on top of — the same wall as the download entries beside these. '
+            + 'Registering before the flush to let a synchronous test see it would bring the half-install back.';
+        const served = [
+            'Tests the Client.GUI package offer / installs nothing from a Client.GUI download that came back empty',
+            'Tests the Client.GUI package offer / installs a Client.GUI package downloaded from a file URL',
+            'Tests the Client.GUI package offer / leaves an installed Client.GUI package alone when it is offered at the same version',
+            'Tests the Client.GUI package offer / forgets the recorded Client.GUI version once that package is uninstalled',
+            'Tests the Client.GUI package offer / upgrades a Client.GUI package after another one was installed',
+            'Tests the Client.GUI package offer / announces a Client.GUI package only once it is installed when a save was running',
+            'Tests the Client.GUI package offer / records the Client.GUI package that installed, not an offer made while it installed',
+            'Tests the Client.GUI package offer / records no version for a Client.GUI download that installed nothing',
+        ].map(name => ({ name, reason: servedReason }));
+        return [...served, ...[
             'Tests the Client.GUI package offer / acts on a Client.GUI offer sent as raw telnet rather than JSON (#7704)',
             'Tests the Client.GUI package offer / keeps a raw telnet Client.GUI out of the gmcp table (#7034)',
             'Tests the Client.GUI package offer / acts on a JSON Client.GUI offer whose version is a number',
             'Tests the Client.GUI package offer / ignores a Client.GUI offer that is missing its version or its URL',
-        ].map(name => ({ name, reason }));
+        ].map(name => ({ name, reason }))];
     })(),
-    STT: [
-        {
-            name: 'stt bridge / getInfo / names the engine it would use',
-            reason:
-                'The spec pins getInfo().backend to "Vosk", and its own comment says why that is the right test '
-                + 'THERE: "the contract worth holding is that the name is one this build actually has". mudlet has '
-                + 'none. Vosk is a native library Mudlet dlopen()s beside a language-model directory on disk, and '
-                + 'neither survives the move to a browser tab — half of stt.* exists to manage exactly those two '
-                + 'things (getLibraryPath, getPlatformKey, reloadLibrary, unloadLibrary). Answering "Vosk" to '
-                + 'satisfy this line would be the very thing the spec guards against: a build claiming an engine '
-                + 'it does not have. That is worse than a truthful "none", because backend is what a package reads '
-                + 'to decide what it can do. Everything else in STT_spec passes, because the spec is written to '
-                + 'run on a machine with no engine installed and mudlet is permanently in that state: available() '
-                + 'is false, mudlet.supports.stt is false, and every call refuses clearly — engine refusals also '
-                + 'announcing on sysSTTError, a script\'s own mistakes not (Bridge.lua). If speech recognition is '
-                + 'ever wired up here it will be the Web Speech API, so the honest name then is that — still not '
-                + '"Vosk".',
-        },
-    ],
     Trigger: (() => {
         // Mudlet leaves `matches`, `multimatches` and `line` out of the globals
         // table until a script reads them (Mudlet/Mudlet's lazyCaptureGlobals,

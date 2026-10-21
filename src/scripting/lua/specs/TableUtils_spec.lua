@@ -359,6 +359,30 @@ describe("Tests TableUtils.lua functions", function()
       -- == settles it without asking the metamethod
       assert.are.equal(2, eqCalls)
     end)
+
+    it("should still drop repeats of earlier tables once an __eq table turns up", function()
+      local mt = { __eq = function(a, b) return a.id == b.id end }
+      local t1 = { 1 }
+      local t2 = setmetatable({}, { __index = t1 })
+      local a1 = setmetatable({ id = 1 }, mt)
+      local a2 = setmetatable({ id = 1 }, mt)
+      local b1 = setmetatable({ id = 2 }, mt)
+      local actual = table.n_collect({ t1, t2, t1, a1, t1, a2, t2, b1, a1 }, keepAll)
+      assert.are.equal(4, #actual)
+      assert.are.equal(t1, actual[1])
+      assert.are.equal(t2, actual[2])
+      assert.are.equal(a1, actual[3])
+      assert.are.equal(b1, actual[4])
+    end)
+
+    it("should use __eq even when __metatable hides the metatable", function()
+      local mt = { __eq = function(a, b) return a.id == b.id end, __metatable = "locked" }
+      local a1 = setmetatable({ id = 1 }, mt)
+      local a2 = setmetatable({ id = 1 }, mt)
+      local actual = table.n_collect({ a1, a2 }, keepAll)
+      assert.are.equal(1, #actual)
+      assert.are.equal(a1, actual[1])
+    end)
   end)
 
   describe("Tests the functionality of table.matches", function()
@@ -971,6 +995,23 @@ describe("Tests TableUtils.lua functions", function()
       local actual = table.n_intersection(t1,t2,t3)
       assert.same(expected, actual)
     end)
+
+    it("should match tables by content and keep the first table's order without duplicates", function()
+      local t1 = {3, {a = 1}, "x", 3, {a = 2}, 1}
+      local t2 = {1, {a = 1}, "x", 3}
+      local actual = table.n_intersection(t1, t2)
+      assert.same({3, {a = 1}, "x", 1}, actual)
+      assert.equals(t1[2], actual[2])
+    end)
+
+    it("should tell numbers from strings and keep false values", function()
+      assert.same({false, 1}, table.n_intersection({false, "2", 1}, {1, "1", 2, false}))
+    end)
+
+    it("should never match NaN", function()
+      local nan = 0/0
+      assert.same({1}, table.n_intersection({nan, 1}, {nan, 1}))
+    end)
   end)
 
   describe("Tests the functionality of table.complement", function()
@@ -990,6 +1031,28 @@ describe("Tests TableUtils.lua functions", function()
       local expected = {1,3,5}
       local actual = table.n_complement(t1,t2)
       assert.same(expected, actual)
+    end)
+
+    it("should keep duplicates and the first table's order, and match tables by content", function()
+      local t1 = {5, {a = 1}, "5", 5, {a = 2}, true, 1}
+      local t2 = {1, {a = 1}, false}
+      assert.same({5, "5", 5, {a = 2}, true}, table.n_complement(t1, t2))
+    end)
+
+    it("should keep NaN, which equals nothing", function()
+      local actual = table.n_complement({0/0, 1}, {0/0})
+      assert.equals(2, #actual)
+      assert.is_true(actual[1] ~= actual[1])
+      assert.equals(1, actual[2])
+    end)
+
+    it("should match functions by identity", function()
+      local f1, f2 = function() end, function() end
+      assert.same({f2}, table.n_complement({f1, f2}, {f1}))
+    end)
+
+    it("should return an empty table for an empty first table", function()
+      assert.same({}, table.n_complement({}, {1}))
     end)
   end)
 
@@ -1111,8 +1174,161 @@ describe("Tests TableUtils.lua functions", function()
       assert.equals("inherited", copy.inner.anything)
     end)
 
-    -- table._contains guards against this with a "seen" set; deepcopy has none
-    pending("table.deepcopy copies a table that reaches itself - it recurses until the Lua stack overflows - issue #10414")
+    it("should copy a table that reaches itself, directly or through another", function()
+      local original = { name = "root", child = {} }
+      original.me = original
+      original.child.parent = original
+
+      local copy = table.deepcopy(original)
+
+      assert.are_not.equal(original, copy)
+      assert.equals(copy, copy.me)
+      assert.are_not.equal(original.child, copy.child)
+      assert.equals(copy, copy.child.parent)
+      assert.equals("root", copy.name)
+    end)
+
+    it("should copy each table in a cycle once, keeping references between siblings", function()
+      local first, second = { name = "first" }, { name = "second" }
+      local parent = { children = { first, second } }
+      first.parent, second.parent = parent, parent
+      first.sibling, second.sibling = second, first
+
+      local copy = table.deepcopy(parent)
+
+      local copyFirst, copySecond = copy.children[1], copy.children[2]
+      assert.are_not.equal(first, copyFirst)
+      assert.equals(copySecond, copyFirst.sibling)
+      assert.equals(copyFirst, copySecond.sibling)
+      assert.equals(copy, copyFirst.parent)
+      copySecond.name = "renamed"
+      assert.equals("renamed", copyFirst.sibling.name)
+      assert.equals("second", second.name)
+    end)
+
+    it("should copy a grid of rooms linked both ways once per room", function()
+      local size = 4
+      local rooms = {}
+      for i = 1, size * size do
+        rooms[i] = { id = i, exits = {} }
+      end
+      for i = 1, size * size do
+        local exits = rooms[i].exits
+        if i % size ~= 0 then exits.east = rooms[i + 1] end
+        if i % size ~= 1 then exits.west = rooms[i - 1] end
+        if i + size <= size * size then exits.south = rooms[i + size] end
+        if i > size then exits.north = rooms[i - size] end
+      end
+
+      local copy = table.deepcopy(rooms[1])
+
+      local seen, count, todo = {}, 0, { copy }
+      while #todo > 0 do
+        local t = table.remove(todo)
+        if not seen[t] then
+          seen[t], count = true, count + 1
+          for _, v in pairs(t) do
+            if type(v) == "table" then todo[#todo + 1] = v end
+          end
+        end
+      end
+      assert.equals(2 * size * size, count)
+      assert.equals(copy, copy.exits.east.exits.west)
+      assert.equals(copy.exits.east.exits.south, copy.exits.south.exits.east)
+    end)
+
+    it("should keep the metatables in a cycle and leave the original as it was", function()
+      local mt = { __index = { inherited = "yes" } }
+      local original = setmetatable({ child = setmetatable({}, mt) }, mt)
+      original.me = original
+      original.child.parent = original
+
+      local copy = table.deepcopy(original)
+
+      assert.equals(mt, getmetatable(copy))
+      assert.equals(mt, getmetatable(copy.child))
+      assert.equals("yes", copy.child.parent.inherited)
+      assert.equals(original, original.me)
+      assert.equals(original, original.child.parent)
+    end)
+
+    it("should copy a doubly linked list too long to copy by recursing", function()
+      local head = { index = 1 }
+      local tail = head
+      for i = 2, 30000 do
+        tail.next = { index = i, prev = tail }
+        tail = tail.next
+      end
+
+      local copy = table.deepcopy(head)
+
+      local node, count = copy, 1
+      while node.next do
+        assert.equals(node, node.next.prev)
+        node, count = node.next, count + 1
+      end
+      assert.equals(30000, count)
+      assert.equals(30000, node.index)
+    end)
+
+    it("should copy a chain without a cycle too long to copy by recursing", function()
+      local head = { index = 1 }
+      local tail = head
+      for i = 2, 30000 do
+        tail.next = { index = i }
+        tail = tail.next
+      end
+
+      local copy = table.deepcopy(head)
+
+      local node, count = copy, 1
+      while node.next do
+        node, count = node.next, count + 1
+      end
+      assert.equals(30000, count)
+      assert.equals(30000, node.index)
+    end)
+
+    it("should set the metatable after the fields, so a read-only __newindex never fires", function()
+      local mt = { __newindex = function() error("read-only") end }
+      local original = setmetatable({}, mt)
+      rawset(original, "a", 1)
+      rawset(original, "child", setmetatable({}, mt))
+      rawset(original.child, "parent", original)
+
+      local copy = table.deepcopy(original)
+
+      assert.equals(1, rawget(copy, "a"))
+      assert.equals(copy, rawget(copy.child, "parent"))
+      assert.equals(mt, getmetatable(copy.child))
+    end)
+
+    it("should copy a table after a script removes the debug library", function()
+      local saved = _G.debug
+      _G.debug = nil
+      local ok, result = pcall(table.deepcopy, setmetatable({ inner = { value = 1 } }, { __index = { z = 9 } }))
+      _G.debug = saved
+
+      assert.is_true(ok, tostring(result))
+      assert.equals(1, result.inner.value)
+      assert.equals(9, result.z)
+    end)
+
+    it("should copy a table with a protected metatable", function()
+      local mt = { __index = function() return 1 end, __metatable = "locked" }
+      local copy = table.deepcopy(setmetatable({}, mt))
+      assert.equals(1, copy.anything)
+      assert.equals("locked", getmetatable(copy))
+    end)
+
+    it("should copy a table shared without a cycle once for each place it is reached", function()
+      local shared = { value = 1 }
+      local copy = table.deepcopy({ first = shared, second = shared })
+      assert.are_not.equal(shared, copy.first)
+      assert.are_not.equal(copy.first, copy.second)
+      copy.first.value = 2
+      assert.equals(1, copy.second.value)
+    end)
   end)
 
   describe("Tests the functionality of spairs on an empty table", function()

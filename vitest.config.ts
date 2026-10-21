@@ -63,7 +63,7 @@ export default defineConfig({
   // from the Mudlet Web Vite plugin; the test runner doesn't load that plugin.
   // The map fixtures are plain `.zip`; scoped to the fixture tree so a bare
   // `.zip` import anywhere else keeps meaning what it means today.
-  assetsInclude: ['**/*.mpackage', '**/specs/fixtures/**/*.zip'],
+  assetsInclude: ['**/*.mpackage', '**/specs/fixtures/**/*.zip', '**/specs/fixtures/**/*.dat'],
   // Same build-time constants the app/lib builds inject, so src/version.ts
   // resolves under test instead of throwing on an undefined global.
   define: buildDefine(),

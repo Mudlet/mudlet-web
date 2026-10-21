@@ -1,4 +1,8 @@
+import { LUA_GLOBALSINDEX, LuaReturn } from 'wasmoon-lua5.1';
 import type { BindingContext } from './context';
+
+/** lua_pcall's "every result" count. */
+const LUA_MULTRET = -1;
 import { shortcutAsBinding, shortcutProblemMessage } from '../../../ui/commands/keySequence';
 import { mxpColor } from '../../../mud/text/colorParsers';
 import type { CommandSurface } from '../../../ui/commands/addonCommands';
@@ -14,7 +18,7 @@ import type { CommandSurface } from '../../../ui/commands/addonCommands';
  * this side is everything that needs state or real parsing: the ids, the key
  * sequence, who already holds a key, and what the pulse will accept.
  */
-export function installCommandBindings({ lua, api }: BindingContext): void {
+export function installCommandBindings({ lua, api, registerRawGlobal }: BindingContext): void {
     const registry = api.addonCommands;
     // Which keys Mudlet holds differs by platform, and so must the answer.
     registry.setPlatform(api.getOS());
@@ -24,9 +28,14 @@ export function installCommandBindings({ lua, api }: BindingContext): void {
 
     // Returns the new command's id, or a STRING carrying the reason it was not
     // placed — Bridge.lua turns the second into Mudlet's (nil, why).
+    //
+    // The caller's frame comes along as (source, whether it is a main chunk,
+    // whether a main chunk of the same source calls it with no C frame between)
+    // — see Bridge.lua's commandCaller — and decides which package owns it.
     lua.global.set('__addCommand', (
         name: unknown, icon: unknown, tooltip: unknown,
         menuPath: unknown, shortcut: unknown, surfaces: unknown,
+        callerSource: unknown, callerIsMain: unknown, calledFromMain: unknown,
     ): number | string => {
         const where = (surfaces as CommandSurface) ?? 'both';
         const path = String(menuPath ?? '');
@@ -72,7 +81,29 @@ export function installCommandBindings({ lua, api }: BindingContext): void {
             menuPath: path,
             shortcut: keys,
             surfaces: where,
+            owner: typeof callerSource === 'string'
+                ? api.packageOfCaller(callerSource, callerIsMain === true, calledFromMain === true)
+                : '',
         });
+    });
+
+    // addCommand itself is a C function, as desktop's is, so that a package's
+    // `return addCommand{...}` is not a tail call that takes the package's own
+    // frame off the stack before the owner is read. It hands every argument on
+    // untouched to the Lua half in Bridge.lua, which checks them by Lua type.
+    registerRawGlobal('addCommand', L => {
+        const raw = lua.global.luaApi;
+        const args = raw.lua_gettop(L);
+        raw.lua_getfield(L, LUA_GLOBALSINDEX, '__mudlet_addCommand');
+        raw.lua_insert(L, 1);
+        if (raw.lua_pcall(L, args, LUA_MULTRET, 0) !== LuaReturn.Ok) {
+            // The message is on the stack; answer (nil, message) as the Lua
+            // half does for everything it refuses.
+            raw.lua_pushnil(L);
+            raw.lua_insert(L, -2);
+            return 2;
+        }
+        return raw.lua_gettop(L);
     });
 
     const asId = (id: unknown): number => Math.trunc(Number(id));

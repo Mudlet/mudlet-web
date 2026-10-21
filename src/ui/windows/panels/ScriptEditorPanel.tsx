@@ -1031,9 +1031,13 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     const handleReloadModule = useCallback((moduleName: string) => {
         const engine = scriptingEngineRef?.current;
         if (!engine) return;
-        const ok = engine.reloadModuleFromFile(moduleName);
+        const { ok, error } = engine.reloadModuleFromFile(moduleName);
         const now = new Date();
-        setLogs(prev => [...prev, { text: ok ? `Reloaded module "${moduleName}" from file` : `Reload failed for "${moduleName}"`, level: ok ? 'info' : 'error', timestamp: now }]);
+        setLogs(prev => [...prev, {
+            text: ok ? `Reloaded module "${moduleName}" from file` : `Reload failed for "${moduleName}": ${error}`,
+            level: ok ? 'info' : 'error',
+            timestamp: now,
+        }]);
     }, [scriptingEngineRef]);
 
     const handleToggleModuleSync = useCallback((moduleName: string, sync: boolean) => {

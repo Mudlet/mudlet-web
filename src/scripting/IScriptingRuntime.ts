@@ -136,6 +136,15 @@ export interface IScriptingRuntime {
      * stock "Repeat Last Command" key (`send(command)`).
      */
     setCommand(command: string): void;
+    /** Start an alias pass for `command`: {@link setCommand}, and drop what an
+     *  enclosing pass kept for {@link settleCommandAfterAliasPass}. */
+    setExpandedCommand?(command: string): void;
+    /** End of an alias pass, at every depth: `command` holds the last command
+     *  expanded unless a script set it (TLuaInterpreter::settleCommandAfterAliasPass). */
+    settleCommandAfterAliasPass?(): void;
+    /** Run `fn`, whose entry into the runtime is an alias's script — the only
+     *  caller expandAlias() hands its own `command` back to. */
+    asAliasScript?<T>(fn: () => T): T;
     /**
      * Evaluate a Lua-function trigger pattern. Side effects (raiseEvent, etc.)
      * always run; the trigger "matches" only when the body returns truthy.
@@ -154,6 +163,11 @@ export interface IScriptingRuntime {
      * denyCurrentSend().
      */
     dispatchSendRequest(text: string): boolean;
+    /**
+     * One command's alias pass ended with an alias consuming it: spend a
+     * denyCurrentSend() raised there that no send spent (Host::send).
+     */
+    endAliasPass?(): void;
     /**
      * Start a speedwalk between two rooms (Mudlet Host::startSpeedWalk): find
      * the path and hand it to the mapper package's `doSpeedWalk`. Driven by the

@@ -196,7 +196,7 @@ describe('setConfig parity with desktop (#290)', () => {
             await boot();
             for (const key of [
                 'compactInputLine', 'enableClosedCaption', 'advertiseScreenReader',
-                'mapperPanelVisible', 'announceIncomingText', 'muteMediaAPI', 'muteMediaGame',
+                'mapperPanelVisible', 'announceIncomingText', 'accessibleLabels', 'muteMediaAPI', 'muteMediaGame',
             ]) {
                 raised.length = 0;
                 const target = !api().getConfig(key);

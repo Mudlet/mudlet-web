@@ -68,28 +68,32 @@ export function scanEscape(text: string, start: number): EscapeScan {
     // CSI — ESC [ <params 0x30-0x3F> <intermediates 0x20-0x2F> <final 0x40-0x7E>
     if (next === "[") {
         let j = start + 2;
-        // An ESC ends the scan without being part of it. A CSI that never
-        // reaches a final byte is unusable, but the byte that cut it short
-        // belongs to whatever comes next: reading through it swallowed the
-        // following sequence whole, so "ESC[0;4> ESC[0m text" lost its reset and
-        // printed "0m" as if the game had sent it.
-        while (j < n && isCsiParameter(text[j]) && text[j] !== ESC) j++;
-        if (j >= n) return { kind: "incomplete", end: n };
-        if (text[j] === ESC) return { kind: "csi", end: j, params: text.slice(start + 2, j) };
-        const params = text.slice(start + 2, j);
-        // A parameter string past the cap is thrown away rather than buffered
-        // without bound — a server that never sends a final byte would
-        // otherwise grow it for as long as it kept typing. The comparison is
-        // on the parameters ALONE, excluding the introducer and the final byte
-        // (TBuffer's MAX_CSI_SEQUENCE_LENGTH).
-        if (params.length >= MAX_CSI_SEQUENCE_LENGTH) {
-            return { kind: "csi", end: Math.min(j + 1, n), params: "" };
+        while (j < n && isCsiParameter(text[j])) j++;
+        const parametersEnd = j;
+        // Then over any intermediate bytes, and the parameter bytes a malformed
+        // sequence has after them ("ESC[1 m", "ESC[38;5;-1m"), or that tail would
+        // reach the screen as text.
+        while (j < n && (isCsiIntermediate(text[j]) || isCsiParameter(text[j]))) j++;
+        const hasIntermediates = j !== parametersEnd;
+        // A sequence past the cap is thrown away rather than buffered without
+        // bound — a server that never sends a final byte would otherwise grow it
+        // for as long as it kept typing. It counts everything ahead of the final
+        // byte, intermediates included, and takes the final byte only when that
+        // is what stopped the scan (TBuffer's MAX_CSI_SEQUENCE_LENGTH). Checked
+        // before running off the end, so an over-long tail is never held.
+        if (j - (start + 2) >= MAX_CSI_SEQUENCE_LENGTH) {
+            return { kind: "csi", end: j < n && isCsiFinal(text[j]) ? j + 1 : j, params: "" };
         }
-        // An intermediate byte ENDS the sequence. The parameters and the
-        // intermediate are consumed and whatever follows stays ordinary text —
-        // there is no look-ahead for a final byte, so where the packet happened
-        // to break makes no difference to what is drawn.
-        if (isCsiIntermediate(text[j])) return { kind: "csi", end: j + 1, params };
+        if (j >= n) return { kind: "incomplete", end: n };
+        const params = text.slice(start + 2, j);
+        // Only a final byte belongs to the sequence. Whatever else cut it short —
+        // an ESC, a newline, a character's lead byte — belongs to what comes
+        // next: reading through it swallowed the following sequence whole, so
+        // "ESC[0;4> ESC[0m text" lost its reset and printed "0m".
+        if (!isCsiFinal(text[j])) return { kind: "csi", end: j, params };
+        // Mudlet acts on no sequence with an intermediate byte, so one is
+        // consumed with its final byte but reported without it.
+        if (hasIntermediates) return { kind: "csi", end: j + 1, params };
         return { kind: "csi", end: j + 1, finalByte: text[j], params };
     }
 
@@ -142,6 +146,22 @@ export function scanEscape(text: string, start: number): EscapeScan {
 
     // A stray ESC: consumed on its own, leaving whatever followed as text.
     return { kind: "esc", end: start + 1 };
+}
+
+/**
+ * Where the escape sequence `text` leaves unfinished begins, scanning from
+ * `from`, or -1 when every sequence in it is complete. Sequences are walked
+ * from the start rather than from the last ESC, as an ESC inside an OSC or
+ * string payload belongs to that sequence.
+ */
+export function unfinishedEscapeStart(text: string, from = 0): number {
+    let i = text.indexOf(ESC, from);
+    while (i !== -1) {
+        const scan = scanEscape(text, i);
+        if (scan.kind === "incomplete") return i;
+        i = text.indexOf(ESC, Math.max(scan.end, i + 1));
+    }
+    return -1;
 }
 
 /**

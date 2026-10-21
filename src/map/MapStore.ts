@@ -3,6 +3,11 @@ import {readerExport} from 'mudlet-map-binary-reader';
 import {findPath, type ExitWeightFilter, type PathfindResult} from './pathfinding';
 import {renderLabelPixmap} from './labelPixmap';
 import {mustBeOneOf} from '../utils/mustBeOneOf';
+import {
+    ENVIRONMENT_KIT_USER_DATA_KEY, guessEnvironmentKit, storeEnvironmentKit, storedEnvironmentKits,
+    type EnvironmentKit,
+} from './environmentKit';
+import {AreaGraph, type AreaGraphLink, type AreaGraphNode, type AreaGraphRoom} from './areaGraph';
 
 export type {ExitWeightFilter, PathfindResult} from './pathfinding';
 
@@ -131,14 +136,53 @@ const AREA_ZOOM_KEY = 'system.fallback_map2DZoom';
 
 // The other fallback keys a v20 file carries for TRoom/TMapLabel fields the
 // format has no slot for (TMap::serialize / TRoom::restore / TMap::restore).
-// The symbol colour and the label keys are TAKEN on load, so scripts never
-// see them; the border keys are only READ (TRoom::restore uses `value`, not
-// `take`), so they stay visible as room user data, exactly as on desktop.
+// All of them are TAKEN on load, so scripts never see them, and the border
+// keys are refused by setRoomUserData, since a save would replace them.
 const SYMBOL_COLOR_FALLBACK_KEY = 'system.fallback_symbol_color';
-const BORDER_COLOR_KEY = 'room.ui_borderColor';
-const BORDER_THICKNESS_KEY = 'room.ui_borderThickness';
+/** The profile's sixteen mapper colours as a new profile has them — Qt's
+ *  colour constants, in environment 1-16 order (Host::mRed_2 … mLightBlack_2),
+ *  which is also TMap::restore16ColorSet's 257→272 order. */
+const MAPPER_16_COLORS: ReadonlyArray<[number, number, number]> = [
+    [128, 0, 0],       // 1 / 257 dark red
+    [0, 128, 0],       // 2 / 258 dark green
+    [128, 128, 0],     // 3 / 259 dark yellow
+    [0, 0, 128],       // 4 / 260 dark blue
+    [128, 0, 128],     // 5 / 261 dark magenta
+    [0, 128, 128],     // 6 / 262 dark cyan
+    [192, 192, 192],   // 7 / 263 light gray
+    [0, 0, 0],         // 8 / 264 black
+    [255, 0, 0],       // 9 / 265 red
+    [0, 255, 0],       // 10 / 266 green
+    [255, 255, 0],     // 11 / 267 yellow
+    [0, 0, 255],       // 12 / 268 blue
+    [255, 0, 255],     // 13 / 269 magenta
+    [0, 255, 255],     // 14 / 270 cyan
+    [255, 255, 255],   // 15 / 271 white
+    [128, 128, 128],   // 16 / 272 dark gray
+];
+export const BORDER_COLOR_KEY = 'room.ui_borderColor';
+export const BORDER_THICKNESS_KEY = 'room.ui_borderThickness';
 const labelFontKey = (labelId: number) => `system.labelFont_${labelId}`;
 const labelOutlineKey = (labelId: number) => `system.labelOutlineColor_${labelId}`;
+
+/**
+ * TArea::dropFileOnlyUserData: take out of an area's user data the keys a
+ * binary save keeps there — the zoom and its labels' fonts and outline
+ * colours — which mean nothing in the live map. Only the exact form a save
+ * writes counts as a label key, so "_007" or "_+5" stay a script's own.
+ */
+function dropFileOnlyUserData(userData: Record<string, string>): void {
+    const isLabelKey = (key: string, prefix: string) => {
+        if (!key.startsWith(prefix)) return false;
+        const suffix = key.slice(prefix.length);
+        return /^-?\d+$/.test(suffix) && String(Number(suffix)) === suffix && Math.abs(Number(suffix)) <= 0x7fffffff;
+    };
+    for (const key of Object.keys(userData)) {
+        if (key === AREA_ZOOM_KEY || isLabelKey(key, 'system.labelFont_') || isLabelKey(key, 'system.labelOutlineColor_')) {
+            delete userData[key];
+        }
+    }
+}
 // QFont::Normal under Qt 6 — the weight TMap::createMapLabel's
 // `QFont(fontName, fontSize)` reports, and so what desktop writes.
 const QFONT_NORMAL_WEIGHT = 400;
@@ -240,7 +284,7 @@ function colorFromRgb24(rgb: unknown, alpha = 255): MudletColor {
  * applyJsonRoomBorders and applyJsonSymbolColors put them on the store once
  * the rooms exist.
  */
-export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
+export function mudletJsonMapToMudletMap(src: unknown, droppedRoomWarnings: string[] = []): MudletMap | null {
     if (!src || typeof src !== 'object') return null;
     const doc = src as Record<string, unknown>;
     if (!Array.isArray(doc.areas)) return null;
@@ -255,21 +299,45 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
         if (!rawArea || typeof rawArea !== 'object') continue;
         const areaId = Number(rawArea.id);
         if (!Number.isFinite(areaId)) continue;
+        // An id listed twice: an entry with no name never replaces the area
+        // the file names, wherever in the file it comes.
+        const rawName = typeof rawArea.name === 'string' ? rawArea.name : '';
+        if (areaId in areas && (!rawName || areaNames[areaId])) continue;
 
         const area = makeArea();
-        area.userData = (rawArea.userData as Record<string, string>) ?? {};
+        area.userData = { ...((rawArea.userData as Record<string, string>) ?? {}) };
         // TArea::writeJsonArea writes the key only for an area in grid mode.
         area.gridMode = rawArea.gridMode === true;
         areas[areaId] = area;
         areaNames[areaId] = typeof rawArea.name === 'string' ? rawArea.name : '';
-        const areaLabels = labelsFromJson(rawArea.labels);
+        // TArea::readJsonArea: an export by an older Mudlet can carry the
+        // binary format's fallbacks in the user data. The zoom field wins over
+        // the fallback zoom; a label without an outline colour of its own takes
+        // the one kept for it; then whatever is left of those keys goes.
+        const fallbackZoom = area.userData[AREA_ZOOM_KEY];
+        const zoom = typeof rawArea.zoom2D === 'number' ? rawArea.zoom2D
+            : fallbackZoom ? Number(fallbackZoom) : undefined;
+        const areaLabels = labelsFromJson(rawArea.labels, area.userData);
         if (areaLabels.length > 0) labels[areaId] = areaLabels;
+        dropFileOnlyUserData(area.userData);
+        // Handed to the load the way a binary file carries it, which lifts it
+        // out of the user data again.
+        if (zoom !== undefined && Number.isFinite(zoom)) area.userData[AREA_ZOOM_KEY] = String(zoom);
 
         const zLevels = new Set<number>();
         for (const rawRoom of (Array.isArray(rawArea.rooms) ? rawArea.rooms : []) as Record<string, unknown>[]) {
             if (!rawRoom || typeof rawRoom !== 'object') continue;
-            const roomId = Number(rawRoom.id);
-            if (!Number.isFinite(roomId)) continue;
+            // TRoom::readJsonRoom reads the id with QJsonValue::toInt: a missing
+            // or non-integer one is 0, which the audit renumbers. A room whose
+            // id is taken is left out, and said so (TArea::readJsonArea).
+            const rawId = rawRoom.id;
+            const roomId = typeof rawId === 'number' && Number.isInteger(rawId) && Math.abs(rawId) <= 0x7fffffff ? rawId : 0;
+            if (roomId in rooms) {
+                droppedRoomWarnings.push(roomId !== 0 && rawId === roomId
+                    ? `The map file has more than one room with id ${roomId}, so the one in area ${areaId} has been left out.`
+                    : `The map file has more than one room without a valid id, so one in area ${areaId} has been left out.`);
+                continue;
+            }
 
             const room = makeRoom(areaId);
             room.name = typeof rawRoom.name === 'string' ? rawRoom.name : '';
@@ -287,7 +355,12 @@ export function mudletJsonMapToMudletMap(src: unknown): MudletMap | null {
                 room.weight = Math.max(1, asInt);
             }
             room.isLocked = !!rawRoom.locked;
-            room.userData = (rawRoom.userData as Record<string, string>) ?? {};
+            room.userData = { ...((rawRoom.userData as Record<string, string>) ?? {}) };
+            // TRoom::readJsonRoom: every exporter that wrote the binary border
+            // keys also wrote the "border" object, so keys with no object are
+            // left over from a border cleared after the save that wrote them.
+            delete room.userData[BORDER_COLOR_KEY];
+            delete room.userData[BORDER_THICKNESS_KEY];
 
             // The symbol object is the whole reason this converter exists —
             // take its text, and keep the colour via the store's side-table.
@@ -470,12 +543,20 @@ function jsonStringMap(raw: unknown): Record<string, string> {
 function readJsonColor(raw: unknown, fallbackAlpha = 255): MudletColor | undefined {
     if (!raw || typeof raw !== 'object') return undefined;
     const o = raw as Record<string, unknown>;
-    if (Array.isArray(o.color32RGBA)) {
-        const t = o.color32RGBA;
-        const a = Number(t[3]);
-        return { ...colorFromRgb24(t), alpha: Number.isFinite(a) ? a : 255 };
+    if (Array.isArray(o.color32RGBA) || Array.isArray(o.color24RGB)) {
+        // TMap::readJsonColor: three or four numbers, each rounded once it is
+        // known to be in range. A red, green or blue out of range makes no
+        // colour at all; an alpha out of range leaves it opaque, as QColor
+        // refuses the whole colour for one.
+        const hasAlpha = Array.isArray(o.color32RGBA);
+        const t = (hasAlpha ? o.color32RGBA : o.color24RGB) as unknown[];
+        if ((t.length !== 3 && t.length !== 4) || t.slice(0, 3).some(v => typeof v !== 'number')) return undefined;
+        const component = (v: unknown) => (typeof v === 'number' && v > -0.5 && v < 255.5 ? Math.round(v) : -1);
+        const [r, g, b] = [component(t[0]), component(t[1]), component(t[2])];
+        if (r < 0 || g < 0 || b < 0) return undefined;
+        const a = hasAlpha && t.length === 4 ? component(t[3]) : -1;
+        return { spec: 1, r, g, b, alpha: a >= 0 ? a : 255 };
     }
-    if (Array.isArray(o.color24RGB)) return colorFromRgb24(o.color24RGB);
     if ('r' in o || 'g' in o || 'b' in o) {
         return {
             spec: 1,
@@ -525,7 +606,7 @@ function labelImageFromJson(raw: unknown): string {
  * does not mention it for is scaled — Mudlet reads the key with a default of
  * true.
  */
-function labelsFromJson(raw: unknown): MudletLabel[] {
+function labelsFromJson(raw: unknown, areaUserData: Record<string, string>): MudletLabel[] {
     if (!Array.isArray(raw)) return [];
     const out: MudletLabel[] = [];
     for (const entry of raw as Record<string, unknown>[]) {
@@ -551,7 +632,15 @@ function labelsFromJson(raw: unknown): MudletLabel[] {
             label.fontName = font.family;
             const points = Number(font.pointSize);
             if (Number.isFinite(points) && points > 0) label.fontSize = points;
+            if (typeof font.weight === 'number' && Number.isFinite(font.weight)) label.fontWeight = Math.trunc(font.weight);
+            if (font.italic === true) label.fontItalic = true;
         }
+        // The export writes no outline colour (TArea::writeJsonLabel), so a
+        // label takes the copy a binary save kept in the area's user data. A
+        // newer desktop writes the field, which is read when it is there.
+        const outline = readJsonColor(entry.outlineColor);
+        if (outline) label.outlineColor = outline;
+        else restoreLabelOutline(label, areaUserData);
         out.push(label);
     }
     return out;
@@ -746,6 +835,12 @@ function restoreLabelFallbacks(label: MapLabel, userData: Record<string, string>
             label.fontItalic = Math.trunc(Number(parts[3])) !== 0;
         }
     }
+    restoreLabelOutline(label, userData);
+}
+
+/** TMap::restoreLabelOutlineColorFromUserData, on its own: the JSON import
+ *  reads it only for a label with no outline colour of its own. */
+function restoreLabelOutline(label: MapLabel, userData: Record<string, string>): void {
     const outlineKey = labelOutlineKey(label.id);
     if (outlineKey in userData) {
         const parts = String(userData[outlineKey]).split('|');
@@ -901,11 +996,6 @@ export class MapStore {
     private areas = new Map<number, MudletArea>();
     private areaNames = new Map<number, string>();
     private hashToRoom = new Map<string, number>();
-    /** Hashes set on an id no room has yet — desktop's roomIDToHash is keyed by
-     *  id alone, so `setRoomIDbyHash(id, h)` before `addRoom(id)` is kept and
-     *  the room picks it up when it is created. Also holds a loaded map's hash
-     *  entries whose room is not in the file. */
-    private orphanHashes = new Map<number, string>();
     private labels = new Map<number, MapLabel[]>();
     private envColors = new Map<number, number>();
     private nextRoomId = 1;
@@ -1086,7 +1176,6 @@ export class MapStore {
         this.areas.clear();
         this.areaNames.clear();
         this.hashToRoom.clear();
-        this.orphanHashes.clear();
         this.labels.clear();
         this.envColors.clear();
         this.customEnvColors.clear();
@@ -1151,7 +1240,6 @@ export class MapStore {
         this.areas.clear();
         this.areaNames.clear();
         this.hashToRoom.clear();
-        this.orphanHashes.clear();
         this.labels.clear();
         this.envColors.clear();
         this.customEnvColors.clear();
@@ -1187,7 +1275,7 @@ export class MapStore {
             // TMap::restore (v17-v20) takes the zoom fallback out of the
             // area's user data — scripts never see it — and keeps it only
             // when it is at or above the minimum zoom.
-            if (this.liftFileFallbacks && area.userData && AREA_ZOOM_KEY in area.userData) {
+            if (area.userData && AREA_ZOOM_KEY in area.userData) {
                 const zoom = Number(area.userData[AREA_ZOOM_KEY]);
                 delete area.userData[AREA_ZOOM_KEY];
                 if (Number.isFinite(zoom) && zoom >= MapStore.MIN_MAP_ZOOM) this.areaZooms.set(area, zoom);
@@ -1206,9 +1294,14 @@ export class MapStore {
         // and a name already taken is suffixed "_001", "_002", … — with any
         // existing three-digit suffix chopped off first, so a second pass over
         // an already-audited map does not stack them.
+        //
+        // The names a file gives are taken first and the empty ones named after
+        // them, so an area with no name never takes one a later area in the file
+        // has; the default area keeps its own name when it has none, unless
+        // another area has that.
         const takenNames = new Set<string>();
-        for (const [k, rawName] of Object.entries(header.areaNames ?? {})) {
-            let name = rawName || UNNAMED_AREA_NAME;
+        const claim = (id: number, wanted: string) => {
+            let name = wanted;
             if (takenNames.has(name)) {
                 if (/_\d{3}$/.test(name)) name = name.slice(0, -4);
                 let suffix = 0;
@@ -1219,7 +1312,14 @@ export class MapStore {
                 name = candidate;
             }
             takenNames.add(name);
-            this.areaNames.set(Number(k), name);
+            this.areaNames.set(id, name);
+        };
+        const entries = Object.entries(header.areaNames ?? {});
+        for (const [k, rawName] of entries) if (rawName) claim(Number(k), rawName);
+        for (const [k, rawName] of entries) {
+            if (rawName) continue;
+            const id = Number(k);
+            claim(id, id === -1 && !takenNames.has(DEFAULT_AREA_NAME) ? DEFAULT_AREA_NAME : UNNAMED_AREA_NAME);
         }
         for (const [k, labels] of Object.entries(header.labels ?? {})) {
             // Normalize pixmaps to base64 strings up-front. Heavy Buffer
@@ -1242,9 +1342,17 @@ export class MapStore {
             }
             this.labels.set(Number(k), normalized);
         }
+        // Whatever the labels did not take is for labels that no longer exist.
+        if (this.liftFileFallbacks) {
+            for (const area of this.areas.values()) if (area.userData) dropFileOnlyUserData(area.userData);
+        }
         for (const [k, c] of Object.entries(header.mCustomEnvColors ?? {})) {
             this.customEnvColors.set(Number(k), c);
         }
+        // 257-272 are the profile's sixteen map colours, not the file's: both
+        // of desktop's loaders call restore16ColorSet once the file's colours
+        // are in, putting the profile's back over whatever the file held.
+        this.restore16ColorSet();
         for (const [k, v] of Object.entries(header.envColors ?? {})) {
             this.envColors.set(Number(k), v);
         }
@@ -1281,12 +1389,15 @@ export class MapStore {
                 delete room.userData[SYMBOL_COLOR_FALLBACK_KEY];
                 if (c) this.roomCharColors.set(id, { spec: 1, alpha: c.a, r: c.r, g: c.g, b: c.b });
             }
-            // The border is read but left in place (`value`, not `take`).
+            // The border is taken out (TRoom::restore), so a script never sees
+            // the keys a save writes it under.
             const border = parseQColorName(room.userData[BORDER_COLOR_KEY]);
             if (border) this.roomBorderColors.set(id, border);
+            delete room.userData[BORDER_COLOR_KEY];
             if (BORDER_THICKNESS_KEY in room.userData) {
                 // QString::toInt: a whole decimal number or nothing.
                 const raw = String(room.userData[BORDER_THICKNESS_KEY]).trim();
+                delete room.userData[BORDER_THICKNESS_KEY];
                 const t = /^[+-]?\d+$/.test(raw) ? Number(raw) : 0;
                 if (t > 0 && t <= 10) this.roomBorderThicknesses.set(id, t);
             }
@@ -1307,25 +1418,27 @@ export class MapStore {
      * is worth.
      */
     endBinaryLoad(audit = true): void {
-        // Binary may carry hashes for rooms that haven't been parsed into
-        // `rooms` (legacy maps with orphan hash entries). Trust the explicit
-        // hash→id table as authoritative when it disagrees. Streamed rooms
-        // arrive with no `hash` field at all (it lives only in this index), so
-        // this is also where they get one — matching what readMapFromBuffer
-        // does eagerly.
+        // Trust the explicit hash→id table as authoritative when it disagrees.
+        // Streamed rooms arrive with no `hash` field at all (it lives only in
+        // this index), so this is also where they get one — matching what
+        // readMapFromBuffer does eagerly. A file from a build whose
+        // setRoomIDbyHash took any id and an empty hash can hold entries for a
+        // room that is not in it, or with no hash at all: TMap::audit drops
+        // both, so they are never indexed.
         for (const [hash, rawId] of Object.entries(this.pendingBinaryHashIndex)) {
             const id = asInt32(rawId);
-            this.hashToRoom.set(hash, id);
             const room = this.rooms.get(id);
-            if (room && !room.hash) room.hash = hash;
-            else if (!room) this.orphanHashes.set(id, hash);
+            if (!hash || !room) continue;
+            this.hashToRoom.set(hash, id);
+            if (!room.hash) room.hash = hash;
         }
         this.pendingBinaryHashIndex = {};
         // Mudlet restores the player room from mRoomIdHash[mProfileName] on load
         // (no fallback: a missing key means no position). Only accept an id that
-        // actually resolves to a loaded room.
+        // actually resolves to a loaded room — or 0, desktop's "in no room",
+        // which is kept as stored.
         const savedPlayer = this.profileName ? this.mRoomIdHash[this.profileName] : undefined;
-        this.playerRoomId = savedPlayer != null && this.rooms.has(savedPlayer) ? savedPlayer : null;
+        this.playerRoomId = savedPlayer != null && (savedPlayer === 0 || this.rooms.has(savedPlayer)) ? savedPlayer : null;
         // TMap::audit runs after every load, and repairs what it finds; its
         // report waits for whoever loaded the map (takeAuditIssues).
         this.lastAuditIssues = audit ? this.auditMap() : [];
@@ -1401,9 +1514,20 @@ export class MapStore {
                 id: areaId,
                 name: this.areaNames.get(areaId) ?? '',
                 ...(this.areas.get(areaId)?.gridMode ? { gridMode: true } : {}),
+                // TArea::writeJsonArea writes the area's 2D zoom (mLast2DMapZoom)
+                // only when it is not the default.
+                ...((z => (z !== undefined && z !== MapStore.DEFAULT_MAP_ZOOM ? { zoom2D: z } : {}))(
+                    this.areaZooms.get(this.areas.get(areaId)!))),
                 // TArea::writeJsonArea counts what it writes.
                 roomCount: rooms.length,
-                userData: this.areas.get(areaId)?.userData ?? {},
+                // TArea::writeJsonUserData: a binary save replaces a script's
+                // value under the file-only keys, so they are not written; and
+                // an area with none left gets no userData member at all.
+                ...(() => {
+                    const userData = { ...(this.areas.get(areaId)?.userData ?? {}) };
+                    dropFileOnlyUserData(userData);
+                    return Object.keys(userData).length > 0 ? { userData } : {};
+                })(),
                 labels: this.labelsToJson(areaId),
                 rooms,
             };
@@ -1441,7 +1565,11 @@ export class MapStore {
             // reads the same as it always did.
             ...(Object.keys(this.mapUserData).length > 0 ? { userData: { ...this.mapUserData } } : {}),
         };
-        return JSON.stringify(doc);
+        // Laid out as TMap::writeJsonMapFile writes it (QJsonDocument::Indented:
+        // four spaces, `"key": value`), so a file read or edited by hand —
+        // a player's text editor, or a script searching it — finds what it
+        // would in desktop's export.
+        return JSON.stringify(doc, null, 4);
     }
 
     /**
@@ -1470,8 +1598,17 @@ export class MapStore {
             };
             if (label.text) entry.text = label.text;
             if (label.pixMap) entry.image = labelImageToJson(label.pixMap);
+            // TArea::writeJsonLabel writes every label's outline colour — black,
+            // TMapLabel's default, for one that never had one — and a font only
+            // for a label with a family, whole: weight and slant with the size.
+            entry.outlineColor = writeJsonColor(label.outlineColor ?? { r: 0, g: 0, b: 0, alpha: 255 });
             if (label.fontName) {
-                entry.font = { family: label.fontName, pointSize: label.fontSize ?? 0 };
+                entry.font = {
+                    family: label.fontName,
+                    pointSize: label.fontSize ?? 0,
+                    weight: label.fontWeight ?? QFONT_NORMAL_WEIGHT,
+                    italic: !!label.fontItalic,
+                };
             }
             out.push(entry);
         }
@@ -1651,8 +1788,9 @@ export class MapStore {
         // Mudlet's own saveJsonMap output has no top-level `rooms` and keeps
         // them nested inside an `areas` array — convert that shape first, and
         // only then fall through to the binary-model shape toJsonString emits.
+        const droppedRoomWarnings: string[] = [];
         const source = (!map.rooms || Array.isArray(map.areas))
-            ? mudletJsonMapToMudletMap(parsed)
+            ? mudletJsonMapToMudletMap(parsed, droppedRoomWarnings)
             : (map.areas ? map as MudletMap : null);
         if (!source) return false;
         // The locks by command, read before the load hands the rooms to the
@@ -1671,6 +1809,8 @@ export class MapStore {
                 this.specialExitLocks.set(roomId, new Set([...commands].filter(c => Object.prototype.hasOwnProperty.call(kept, c))));
             }
             this.endBinaryLoad();
+            // Said ahead of what the audit found, as the reader says them first.
+            this.lastAuditIssues.unshift(...droppedRoomWarnings.map(message => ({ severity: 'warn' as const, message })));
         } catch { return false; }
         finally { this.liftFileFallbacks = true; }
         // Symbol colours live in a side-table (MudletRoom has no charColor
@@ -1785,7 +1925,9 @@ export class MapStore {
                 });
             }
             for (const [id, room] of moved) this.rooms.set(id, room);
-            if (this.playerRoomId != null && roomRemap.has(this.playerRoomId)) {
+            // A player room of 0 is desktop's "no room" (what deleting the
+            // player's room leaves), not the room 0 being renumbered here.
+            if (this.playerRoomId != null && this.playerRoomId !== 0 && roomRemap.has(this.playerRoomId)) {
                 this.playerRoomId = roomRemap.get(this.playerRoomId)!;
             }
         }
@@ -1885,6 +2027,18 @@ export class MapStore {
     ): void {
         const exits = room as unknown as Record<string, number>;
         room.stubs = [...new Set(room.stubs ?? [])];
+        // Only a corrupt file can hold a stub whose direction is not one of the
+        // twelve (TRoom::audit); nothing else can handle one, nor can the JSON
+        // export name it.
+        const strayStubs = room.stubs.filter(d => !(Number.isInteger(d) && d >= 1 && d <= 12));
+        if (strayStubs.length > 0) {
+            if (repair) room.stubs = room.stubs.filter(d => !strayStubs.includes(d));
+            issues.push({
+                severity: 'info', roomId: id,
+                message: `In room with ID: ${id} found one or more surplus exit stub items`
+                    + `${repair ? ' that were removed' : ''}: ${strayStubs.join(', ')}.`,
+            });
+        }
         room.exitLocks = [...new Set(room.exitLocks ?? [])];
         room.doors ??= {};
         room.exitWeights ??= {};
@@ -2142,7 +2296,8 @@ export class MapStore {
     private playerRoomHash(): Record<string, number> {
         const hash = { ...this.mRoomIdHash };
         if (this.profileName) {
-            if (this.playerRoomId != null && this.rooms.has(this.playerRoomId)) {
+            // 0 is what deleting the player's room leaves, and desktop saves it.
+            if (this.playerRoomId != null && (this.playerRoomId === 0 || this.rooms.has(this.playerRoomId))) {
                 hash[this.profileName] = this.playerRoomId;
             } else {
                 delete hash[this.profileName];
@@ -2233,12 +2388,6 @@ export class MapStore {
         // orphaned from getAreaTable/getAreaRooms and written into the map file.
         const placedIn = known ? requested : -1;
         const room = makeRoom(placedIn);
-        // A hash set on this id before the room existed belongs to it now.
-        const earlyHash = this.orphanHashes.get(id);
-        if (earlyHash !== undefined) {
-            room.hash = earlyHash;
-            this.orphanHashes.delete(id);
-        }
         this.rooms.set(id, room);
         let area = this.areas.get(placedIn);
         if (!area) {
@@ -2643,34 +2792,35 @@ export class MapStore {
     getRoomIDbyHash(hash: string): number | undefined { return this.hashToRoom.get(hash); }
 
     /**
-     * Mudlet `setRoomIDbyHash(roomID, hash)`. Desktop keeps the pairing in its
-     * own two-way index (TRoomDB::hashToRoomID / roomIDToHash), not on the
-     * room, so it is stored whether or not the room exists yet: the common
-     * "set the hash, then addRoom" order works, and getRoomIDbyHash /
-     * getRoomHashByID answer for the id in the meantime.
+     * Mudlet `setRoomIDbyHash(roomID, hash)`: false for a room that does not
+     * exist (desktop refuses it, as it does the -1 or 0 a failed lookup gives).
+     * An empty hash clears the room's hash rather than binding "" to it.
      */
-    setRoomIDbyHash(id: number, hash: string): void {
-        if (!Number.isFinite(id)) return;
+    setRoomIDbyHash(id: number, hash: string): boolean {
         const room = this.rooms.get(id);
-        const oldHash = room ? room.hash : this.orphanHashes.get(id);
-        if (oldHash) this.hashToRoom.delete(oldHash);
-        // A hash names one room. Take it off the room that had it, or that
-        // room still reports it (getRoomHashByID) and, since a load rebuilds
-        // the index from the rooms, can win the hash back on the next loadMap.
-        const prev = this.hashToRoom.get(hash);
-        if (prev !== undefined && prev !== id) {
-            const old = this.rooms.get(prev);
-            if (old && old.hash === hash) delete old.hash;
-            if (this.orphanHashes.get(prev) === hash) this.orphanHashes.delete(prev);
+        if (!room) return false;
+        if (!room.hash && !hash) return true;
+        if (room.hash === hash && this.hashToRoom.get(hash) === id) return true;
+        if (room.hash) this.hashToRoom.delete(room.hash);
+        delete room.hash;
+        if (hash) {
+            // A hash names one room. Take it off the room that had it, or that
+            // room still reports it (getRoomHashByID) and, since a load rebuilds
+            // the index from the rooms, can win the hash back on the next loadMap.
+            const prev = this.hashToRoom.get(hash);
+            if (prev !== undefined && prev !== id) {
+                const old = this.rooms.get(prev);
+                if (old && old.hash === hash) delete old.hash;
+            }
+            room.hash = hash;
+            this.hashToRoom.set(hash, id);
         }
-        if (room) room.hash = hash;
-        else this.orphanHashes.set(id, hash);
-        this.hashToRoom.set(hash, id);
         this.notify();
+        return true;
     }
 
     getRoomHashByID(id: number): string | undefined {
-        return this.rooms.get(id)?.hash ?? this.orphanHashes.get(id);
+        return this.rooms.get(id)?.hash || undefined;
     }
 
     // ── Exits ─────────────────────────────────────────────────────────────────
@@ -3649,6 +3799,62 @@ export class MapStore {
     }
 
     /** Replace the entire map-level user-data dict (e.g. after loading a .dat). */
+    // ── Area graph (desktop's TAreaGraph) ─────────────────────────────────────
+
+    /** The areas as a graph with a world layout — see map/areaGraph.ts. It
+     *  reads the map through this source, and keeps its layout in the map's
+     *  user data, so a map replaced under it is noticed on the next read. */
+    private readonly areaGraph = new AreaGraph({
+        areaNames: () => this.areaNames,
+        areaRooms: () => {
+            const out = new Map<number, readonly number[]>();
+            for (const [id, area] of this.areas) out.set(id, area.rooms);
+            return out;
+        },
+        room: id => this.areaGraphRoom(this.rooms.get(id)),
+        rooms: () => [...this.rooms.values()].map(r => this.areaGraphRoom(r)!),
+        getUserData: key => this.getMapUserData(key),
+        // Written without a notify: reading the graph lays it out, and a read
+        // is no change anyone has to redraw for.
+        setUserData: (key, value) => {
+            if (value === undefined) delete this.mapUserData[key];
+            else this.mapUserData[key] = value;
+        },
+    });
+
+    private areaGraphRoom(room: MudletRoom | undefined): AreaGraphRoom | undefined {
+        if (!room) return undefined;
+        return {
+            area: room.area, x: room.x, y: room.y,
+            exits: () => [
+                room.north, room.northeast, room.east, room.southeast, room.south, room.southwest,
+                room.west, room.northwest, room.up, room.down, room.in, room.out,
+                ...Object.values(room.mSpecialExits ?? {}),
+            ],
+        };
+    }
+
+    /** Mudlet getAreaGraph(): the areas, by id in ascending order, and the
+     *  links between them sorted by (from, to). */
+    getAreaGraph(): { areas: AreaGraphNode[]; links: AreaGraphLink[] } {
+        this.areaGraph.refresh();
+        return { areas: this.areaGraph.getNodes(), links: this.areaGraph.getLinks() };
+    }
+
+    /** Mudlet setAreaGraphPosition(areaID, x, y): pins the area there. False
+     *  for an area the graph does not have, or a coordinate out of range. */
+    setAreaGraphPosition(areaId: number, x: number, y: number): boolean {
+        if (!this.areaGraph.setPosition(areaId, [x, y])) return false;
+        this.notify();
+        return true;
+    }
+
+    /** Mudlet resetAreaGraphLayout([keepPinned]). */
+    resetAreaGraphLayout(keepPinned: boolean): void {
+        this.areaGraph.resetLayout(keepPinned);
+        this.notify();
+    }
+
     loadMapUserData(data: Record<string, string> | undefined | null): void {
         this.mapUserData = data ? { ...data } : {};
         this.notify();
@@ -3734,6 +3940,9 @@ export class MapStore {
         // holds them). Left behind, they came back on the next area given this
         // id, and a save carried them into the file.
         this.labels.delete(id);
+        // TRoomDB::removeArea drops its place in the world layout too, which
+        // an area given this id later would otherwise inherit.
+        this.areaGraph.forgetArea(id);
         this.notify();
         return null;
     }
@@ -4032,7 +4241,9 @@ export class MapStore {
                 seen.add(key);
             }
         }
-        return collisions;
+        // Ordered by z, then y, then x, as desktop lists them — not in the
+        // order the rooms joined the area.
+        return collisions.sort((a, b) => a[2] - b[2] || a[1] - b[1] || a[0] - b[0]);
     }
 
     /**
@@ -4387,6 +4598,39 @@ export class MapStore {
         return [...this.mapEvents.values()];
     }
 
+    // ── Hidden built-in context-menu items (Mudlet hideMapMenuItem) ───────────
+
+    /** The built-in context-menu items hideMapMenuItem() takes, by desktop's
+     *  names (TMap::builtInMenuItemNames). They are API, so never rename one —
+     *  most have no counterpart in this client's menu, but scripts still pass
+     *  them, and desktop accepts every one. */
+    static readonly BUILTIN_MENU_ITEMS: readonly string[] = [
+        'downloadMap', 'loadMap', 'createMap', 'createRoom', 'moveRoom', 'configureRoom',
+        'setExits', 'createExitLine', 'spreadRooms', 'shrinkRooms', 'deleteRoom',
+        'moveToPosition', 'moveToArea', 'configureAreas', 'createLabel', 'exportAreaImage',
+        'setPlayerLocation', 'switchMapMode',
+    ];
+
+    private hiddenMenuItems = new Set<string>();
+
+    /** Hide (or show again) a built-in item. False for a name that is not one. */
+    setMenuItemHidden(name: string, hidden: boolean): boolean {
+        if (!MapStore.BUILTIN_MENU_ITEMS.includes(name)) return false;
+        if (hidden) this.hiddenMenuItems.add(name);
+        else this.hiddenMenuItems.delete(name);
+        this.notify();
+        return true;
+    }
+
+    menuItemShown(name: string): boolean {
+        return !this.hiddenMenuItems.has(name);
+    }
+
+    /** The hidden items, sorted as desktop lists them. */
+    getHiddenMenuItems(): string[] {
+        return [...this.hiddenMenuItems].sort();
+    }
+
     // ── Map context-menu submenus (Mudlet addMapMenu) ─────────────────────────
 
     /** Mudlet `addMapMenu(menuName [, parent [, displayName]])`. Registers a
@@ -4403,19 +4647,21 @@ export class MapStore {
         return true;
     }
 
+    /** True when anything went: the menu itself, or a submenu or event filed
+     *  under it (desktop sweeps those even for a parent never added). */
     removeMapMenu(name: string): boolean {
-        const had = this.mapMenus.delete(name);
+        let removed = this.mapMenus.delete(name);
         // Mudlet removes a menu *and its children* — cascade to any submenus
         // nested under it (recursively, so grandchildren go too), and to the
         // events filed under each removed menu, which desktop drops with it
         // rather than leaving behind pointing at a parent that is gone.
         for (const [childName, menu] of [...this.mapMenus]) {
-            if (menu.parent === name) this.removeMapMenu(childName);
+            if (menu.parent === name) { this.removeMapMenu(childName); removed = true; }
         }
         for (const [eventName, event] of [...this.mapEvents]) {
-            if (event.parent === name) this.mapEvents.delete(eventName);
+            if (event.parent === name) { this.mapEvents.delete(eventName); removed = true; }
         }
-        return had;
+        return removed;
     }
 
     getMapMenus(): MapMenuEntry[] {
@@ -4732,26 +4978,7 @@ export class MapStore {
      * map is wiped rather than treated as user data.
      */
     private restore16ColorSet(): void {
-        // Qt's colour constants, in TMap::restore16ColorSet's 257→272 order.
-        const palette: Array<[number, number, number]> = [
-            [128, 0, 0],       // 257 dark red
-            [0, 128, 0],       // 258 dark green
-            [128, 128, 0],     // 259 dark yellow
-            [0, 0, 128],       // 260 dark blue
-            [128, 0, 128],     // 261 dark magenta
-            [0, 128, 128],     // 262 dark cyan
-            [192, 192, 192],   // 263 light gray
-            [0, 0, 0],         // 264 black
-            [255, 0, 0],       // 265 red
-            [0, 255, 0],       // 266 green
-            [255, 255, 0],     // 267 yellow
-            [0, 0, 255],       // 268 blue
-            [255, 0, 255],     // 269 magenta
-            [0, 255, 255],     // 270 cyan
-            [255, 255, 255],   // 271 white
-            [128, 128, 128],   // 272 dark gray
-        ];
-        palette.forEach(([r, g, b], i) => {
+        MAPPER_16_COLORS.forEach(([r, g, b], i) => {
             const envId = 257 + i;
             // Whatever the profile was last told to hold for this slot wins:
             // that is the point of the block, and of TMap::restore16ColorSet
@@ -4781,6 +5008,66 @@ export class MapStore {
         if (!this.customEnvColors.has(envId)) return false;
         this.customEnvColors.delete(envId);
         this.notify();
+        return true;
+    }
+
+    /**
+     * The colour desktop draws an environment's rooms in
+     * (RoomAppearance::environmentColor): mEnvColors remaps the id first; 1-16
+     * are the profile's sixteen mapper colours; a custom colour wins over the
+     * xterm cube and grey ramp for 17-255; and anything left — an environment
+     * the map does not define, or one remapped onto nothing — is dark red, the
+     * colour of environment 1, so that no room is drawn invisible.
+     */
+    environmentColor(environmentId: number): [number, number, number] {
+        let env = environmentId;
+        let defined = true;
+        if (this.envColors.has(env)) env = this.envColors.get(env)!;
+        else if (!this.customEnvColors.has(env)) defined = false;
+        if (!defined || !((env >= 1 && env < 256) || this.customEnvColors.has(env))) env = 1;
+        if (env >= 1 && env <= 16) {
+            const c = this.profileEnvColors.get(256 + env);
+            return c ? [c.r, c.g, c.b] : MAPPER_16_COLORS[env - 1];
+        }
+        const custom = this.customEnvColors.get(env);
+        if (custom) return [custom.r, custom.g, custom.b];
+        if (env > 16 && env < 232) {
+            const base = env - 16;
+            const r = Math.floor(base / 36);
+            const g = Math.floor((base - r * 36) / 6);
+            const b = base - r * 36 - g * 6;
+            const step = (v: number) => (v === 0 ? 0 : (v - 1) * 40 + 95);
+            return [step(r), step(g), step(b)];
+        }
+        if (env > 231 && env < 256) {
+            const k = (env - 232) * 10 + 8;
+            return [k, k, k];
+        }
+        const red = this.profileEnvColors.get(257);
+        return red ? [red.r, red.g, red.b] : MAPPER_16_COLORS[0];
+    }
+
+    /** Mudlet getMapEnvironmentKit(envID) → the kit, and whether the map names
+     *  it rather than it being guessed from the environment's colour — which is
+     *  read afresh each time, so the guess follows the colour. */
+    getEnvironmentKit(environmentId: number): [EnvironmentKit, boolean] {
+        const named = storedEnvironmentKits(this.getMapUserData(ENVIRONMENT_KIT_USER_DATA_KEY)).get(environmentId);
+        if (named) return [named, true];
+        return [guessEnvironmentKit(this.environmentColor(environmentId)), false];
+    }
+
+    /** Mudlet getMapEnvironmentKits() → the kits the map names, by environment. */
+    getEnvironmentKits(): Map<number, EnvironmentKit> {
+        return storedEnvironmentKits(this.getMapUserData(ENVIRONMENT_KIT_USER_DATA_KEY));
+    }
+
+    /** Mudlet setMapEnvironmentKit(envID, kit) — null clears. False when the
+     *  saved kits are not a JSON object, which is then left alone. */
+    setEnvironmentKit(environmentId: number, kit: EnvironmentKit | null): boolean {
+        const stored = storeEnvironmentKit(this.getMapUserData(ENVIRONMENT_KIT_USER_DATA_KEY), environmentId, kit);
+        if (!stored) return false;
+        if (stored.value === undefined) this.clearMapUserDataItem(ENVIRONMENT_KIT_USER_DATA_KEY);
+        else this.setMapUserData(ENVIRONMENT_KIT_USER_DATA_KEY, stored.value);
         return true;
     }
 

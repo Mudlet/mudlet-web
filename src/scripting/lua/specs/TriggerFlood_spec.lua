@@ -256,6 +256,16 @@ describe("trigger matching under a flood", function()
                          "a burst should keep a pattern whose required text the line holds, and only that line")
     end)
 
+    itFlood("fires a pattern that opts out of JIT compilation", function()
+        -- pcre2_jit_compile() accepts a (*NO_JIT) pattern without making any JIT
+        -- code, so the prescan's threads must match it the way the main thread does
+        track(tempRegexTrigger([[(*NO_JIT)^flood_nojit_(\w+)$]], function() note("noJit") end))
+
+        feedAsBurst(filler(12, {[6] = "flood_nojit_line"}))
+
+        assert.are.equal(1, fired.noJit, "a burst dropped a match of a (*NO_JIT) pattern")
+    end)
+
     -- Only a trigger with a regex among its patterns is prescanned, so the
     -- prescan judges the other kinds only when they share a trigger with one.
     -- No Lua API mixes pattern kinds in one trigger, hence the fixture.
@@ -272,12 +282,8 @@ describe("trigger matching under a flood", function()
         end
 
         local function waitForProfileSaveToPass()
-            for _ = 1, 100 do
-                if installPackage("") == nil then
-                    return
-                end
-                pumpEvents(50)
-            end
+            local _, err = installPackage("")
+            return not tostring(err):find("still in progress", 1, true)
         end
 
         local function removePackage()
@@ -286,7 +292,9 @@ describe("trigger matching under a flood", function()
                 if not packageInstalled() then
                     break
                 end
-                waitForProfileSaveToPass()
+                if not waitForProfileSaveToPass() then
+                    reason = "a profile save was still running"
+                end
                 local _, message = uninstallPackage(packageName)
                 reason = message or reason
                 pumpEvents(200)

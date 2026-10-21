@@ -67,6 +67,12 @@ export function ContentLayout({
         return () => manager.registerMainViewportHost(null);
     }, [manager, outputHost]);
 
+    // The column setMainWindowSize sizes in place of desktop's application
+    // window, whichever layout branch renders it.
+    const registerFrame = useCallback((element: HTMLDivElement | null) => {
+        manager.registerMainWindowFrame(element);
+    }, [manager]);
+
     const handleTitlebarContextMenu = useCallback((e: React.MouseEvent) => {
         e.preventDefault();
         setMenuPos({ x: e.clientX, y: e.clientY });
@@ -147,7 +153,7 @@ export function ContentLayout({
         return (
             <>
             {outputPool}
-            <div className="content-layout">
+            <div className="content-layout" ref={registerFrame}>
                 <MobileLayout
                     session={session}
                     manager={manager}
@@ -166,7 +172,7 @@ export function ContentLayout({
     return (
         <>
         {outputPool}
-        <div className="content-layout">
+        <div className="content-layout" ref={registerFrame}>
             {buttonStrips.top}
             {showTop && (
                 <DockArea side="top" windows={laidOut} extent={dockExtents.top} {...dockAreaProps} />

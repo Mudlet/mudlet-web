@@ -56,7 +56,13 @@ export interface MxpFrameHost {
     placeFrameConsole(name: string, x: number, y: number, width: number, height: number, parent?: string): void;
     /** Open an `EXTERNAL` frame as a free-floating window with its own titlebar. */
     openExternalFrame(name: string, title: string, width: number, height: number): void;
+    /** Close a frame's console — only while it is still the frame's own: a
+     *  script that deleted it and made a window of its own under the name
+     *  keeps that window. */
     destroyFrameConsole(name: string): void;
+    /** Whether a script's own window holds `name`, which a frame must not
+     *  take over: closing the frame would leave the window unreachable. */
+    nameTakenByScript(name: string): boolean;
     showFrameConsole(name: string): void;
     raiseFrameConsole(name: string): void;
     setFrameScrolling(name: string, enabled: boolean): void;
@@ -130,6 +136,7 @@ export class MxpFrameManager {
         // status frames re-announce themselves constantly.
         if (this.frames.has(name)) return this.showFrame(name);
         if (this.frames.size >= MAX_FRAMES) return false;
+        if (this.host.nameTakenByScript(name)) return false;
 
         const frame: MxpFrame = {
             name,
@@ -404,7 +411,8 @@ export class MxpFrameManager {
         // Mudlet selects the first docked child, on the grounds that a frame
         // used as a tab host rarely has content of its own; later tabs are added
         // in the background so an arriving tab never steals what you are reading.
-        this.publishTabs(parent, parent.children.length === 1 ? frame.name : undefined);
+        // The first TAB, that is — a frame already nested in the host is not one.
+        this.publishTabs(parent, parent.tabs.length === 2 ? frame.name : undefined);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -426,6 +434,17 @@ export class MxpFrameManager {
         if (!frame.tabs.includes(frame.activeTab)) frame.activeTab = frame.tabs[0];
         const pages = frame.tabs.map(id => ({ id, title: this.frames.get(id)?.title ?? id }));
         this.host.setFrameTabs(frame.name, pages, frame.activeTab);
+    }
+
+    /** Whether `name` is a page of a tab strip that is showing another page —
+     *  a tab host's own console included, once a docked frame is in front. */
+    isBehindTab(name: string): boolean {
+        const frame = this.frames.get(name);
+        if (!frame) return false;
+        const host = frame.parent && frame.parent.tabs.includes(name) ? frame.parent
+                   : frame.tabs.includes(name) ? frame
+                   : null;
+        return !!host && host.activeTab !== name;
     }
 
     /** Bring `name` to the front of whichever tab strip holds it, if any. */

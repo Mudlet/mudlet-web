@@ -636,10 +636,38 @@ const UNICODE_VERBS = '(*UTF)(*UCP)' + ENGINE_MATCH_LIMIT_VERB;
  * which needs no adjustment.
  */
 function compilePcre(pattern: string, onError?: (reason: string) => void): PcreInstance | null {
-    try { return new PCRE(UNICODE_VERBS + pattern); }
+    // TTrigger::setRegexCodeList drops every newline from a pattern first
+    try { return new PCRE(UNICODE_VERBS + pattern.replace(/\n/g, '')); }
     catch (err) {
         onError?.(err instanceof Error ? err.message : String(err));
         return null;
+    }
+}
+
+/**
+ * Why `pattern` will not compile, in the words of desktop's
+ * perlRegexCompileError (TLuaInterpreterMudletObjects.cpp) — `regex pattern
+ * "<p>" failed to compile at offset <n>: <reason>` — or null when it compiles.
+ * The creators (tempRegexTrigger, tempAlias, ...) refuse such a pattern rather
+ * than make an item that can never match. `forTrigger` drops the newlines
+ * first, as TTrigger::setRegexCodeList does before compiling (an alias keeps
+ * them). The offset is reported in UTF-8 bytes, as desktop's 8-bit PCRE2 does;
+ * the build here counts UTF-16 units past the prepended verbs. Null too while
+ * PCRE is still loading: nothing can be judged yet, and the engine reports a
+ * bad pattern once it compiles it.
+ */
+export function perlRegexCompileError(pattern: string, forTrigger: boolean): string | null {
+    if (!PCRE.ready) return null;
+    const text = forTrigger ? pattern.replace(/\n/g, '') : pattern;
+    try {
+        new PCRE(UNICODE_VERBS + text).destroy();
+        return null;
+    } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        const raw = (err as { offset?: number }).offset ?? 0;
+        const units = Math.min(Math.max(0, raw - UNICODE_VERBS.length), text.length);
+        const offset = new TextEncoder().encode(text.slice(0, units)).length;
+        return `regex pattern "${text}" failed to compile at offset ${offset}: ${reason}`;
     }
 }
 
@@ -806,6 +834,26 @@ function isPaletteChannel(channel: number): boolean {
 function isUsableColorPattern(fg: number, bg: number): boolean {
     if (fg === COLOR_IGNORED && bg === COLOR_IGNORED) return false;
     return isPaletteChannel(fg) && isPaletteChannel(bg);
+}
+
+/**
+ * Why a perl pattern will not compile, as PCRE2 words it — or null when it
+ * does, or while PCRE is still loading and nothing can be said. Compiled as
+ * the engines compile triggers and aliases, `(*UTF)(*UCP)` included.
+ */
+export function perlPatternError(pattern: string): string | null {
+    if (!PCRE.ready) return null;
+    let reason: string | null = null;
+    compilePcre(pattern, r => { reason = r; })?.destroy();
+    return reason;
+}
+
+/** What is wrong with a colour pattern, in TTrigger::setRegexCodeList's two
+ *  cases: it asks for no colour at all, or for one no palette has. */
+export function colorPatternProblem(text: string): 'noColors' | 'noMatch' | null {
+    const [fg, bg] = parseColorPattern(text);
+    if (fg === COLOR_IGNORED && bg === COLOR_IGNORED) return 'noColors';
+    return isUsableColorPattern(fg, bg) ? null : 'noMatch';
 }
 
 export class TriggerEngine {

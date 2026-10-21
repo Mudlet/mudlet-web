@@ -18,11 +18,10 @@ export function installPackageBindings({ lua, api }: BindingContext): void {
     // wrapper reshapes it into Mudlet's (ok, errorMessage) multi-return
     // (wasmoon JS calls can only push one Lua value).
     lua.global.set('__installPackage', (path: string) => api.installPackage(String(path ?? '')));
-    // Mudlet `uninstallPackage(name)` → true on success, nil when no package
-    // with that name is installed.
-    lua.global.set('uninstallPackage', (name: string) => {
-        return api.uninstallPackage(String(name ?? '')) ? true : null;
-    });
+    // Mudlet `uninstallPackage(name)` → true, or (nil, reason). One value
+    // crosses here — the reason, or false — and Bridge.lua shapes the pair.
+    lua.global.set('__uninstallPackage', (name: string) =>
+        api.uninstallPackage(String(name ?? '')) ?? false);
     // Mudlet getPackages() — list of installed package names. JS arrays land
     // in Lua 0-indexed via wasmoon, so a Bridge.lua wrapper rebuilds it to a
     // 1-indexed sequence.
@@ -41,15 +40,10 @@ export function installPackageBindings({ lua, api }: BindingContext): void {
         api.installModule(String(path ?? '')));
     lua.global.set('uninstallModule', (name: unknown) =>
         api.uninstallModule(String(name ?? '')));
-    // Mudlet `reloadModule(name)` doesn't return anything; we still flag
-    // failures via the printError call inside ScriptingEngine.
-    // Returns nothing at all, on either branch — a reload that found no such
-    // module is not an error worth a value, and a spec counts the returns.
-    // wasmoon turns a JS `undefined` into a single nil rather than no value, so
-    // the Bridge.lua wrapper is what actually drops it.
-    lua.global.set('__reloadModule', (name: unknown) => {
-        api.reloadModule(String(name ?? ''));
-    });
+    // Mudlet `reloadModule(name)` answers as an install does: true (and what
+    // in the module does not work), or (nil, why). Returns { ok, error }; the
+    // Bridge.lua wrapper reshapes it into the multi-return.
+    lua.global.set('__reloadModule', (name: unknown) => api.reloadModule(String(name ?? '')));
     lua.global.set('__mudlet_syncModule', (name: unknown) => {
         // Fire-and-forget; Lua callers don't get a promise. The underlying
         // flush is async but the in-app effect (sysSyncOnModule) will fire
@@ -104,16 +98,18 @@ export function installPackageBindings({ lua, api }: BindingContext): void {
     // `nil` when no module by that name exists.
     lua.global.set('__getModuleInfo', (name: unknown) =>
         api.getModuleInfo(String(name ?? '')));
-    // Mudlet setModuleInfo(name, key, value) → stores a custom info field.
-    lua.global.set('setModuleInfo', (name: unknown, key: unknown, value: unknown) =>
-        api.setModuleInfo(String(name ?? ''), String(key ?? ''), String(value ?? '')));
+    // Mudlet setModuleInfo(name, key, value) → stores a custom info field. The
+    // refusal or false crosses here; Bridge.lua shapes Mudlet's (nil, reason).
+    lua.global.set('__setModuleInfo', (name: unknown, key: unknown, value: unknown) =>
+        api.setModuleInfo(String(name ?? ''), String(key ?? ''), String(value ?? '')) ?? false);
     // Mudlet getPackageInfo(name [, key]). The Bridge.lua wrapper handles the
     // optional `key` projection; here we return the merged info table.
     lua.global.set('__getPackageInfo', (name: unknown) =>
         api.getPackageInfo(String(name ?? '')));
-    // Mudlet setPackageInfo(name, key, value) → stores a custom info field.
-    lua.global.set('setPackageInfo', (name: unknown, key: unknown, value: unknown) =>
-        api.setPackageInfo(String(name ?? ''), String(key ?? ''), String(value ?? '')));
+    // Mudlet setPackageInfo(name, key, value) → stores a custom info field; as
+    // setModuleInfo.
+    lua.global.set('__setPackageInfo', (name: unknown, key: unknown, value: unknown) =>
+        api.setPackageInfo(String(name ?? ''), String(key ?? ''), String(value ?? '')) ?? false);
     // Mudlet getModulePath(name) → absolute VFS path of the module's XML, or
     // nil. Like getModuleInfo, returns nil gracefully for an unknown module
     // (no requireModule raise) so probing scripts don't error.

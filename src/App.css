@@ -40,6 +40,40 @@
     font-display: swap;
 }
 
+/* Bitstream Vera Sans — the proportional face of the same family, which Mudlet
+ * also registers at startup (src/fonts/ttf-bitstream-vera-1.10), so scripts can
+ * ask for it by name and get a proportional font everywhere: calcFontSize's
+ * column width and MXP's proportional frames are measured against it. Same
+ * licence, see src/assets/fonts/bitstream-vera-sans/COPYRIGHT.TXT. */
+@font-face {
+    font-family: 'Bitstream Vera Sans';
+    src: url('./assets/fonts/bitstream-vera-sans/Vera.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Bitstream Vera Sans';
+    src: url('./assets/fonts/bitstream-vera-sans/VeraBd.woff2') format('woff2');
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Bitstream Vera Sans';
+    src: url('./assets/fonts/bitstream-vera-sans/VeraIt.woff2') format('woff2');
+    font-weight: 400;
+    font-style: italic;
+    font-display: swap;
+}
+@font-face {
+    font-family: 'Bitstream Vera Sans';
+    src: url('./assets/fonts/bitstream-vera-sans/VeraBI.woff2') format('woff2');
+    font-weight: 700;
+    font-style: italic;
+    font-display: swap;
+}
+
 /* Ubuntu / Ubuntu Mono — bundled for the same reason as Vera above: Mudlet
  * registers both families into Qt's font database at startup (src/main.cpp
  * copies src/fonts/ubuntu-font-family-0.83 into the Mudlet home dir), so

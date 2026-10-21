@@ -95,9 +95,10 @@ describe('issue #283 — window and Geyser parity with desktop', () => {
     });
 
     describe('getUserWindowSize', () => {
-        it('answers a miniconsole with the main window size, as for any name with no dock', () => {
+        it('refuses a miniconsole, as any name with no dock', () => {
             rt.run('createMiniConsole("gu_rmc", 10, 10, 300, 100)');
-            expect(ask('getUserWindowSize("gu_rmc")')).toEqual(ask('getMainWindowSize()'));
+            expect(rt.run('return select(2, getUserWindowSize("gu_rmc"))')).toBe("user window name 'gu_rmc' not found");
+            expect(ask('getUserWindowSize("main")')).toEqual(ask('getMainWindowSize()'));
         });
     });
 

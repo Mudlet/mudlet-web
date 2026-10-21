@@ -70,6 +70,12 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     lua.global.set('cut', () => api.cut());
     // One string, as Bridge.lua only searches the code for the functions it calls.
     lua.global.set('__clipboardLinkCommands', () => api.clipboardLinkCommands().join('\n'));
+    // The link commands a console's lines hold, and which of a list of them
+    // any console still shows — newline-joined, for the same reason.
+    lua.global.set('__consoleLinkCommands', (name?: unknown) =>
+        api.consoleLinkCommands(typeof name === 'string' ? name : undefined).join('\n'));
+    lua.global.set('__linkCommandsShown', (commands: unknown) =>
+        api.linkCommandsShown(String(commands ?? '').split('\n').filter(Boolean)).join('\n'));
     // Mudlet `paste([window])`. Pastes the clipboard at the cursor (or
     // appends at the end when the cursor is on the last line).
     lua.global.set('paste', (name?: unknown) =>
@@ -96,12 +102,14 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     lua.global.set('clearWindow',  (name?: string) => api.clearWindow(name));
     // hide/show/move/resize work on both labels and userwindows. Labels take
     // precedence: name uniqueness is shared across them, but createLabel can
-    // race with openUserWindow under the same string.
+    // race with openUserWindow under the same string. A scroll box, command
+    // line and text edit can share one name, which reaches them in the order
+    // windowType() names them.
     lua.global.set('hideWindow', (name: string) => {
         if (api.labels.has(name)) api.labels.hide(name);
+        else if (api.scrollBoxes.has(name)) api.scrollBoxes.hide(name);
         else if (api.cmdLines.has(name)) api.cmdLines.hide(name);
         else if (api.textEdits.has(name)) api.textEdits.hide(name);
-        else if (api.scrollBoxes.has(name)) api.scrollBoxes.hide(name);
         else if (api.isBuffer(name)) api.setBufferVisible(name, false);
         else api.windows.hide(name);
     });
@@ -111,9 +119,9 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     lua.global.set('showWindow', (name: string) => {
         if (typeof name !== 'string' || !name) return false;
         if (api.labels.has(name)) return api.labels.show(name);
+        if (api.scrollBoxes.has(name)) return api.scrollBoxes.show(name);
         if (api.cmdLines.has(name)) return api.cmdLines.show(name);
         if (api.textEdits.has(name)) return api.textEdits.show(name);
-        if (api.scrollBoxes.has(name)) return api.scrollBoxes.show(name);
         // A createBuffer buffer is a console desktop finds by name, too.
         if (api.isBuffer(name)) return api.setBufferVisible(name, true);
         return api.windows.show(name);
@@ -128,9 +136,9 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     lua.global.set('moveWindow', (name: string, x: unknown, y: unknown) => {
         const xn = px(x), yn = px(y);
         if (api.labels.has(name)) api.labels.move(name, xn, yn);
+        else if (api.scrollBoxes.has(name)) api.scrollBoxes.move(name, xn, yn);
         else if (api.cmdLines.has(name)) api.cmdLines.move(name, xn, yn);
         else if (api.textEdits.has(name)) api.textEdits.move(name, xn, yn);
-        else if (api.scrollBoxes.has(name)) api.scrollBoxes.move(name, xn, yn);
         else if (api.isBuffer(name)) api.moveBuffer(name, xn, yn);
         else if (api.windows.has(name)) {
             api.windows.floatForGeometryChange(name);
@@ -140,13 +148,18 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     lua.global.set('resizeWindow', (name: string, w: unknown, h: unknown) => {
         const wn = px(w), hn = px(h);
         if (api.labels.has(name)) api.labels.resize(name, wn, hn);
+        else if (api.scrollBoxes.has(name)) api.scrollBoxes.resize(name, wn, hn);
         else if (api.cmdLines.has(name)) api.cmdLines.resize(name, wn, hn);
         else if (api.textEdits.has(name)) api.textEdits.resize(name, wn, hn);
-        else if (api.scrollBoxes.has(name)) api.scrollBoxes.resize(name, wn, hn);
         else if (api.isBuffer(name)) api.resizeBuffer(name, wn, hn);
         else if (api.windows.has(name)) {
             api.windows.floatForGeometryChange(name);
             api.windows.resize(name, wn, hn);
+            // The size it settles at is owed a sysUserWindowResizeEvent, which
+            // the panel's ResizeObserver would only report on a later turn —
+            // one a script blocking the event loop never lets come. Queued the
+            // way a new window's first report is.
+            api.windows.announceCreatedSize(name);
         }
     });
     // Window state getters. Each returns null for "no such widget" so the
@@ -228,7 +241,7 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     // ScriptingAPI.setBackgroundImage — keep the binding thin so the
     // C++/Lua overload set stays in one place. A refusal comes back as
     // desktop's message, which Bridge.lua shapes into (nil, errMsg).
-    lua.global.set('setBackgroundImage', (a: unknown, b?: unknown, c?: unknown) => {
+    lua.global.set('setBackgroundImage', (a: unknown, b?: unknown, c?: unknown, d?: unknown) => {
         if (typeof a !== 'string') return false;
         if (b === undefined) return api.setBackgroundImage(a);
         if (c === undefined) {
@@ -237,7 +250,7 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
             return false;
         }
         if (typeof b !== 'string') return false;
-        return api.setBackgroundImage(a, b, Number(c));
+        return api.setBackgroundImage(a, b, Number(c), d === true);
     });
 
     // Mudlet `resetBackgroundImage([windowName] [, fullWindow])`. No name →

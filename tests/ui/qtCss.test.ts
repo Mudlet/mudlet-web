@@ -222,6 +222,14 @@ describe('qtCss Qt selector rewrite', () => {
     });
 });
 
+describe('qtCss cssTextToStyle widget rulesets', () => {
+    it('keeps the rules of the widget it styles, and only those', () => {
+        const css = 'QPushButton { min-height: 120px; } QLabel { color: red; }';
+        expect(cssTextToStyle(css, 'QPushButton')).toEqual({ minHeight: '120px' });
+        expect(cssTextToStyle(css)).toEqual({ color: 'red' });
+    });
+});
+
 describe('qtCss rgba alpha normalization', () => {
     it('rescales Qt 0–255 alpha to CSS 0–1 on a solid background-color', () => {
         // background-color stays `background` only for gradients; a flat color

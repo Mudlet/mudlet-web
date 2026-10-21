@@ -1,15 +1,17 @@
+import { flushSync } from 'react-dom';
 import type {MudSession, ScriptLogSource, ScriptLogSourceKind} from '../mud/MudSession';
 import type { LogFormat } from '../logging/SessionLogger';
 import { MAP_WIDGET_ID } from '../ui/windows/types';
 import { qtKeyToDomCode, qtModifiersToList } from '../mud/keybindings/qtKeys';
 import { splitSentCommands } from '../mud/commandSplit';
 import type {AliasEngine, AliasNode} from '../mud/aliases/AliasEngine';
-import {TriggerEngine, highlightColor, highlightTargets, type TriggerNode} from '../mud/triggers/TriggerEngine';
+import {TriggerEngine, colorPatternProblem, highlightColor, highlightTargets, perlPatternError, type TriggerNode} from '../mud/triggers/TriggerEngine';
 import type {TimerEngine} from '../mud/timers/TimerEngine';
 import type {KeyEngine, KeyNode} from '../mud/keybindings/KeyEngine';
 import {findReservedKeybindings, reservedKeyNote} from '../mud/keybindings/browserReservedKeys';
-import type {ButtonNode, ScriptNode, TimerNode} from '../storage/schema';
+import type {ButtonNode, ProfileSettings, ScriptNode, TimerNode} from '../storage/schema';
 import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled, isTempParentRef, tempParentRef, tempRefId, tempRootOf} from '../storage/schema';
+import {MAIN_CONSOLE_BUFFER_SIZE} from '../mud/text/Console';
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
 import {isPackageRemovable} from '../branding';
 import {saveProfileData} from '../storage/profileVfsData';
@@ -24,6 +26,7 @@ import { KNOWN_ITEM_TYPES, type EngineHost, type TempComplexTriggerSpec } from '
 import { ItemIdSequence } from '../mud/ItemIdSequence';
 import {formatClosedCaption, type MediaCaptionInfo} from '../ui/sound/closedCaption';
 import type {PlayMusicOptions} from '../ui/sound/SoundManager';
+import {canonicalMediaDirection} from '../ui/sound/mediaDirection';
 
 /** The fields every tree node (alias/trigger/timer/key/button/script) shares —
  *  enough for the tree-walking APIs (ancestors/findItems/isAncestorsActive/
@@ -89,6 +92,7 @@ function inheritedPackage(items: readonly BaseTreeNode[], parentId: string | nul
     return packageName ? { packageName } : {};
 }
 import {LuaRuntime} from './lua/LuaRuntime';
+import {LuaBytes} from './lua/byteArmor';
 import type {IScriptingRuntime, LuaGlobalEntry, ScriptHandlerEntry, VariableEdit} from './IScriptingRuntime';
 import {ProfileVFS} from './vfs/ProfileVFS';
 import {rewriteVfsUrlsInCss} from './vfs/cssRewrite';
@@ -194,6 +198,21 @@ const ITEM_CHUNK_PREFIX = {
 } as const;
 type CodeItemKind = keyof typeof ITEM_CHUNK_PREFIX;
 
+/** A failed write's reason the way QFile::errorString() gives it — the C
+ *  library's own wording — rather than the file system's "ENOENT: ..., open
+ *  '<path>'", which repeats the path the caller already names. */
+function whyAFileCannotBeWritten(err: unknown): string {
+    const code = (err as { code?: unknown } | null)?.code;
+    switch (code) {
+        case 'ENOENT': return 'No such file or directory';
+        case 'ENOTDIR': return 'Not a directory';
+        case 'EISDIR': return 'Is a directory';
+        case 'EACCES': case 'EPERM': return 'Permission denied';
+        case 'ENOSPC': return 'No space left on device';
+        default: return describeThrown(err);
+    }
+}
+
 function itemChunkName(kind: CodeItemKind, name: string): string {
     return `${ITEM_CHUNK_PREFIX[kind]}: ${name}`;
 }
@@ -208,6 +227,14 @@ function itemChunkName(kind: CodeItemKind, name: string): string {
  */
 function itemSyntaxError(rt: IScriptingRuntime | null | undefined, code: string, chunkName: string): string | null {
     return rt?.syntaxError?.(`function __mudlet_item() ${code}\nend`, chunkName) ?? null;
+}
+
+/** TAlias::compileRegex's complaint about a pattern PCRE rejects, as plain
+ *  text, or null when it compiles. An empty pattern is not compiled at all. */
+function aliasPatternError(pattern: string | undefined): string | null {
+    if (!pattern) return null;
+    const reason = perlPatternError(pattern);
+    return reason === null ? null : `Error: in "Pattern:", faulty regular expression, reason: "${reason}".`;
 }
 
 /** What the compile check needs of an item — see ScriptingEngine.cannotCompile. */
@@ -300,6 +327,7 @@ const REPORTED_SETTINGS: readonly { key: string; inBag: boolean; default: boolea
     { key: 'enableClosedCaption',   inBag: true,  default: false },
     { key: 'advertiseScreenReader', inBag: true,  default: false },
     { key: 'announceIncomingText',  inBag: true,  default: true },
+    { key: 'accessibleLabels',      inBag: true,  default: false },
     { key: 'muteMediaAPI',          inBag: true,  default: false },
     { key: 'muteMediaGame',         inBag: true,  default: false },
 ];
@@ -391,6 +419,12 @@ export class ScriptingEngine implements EngineHost {
      *  script can drive MXP markup through feedTriggers on a profile that never
      *  negotiated it. Does NOT enable the handshake replies. */
     forceMxpProcessorOn = false;
+    /** cTelnet's `enableMXP`: the game switched MXP on (WILL, DO or a bare
+     *  subnegotiation) or it was auto-enabled, and has not turned it off. */
+    private telnetMxpEnabled = false;
+    /** cTelnet's `mMxpAutoEnabled`: MXP is on because the auto-detect turned it
+     *  on, so the game switching it on properly starts it afresh in open mode. */
+    private mxpAutoEnabled = false;
     /** Mudlet's TMxpClient::mMxpEvents — element uses the parser has read but
      *  not yet published, drained at the end of processFlushBatch. */
     private readonly mxpEventQueue: {
@@ -1246,9 +1280,19 @@ export class ScriptingEngine implements EngineHost {
             buttons: s.connectionButtons[id] ?? [],
         };
         const vars = s.connectionVariables[id];
+        // Desktop's XMLexport writes the main console's buffer settings on every
+        // save, defaults included (Host::mConsoleBufferSize and
+        // mUseMaxConsoleBufferSize), so a profile that never changed them still
+        // carries them.
+        const profile = s.connectionProfile[id];
+        const settings: Partial<ProfileSettings> = {
+            ...profile,
+            consoleBufferSize: profile?.consoleBufferSize ?? MAIN_CONSOLE_BUFFER_SIZE,
+            useMaxConsoleBufferSize: profile?.useMaxConsoleBufferSize ?? false,
+        };
         return buildLinkedWriteback(
             baseXml ?? this.hostBaseXml() ?? EMPTY_PROFILE_XML, trees,
-            { hidden: vars?.hidden ?? [], variables: vars?.values ?? [] }, s.connectionProfile[id],
+            { hidden: vars?.hidden ?? [], variables: vars?.values ?? [] }, settings,
             omitHostSettings, this.getPackageNames(), this.api.stopwatches.savedForProfile(),
         );
     }
@@ -1294,7 +1338,7 @@ export class ScriptingEngine implements EngineHost {
      * keep updating the newest file rather than leaving a stale older one as the
      * save Mudlet would load.
      */
-    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string } {
+    saveProfileXml(location?: string, saveName?: string): { ok: true; path: string } | { ok: false; err: string; path?: string } {
         const vfs = this.vfs;
         if (!vfs) return { ok: false, err: 'no profile VFS available' };
         // A file name that names a place of its own would win the join below
@@ -1312,7 +1356,7 @@ export class ScriptingEngine implements EngineHost {
         // profile state — so the second is refused rather than queued, and
         // refused BEFORE it writes anything, or it would leave a file behind
         // that nothing finished.
-        if (this.profileSaveInFlight) return { ok: false, err: 'a save is already in progress' };
+        if (this.profileSaveInFlight) return { ok: false, err: 'a save is already in progress', path: '' };
         // A trailing slash would double up against the separator below.
         let dir = (location ?? '').trim();
         while (dir.endsWith('/')) dir = dir.slice(0, -1);
@@ -1323,7 +1367,17 @@ export class ScriptingEngine implements EngineHost {
         } else if (!name.toLowerCase().endsWith('.xml')) {
             name = `${name}.xml`;
         }
-        const path = `${dir || 'current'}/${name}`;
+        const folder = dir || 'current';
+        const path = `${folder}/${name}`;
+        // A plain save makes its folder when there is none yet
+        // (Host::saveProfile's mkpath); a save under a name of its own — the
+        // "save as" — writes only into one that is there (Host::saveProfileAs).
+        // Either way the file is opened before anything else is done, so a
+        // target that cannot be written is answered for here and then.
+        if (generated && !vfs.exists(folder)) {
+            try { vfs.mkdir(folder); } catch { /* answered just below */ }
+        }
+        if (!vfs.exists(folder)) return { ok: false, err: 'No such file or directory', path: vfs.resolvePath(path) };
         // The saved variables go out as they are in `_G` now, as desktop's
         // saveProfile writes them — not as the last debounced profile-data
         // flush captured them. profile.json is rewritten with them too, so a
@@ -1341,7 +1395,7 @@ export class ScriptingEngine implements EngineHost {
             // leaves the profile's settings out.
             vfs.writeFile(path, this.buildProfileXml(base?.xml, !generated));
         } catch (err) {
-            return { ok: false, err: describeThrown(err) };
+            return { ok: false, err: whyAFileCannotBeWritten(err), path: vfs.resolvePath(path) };
         }
         if (!dir && generated) this.mudletSaveName = name;
         return { ok: true, path: vfs.resolvePath(path) };
@@ -1400,27 +1454,74 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
-     * Re-read a module's XML from disk and replace its tagged nodes in the store.
-     * Pairs with the "Reload from file" UI action.
+     * Mudlet `reloadModule(name)` — Host::reloadModule, for a script and for
+     * the editor's "Reload from file" alike. Answers like an install does:
+     * `{ ok: true, error }` with whatever in the module does not work, or
+     * `{ ok: false, error }` with why it was not reloaded.
+     *
+     * Two things are checked before anything else, so the module's items are
+     * untouched by either: that it is installed at all, and that the file it
+     * was installed from can still be read — the reload takes the module
+     * apart before reading that file back in, and a file that has gone would
+     * leave it listed with nothing in it. Only then is a reload asked for
+     * during a profile save put off until the save is over; the true answered
+     * now is all the caller hears, so how the reload went afterwards is said on
+     * the console.
      */
-    reloadModuleFromFile(moduleName: string): boolean {
+    reloadModuleFromFile(moduleName: string): InstallOutcome {
+        const pkg = this.findManifest(moduleName);
+        if (!pkg || pkg.kind !== 'module') return { ok: false, error: "module doesn't exist" };
+        const file = this.getModulePath(moduleName) ?? '';
+        if (!this.moduleFileReadable(file)) return { ok: false, error: `module file '${file}' cannot be read` };
+        if (this.profileSaveInFlight) {
+            this.postponedReloads.push(moduleName);
+            return { ok: true, error: null };
+        }
+        return this.reloadModuleNow(moduleName);
+    }
+
+    /** Whether the file a module was installed from is a file that reads —
+     *  QFileInfo's isFile() && isReadable() — in the profile or under the
+     *  read-only /lua/ namespace. */
+    private moduleFileReadable(file: string): boolean {
+        if (!file) return false;
+        if (this.runtimes.lua?.readBuiltinBytes?.(file)) return true;
+        return this.vfs?.stat(file)?.type === 'file';
+    }
+
+    /** Reloads put off by a profile save, carried out once it is over. */
+    private readonly postponedReloads: string[] = [];
+
+    /** The end of a profile save: the reloads it held up are carried out now,
+     *  and only the console is left to tell how they went. */
+    private runPostponedReloads(): void {
+        while (this.postponedReloads.length > 0 && !this.profileSaveInFlight) {
+            const name = this.postponedReloads.shift()!;
+            const outcome = this.reloadModuleFromFile(name);
+            if (!outcome.ok) {
+                this.api.postWarning(`Module "${name}" could not be reloaded: ${outcome.error}`);
+            } else if (outcome.error) {
+                this.api.postWarning(`Module "${name}" was reloaded, but parts of it are not working: ${outcome.error}`);
+            }
+        }
+    }
+
+    private reloadModuleNow(name: string): InstallOutcome {
+        let moduleName = name;
         const vfs = this.vfs;
-        if (!vfs) {
-            this.api.printError('[module] no profile VFS available');
-            return false;
-        }
+        if (!vfs) return { ok: false, error: 'no profile VFS available' };
         const id = this.connectionId;
-        const pkg = (useAppStore.getState().connectionPackages[id] ?? []).find(p => p.name === moduleName);
-        if (!pkg || pkg.kind !== 'module') {
-            this.api.printError(`[module] not a module: ${moduleName}`);
-            return false;
-        }
+        const pkg = this.findManifest(moduleName);
+        if (!pkg || pkg.kind !== 'module') return { ok: false, error: "module doesn't exist" };
         // A module's own install-time script asking for it to be reloaded —
         // by the name its config.lua gave it, which the install could not have
         // known to refuse by the file's — would import the file again on top
         // of the copy still being read in, a second set of every item per
         // round. Refused while it is installing (or already reloading).
-        if (this.installing.has(moduleName)) return false;
+        if (this.installing.has(moduleName)) {
+            return { ok: false, error: `module "${moduleName}" is still being installed` };
+        }
+        const file = this.getModulePath(moduleName) ?? moduleXmlAbsolutePath(pkg, vfs) ?? '';
         // Host::reloadModule is a sync uninstall followed by a sync install
         // (uninstallPackage / installPackage with ModuleSync), so a reload says
         // what those say: sysUninstall and sysSyncUninstallModule while the old
@@ -1430,33 +1531,60 @@ export class ScriptingEngine implements EngineHost {
         // reload at all.
         this.raiseEvent('sysUninstall', [moduleName]);
         this.raiseEvent('sysSyncUninstallModule', [moduleName]);
+        let data: MudletImportResult;
+        const reread: { manifest?: PackageManifest } = {};
         try {
-            const data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig);
-            // Desktop re-reads module info only from an archive's config.lua,
-            // which replaces whatever a script had set on it. A plain XML module
-            // has no config.lua to re-read, so what setModuleInfo put there
-            // stays — dropping it on every reload lost fields desktop keeps.
-            if (pkg.sourcePath && /\.(mpackage|zip)$/i.test(pkg.sourcePath)) {
-                this.moduleInfoOverrides.delete(moduleName);
-            }
-            this.noteModuleLoaded(moduleName, data);
-            const problems = this.collectInstallProblems(moduleName,
-                () => useAppStore.getState().installPackage(id, pkg, data), data);
-            // A reload is Mudlet's module sync, so it says so the way a sync
-            // does — on the event, with whatever in the module does not work,
-            // and never on the console, where it would come back on every
-            // reload. The file is the one the module was installed from (the
-            // .mpackage for an archive, as desktop records it and getModulePath
-            // reports), not the XML unpacked out of it.
-            this.notifyInstalled(moduleName, problems);
-            const file = this.getModulePath(moduleName) ?? moduleXmlAbsolutePath(pkg, vfs) ?? '';
-            this.raiseEvent('sysSyncInstallModule', problems ? [moduleName, file, problems] : [moduleName, file]);
-            return true;
+            data = reloadModuleFromVfs(pkg, vfs, this.readPackageConfig, reread);
         } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            this.api.printError(`[module] reload failed for "${moduleName}": ${msg}`);
-            return false;
+            // The uninstall half has already run on desktop by the time the
+            // install half fails, so the module stays listed with nothing in
+            // it — and the reason says so.
+            const reason = err instanceof Error ? err.message : String(err);
+            useAppStore.getState().installPackage(id, pkg, {
+                scripts: [], aliases: [], triggers: [], timers: [], keys: [], buttons: [], warnings: [],
+            });
+            return { ok: false, error: `${reason}, so the module is now empty` };
         }
+        // Desktop re-reads module info only from an archive's config.lua,
+        // which replaces whatever a script had set on it. A plain XML module
+        // has no config.lua to re-read, so what setModuleInfo put there
+        // stays — dropping it on every reload lost fields desktop keeps.
+        if (pkg.sourcePath && /\.(mpackage|zip)$/i.test(pkg.sourcePath)) {
+            this.moduleInfoOverrides.delete(moduleName);
+        }
+        // The archive can since have been replaced by one whose config.lua
+        // names it differently, and what it holds then goes in under that name:
+        // the old one, which holds nothing any more, is no longer listed beside
+        // it (Host::reloadModule's installedUnderAnotherName).
+        const renamedTo = reread.manifest && reread.manifest.name !== moduleName ? reread.manifest.name : null;
+        if (renamedTo) {
+            useAppStore.getState().uninstallPackage(id, moduleName);
+            this.unloadedModules.delete(moduleName);
+            moduleName = renamedTo;
+        }
+        const installed: PackageManifest = renamedTo
+            ? { ...reread.manifest!, kind: 'module', sync: pkg.sync, ...(pkg.priority !== undefined ? { priority: pkg.priority } : {}) }
+            : pkg;
+        this.noteModuleLoaded(moduleName, data);
+        const problems = this.collectInstallProblems(moduleName,
+            () => useAppStore.getState().installPackage(id, installed, data), data);
+        // A reload is Mudlet's module sync, so it says so the way a sync
+        // does — on the event, with whatever in the module does not work,
+        // and never on the console, where it would come back on every
+        // reload. The file is the one the module was installed from (the
+        // .mpackage for an archive, as desktop records it and getModulePath
+        // reports), not the XML unpacked out of it.
+        this.finishInstall(moduleName);
+        this.announceInstallLater(moduleName, 'module', problems,
+            () => this.raiseEvent('sysSyncInstallModule', problems ? [moduleName, file, problems] : [moduleName, file]),
+            this.moduleLoadedNothing(moduleName, data));
+        // Queued behind the install's own events, so a handler hears
+        // sysInstall before the sysUninstall that came of it.
+        this.carryOutHeldRemovals();
+        // Whatever was read before the XML broke is the module now, but it did
+        // not load (Host::mModulesLoadedOk), and the caller is told so.
+        if (data.parseError) return { ok: false, error: `module '${moduleName}' could not be loaded from '${file}'` };
+        return { ok: true, error: problems };
     }
 
     /** Toggle a module's sync flag. Updates the manifest in the store. */
@@ -1569,24 +1697,39 @@ export class ScriptingEngine implements EngineHost {
         return base;
     }
 
-    /** Mudlet `setPackageInfo(name, key, value)`. Records a custom info field.
-     *  Always succeeds (matches Mudlet, which sets the map unconditionally). */
-    setPackageInfo(name: string, key: string, value: string): boolean {
-        if (!key) return false;
-        let ov = this.packageInfoOverrides.get(name);
-        if (!ov) { ov = new Map(); this.packageInfoOverrides.set(name, ov); }
-        ov.set(key, value);
-        return true;
+    /** Mudlet `setPackageInfo(name, key, value)`. Records a custom info field,
+     *  answering why it would not, or null once it has
+     *  (TLuaInterpreter::setPackageInfo). */
+    setPackageInfo(name: string, key: string, value: string): string | null {
+        return this.setInfoField('package', this.packageInfoOverrides, name, key, value);
     }
 
     /** Mudlet `setModuleInfo(name, key, value)`. Records a custom info field
-     *  surfaced by getModuleInfo. Always succeeds. */
-    setModuleInfo(name: string, key: string, value: string): boolean {
-        if (!key) return false;
-        let ov = this.moduleInfoOverrides.get(name);
-        if (!ov) { ov = new Map(); this.moduleInfoOverrides.set(name, ov); }
+     *  surfaced by getModuleInfo; see {@link setPackageInfo}. */
+    setModuleInfo(name: string, key: string, value: string): string | null {
+        return this.setInfoField('module', this.moduleInfoOverrides, name, key, value);
+    }
+
+    /**
+     * Only for something installed — one being read in counts, so its own
+     * scripts can still describe it. Filed for any other name, the details were
+     * there for whatever was installed under it later. And `mpackage` is the
+     * name it is installed under, so only that same name is accepted for it: a
+     * package without a config.lua has no details to start from.
+     */
+    private setInfoField(kind: 'package' | 'module', overrides: Map<string, Map<string, string>>,
+        name: string, key: string, value: string): string | null {
+        const manifest = this.findManifest(name);
+        const listed = this.installing.has(name)
+            || (manifest !== undefined && (manifest.kind === 'module') === (kind === 'module'));
+        if (!listed) return `${kind} '${name}' not found`;
+        if (key === 'mpackage' && value !== name) {
+            return `'mpackage' is the name ${kind} '${name}' is installed under and cannot be changed`;
+        }
+        let ov = overrides.get(name);
+        if (!ov) { ov = new Map(); overrides.set(name, ov); }
         ov.set(key, value);
-        return true;
+        return null;
     }
 
     /**
@@ -1661,7 +1804,7 @@ export class ScriptingEngine implements EngineHost {
             this.noteModuleLoaded(manifest.name, data);
             // A module whose XML will not read is installed and stays listed,
             // and desktop says it could not be loaded.
-            if (data.parseError) this.announceUnreadableContents(manifest.name, 'module');
+            if (data.parseError) this.announceUnreadableContents(manifest.name, data, 'module');
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
             // Host::installPackage raises the generic sysInstall and exactly one
@@ -1669,8 +1812,11 @@ export class ScriptingEngine implements EngineHost {
             // Lua's installModule (ModuleFromScript) that is sysLuaInstallModule
             // alone. Raising sysInstallPackage / sysInstallModule as well made a
             // package tracker count every scripted module as a package.
-            this.notifyInstalled(manifest.name, problems);
-            this.raiseEvent('sysLuaInstallModule', problems ? [manifest.name, path, problems] : [manifest.name, path]);
+            this.finishInstall(manifest.name);
+            this.announceInstallLater(manifest.name, 'module', problems,
+                () => this.raiseEvent('sysLuaInstallModule', problems ? [manifest.name, path, problems] : [manifest.name, path]),
+                this.moduleLoadedNothing(manifest.name, data));
+            this.carryOutHeldRemovals();
             void vfs.flush();
             return { ok: true, error: problems };
         } catch (err) {
@@ -1700,6 +1846,7 @@ export class ScriptingEngine implements EngineHost {
         // uninstallPackage raises that for a package alone, and a handler
         // listening for its own package going would take a module of the
         // same name for it.
+        this.countRemoval(moduleName);
         this.raiseEvent('sysUninstall', [moduleName]);
         // Nothing more, sync flag or not: sysSyncUninstallModule belongs to a
         // ModuleSync removal (the first half of a reload), and desktop does not
@@ -1710,6 +1857,9 @@ export class ScriptingEngine implements EngineHost {
         // the same name starts from its own config.lua.
         this.moduleInfoOverrides.delete(moduleName);
         useAppStore.getState().uninstallPackage(this.connectionId, moduleName);
+        // Not on a reload, which keeps the module's Lua state and with it the
+        // ids of the commands it made.
+        this.api.addonCommands.removeOwnedBy(moduleName);
         if (this.vfs) {
             const vfs = this.vfs;
             void uninstallPackageFiles(pkg, vfs).catch(err => {
@@ -1933,6 +2083,27 @@ export class ScriptingEngine implements EngineHost {
         } finally {
             this.compiledThisLoad = null;
         }
+        this.reportScriptsThatFailedToLoad();
+    }
+
+    /**
+     * Host::reportScriptsThatFailedToLoad: once the profile's scripts have run
+     * — at open, and again after a reset — one warning names every switched-on
+     * script whose body failed, in script-list order, so a broken script is
+     * not lost among the errors that scrolled past. Module scripts are left
+     * out, as on desktop: a module of positive priority runs its scripts only
+     * after this, so reporting the others would make the warning depend on a
+     * module's priority.
+     */
+    private reportScriptsThatFailedToLoad(): void {
+        const priorityMap = this.modulePriorityMap();
+        const names = (useAppStore.getState().connectionScripts[this.connectionId] ?? [])
+            .filter(s => this.failedScripts.has(s.id) && s.enabled
+                && !(s.packageName && priorityMap.has(s.packageName)))
+            .map(s => s.name);
+        if (names.length === 0) return;
+        this.postMainMessage(`[ WARN ]  - These scripts failed to run when the profile loaded: "${names.join('", "')}". `
+            + 'Open them in the editor to see why.');
     }
 
     /** Whether the root `s` sits under is switched on — what compileAll asks
@@ -2063,6 +2234,7 @@ export class ScriptingEngine implements EngineHost {
         if (parts.length === 0) { this.api.sendData(''); return; }
         for (const part of parts) {
             if (!this.processInput(part)) this.api.sendData(part);
+            else this.runtimes.lua?.endAliasPass?.();
         }
     }
 
@@ -2170,6 +2342,10 @@ export class ScriptingEngine implements EngineHost {
      *  getMudletHomeDir()-prefixed paths work) and relative ones against the
      *  profile root. */
     readFileBytes(path: string): Uint8Array | null {
+        // The read-only /lua/ namespace too, as Lua's io.open sees it — where
+        // the spec corpus keeps its fixture images.
+        const builtin = this.runtimes.lua?.readBuiltinBytes?.(path);
+        if (builtin) return builtin;
         const v = this.vfs;
         if (!v) return null;
         try {
@@ -2311,7 +2487,7 @@ export class ScriptingEngine implements EngineHost {
             this.triggerEngine.setRunawayReporter(text => this.api.postSystemMessage(text));
             // Capture positions are recorded at match time; text a trigger
             // inserts into its own line has to move them with it.
-            this.api.setCaptureShiftHook((at, delta) => rt.shiftCaptureSpans(at, delta));
+            this.api.setCaptureShiftHook((at, delta, replaced) => rt.shiftCaptureSpans(at, delta, replaced));
             // What the engine does to a trigger it stops as a runaway: a
             // temporary one is removed, a permanent one only switched off —
             // there being no removal API for one, and the player's own copy
@@ -2358,13 +2534,61 @@ export class ScriptingEngine implements EngineHost {
      *  their fonts and raise the generic sysInstall. The caller raises the one
      *  detailed event that fits how the install was asked for. */
     private notifyInstalled(name: string, problems?: string | null): void {
+        this.finishInstall(name);
+        this.raiseEvent('sysInstall', problems ? [name, problems] : [name]);
+    }
+
+    /** Everything an install does once its items are in, short of saying so:
+     *  apply them and register the package's fonts. */
+    private finishInstall(name: string): void {
         this.flushPendingApplies();
         // Host::installPackage ends every install by moving the temporary
         // triggers behind the permanent ones, whatever the package held.
         this.triggerEngine.reorderAfterPackageImport(
             useAppStore.getState().connectionTriggers[this.connectionId] ?? []);
         this.registerPackageFonts(name);
-        this.raiseEvent('sysInstall', problems ? [name, problems] : [name]);
+    }
+
+    /** How many times each package or module has been removed — Host's
+     *  mRemovalsOf. A reload's own removal is not counted: it puts the same
+     *  module straight back. */
+    private readonly removalsOf = new Map<string, number>();
+
+    private countRemoval(name: string): void {
+        this.removalsOf.set(name, (this.removalsOf.get(name) ?? 0) + 1);
+    }
+
+    /** A module whose XML broke before anything was read in has nothing
+     *  running, so it is not announced (Host's moduleLoadedNothing). */
+    private moduleLoadedNothing(name: string, data: MudletImportResult): boolean {
+        return this.unloadedModules.has(name) && !!data.nothingRead;
+    }
+
+    /**
+     * Raise an install's sysInstall and then its detailed event on the next
+     * pass of the event loop, as Host::installPackage does (a zero-timer), so
+     * everything the install set up - its variables above all - is in place
+     * before a handler runs. An install undone before then is not announced,
+     * nor is the detailed event raised once a sysInstall handler has taken it
+     * away again: its errors would be stale by then.
+     */
+    private announceInstallLater(
+        name: string,
+        kind: 'package' | 'module',
+        problems: string | null,
+        detailed: () => void,
+        loadedNothing = false,
+    ): void {
+        const removalsBefore = this.removalsOf.get(name) ?? 0;
+        const stillInstalled = (): boolean =>
+            (kind === 'package' ? this.getPackageNames() : this.getModuleNames()).includes(name)
+            && (this.removalsOf.get(name) ?? 0) === removalsBefore;
+        this.timerEngine.addTemp(0, () => {
+            if (this.disposed || loadedNothing || !stillInstalled()) return;
+            this.raiseEvent('sysInstall', problems ? [name, problems] : [name]);
+            if (!stillInstalled()) return;
+            detailed();
+        });
     }
 
     /** Re-register every installed package's fonts on profile open. See the
@@ -2421,6 +2645,7 @@ export class ScriptingEngine implements EngineHost {
      * scripts they live in) are still loaded when the event fires.
      */
     notifyPackageUninstalled(packageName: string): void {
+        this.countRemoval(packageName);
         this.raiseEvent('sysUninstall', [packageName]);
         this.raiseEvent('sysUninstallPackage', [packageName]);
     }
@@ -2462,17 +2687,13 @@ export class ScriptingEngine implements EngineHost {
      * script log and handed back to Lua for Mudlet's (ok, err) contract.
      */
     installPackageFromVfsPath(path: string): InstallOutcome {
-        // Before anything else, the path included. A profile save is not over
-        // when saveProfile() returns — the VFS flush that makes it durable is
-        // still running — and an install that wrote through the middle of one
-        // would interleave with it. So it is put off and answers true there and
-        // then, which is why an EMPTY path answers true while a save runs and
-        // its own complaint when none does: the postponement is at the head,
-        // above every check.
-        if (this.profileSaveInFlight) {
-            this.postponedInstalls.push(path);
-            return { ok: true, error: null };
-        }
+        // Before anything else, the path included: a script's install waits
+        // out a profile save that is running and then gives its real answer
+        // (TLuaInterpreter::installPackage's waitOutAProfileSave). Putting it
+        // off and answering true there and then told a script an install had
+        // happened that had not even been tried, and a failing one was only
+        // ever said on the console once the save was over.
+        this.waitOutProfileSave();
         const vfs = this.vfs;
         if (!vfs) {
             const error = 'no profile VFS available';
@@ -2503,6 +2724,7 @@ export class ScriptingEngine implements EngineHost {
         try {
             const buf = builtin ?? vfs.readBinaryFile(path);
             const filename = path.split('/').pop() || path;
+            if (/\.(mpackage|zip)$/i.test(filename)) this.clearAwayCrashedUnpacking();
             const prepared = preparePackageInstall(filename, buf, vfs, {
                 sourcePath: path,
                 readConfig: this.readPackageConfig,
@@ -2516,7 +2738,11 @@ export class ScriptingEngine implements EngineHost {
             // listed — the same as a module whose XML will not load — so what
             // changes is that it is SAID. Silence left the player with a
             // package that is listed, owns nothing, and gives no reason.
-            if (prepared.data.parseError) this.announceUnreadableContents(prepared.manifest.name);
+            // Not for one nothing could be read out of: that is refused below,
+            // and the refusal is the whole of what is said.
+            if (prepared.data.parseError && !prepared.data.nothingRead) {
+                this.announceUnreadableContents(prepared.manifest.name, prepared.data);
+            }
             // Everything the reader could not make sense of but carried on past
             // — a pattern type from a later Mudlet, a key code nothing maps to.
             // The package installs either way; these say what it will not do,
@@ -2524,6 +2750,25 @@ export class ScriptingEngine implements EngineHost {
             // matches something other than what its author wrote.
             for (const warning of prepared.data.warnings) this.api.postError(warning);
             this.restorePackageVariables(prepared.data);
+            // ...except a package nothing at all could be read out of: listed,
+            // it would be an empty package in the profile. Refused before
+            // anything is written, so it leaves neither its folder nor the
+            // details its config.lua filed. A file from a later Mudlet is
+            // refused in the words the console was just given.
+            // An archive is moved into the folder of its name before anything
+            // is read out of it, so a clash there is what refuses it - unless
+            // the folder is an installed package's, which is refused for that.
+            if (prepared.moveClash && !this.getPackageNames().includes(prepared.manifest.name)
+                && !this.getModuleNames().includes(prepared.manifest.name)) {
+                return { ok: false, error: prepared.moveClash };
+            }
+            const { nothingRead } = prepared.data;
+            if (nothingRead) {
+                const error = nothingRead === 'newer'
+                    ? prepared.data.parseError!
+                    : `the contents of package "${prepared.manifest.name}" could not be read`;
+                return { ok: false, error };
+            }
             // Refused, not replaced: a second install would silently discard
             // whatever the user had changed in the first, and a script looping
             // over a package list would do it repeatedly.
@@ -2560,11 +2805,20 @@ export class ScriptingEngine implements EngineHost {
             }
             prepared.commit();
             const { manifest, data } = prepared;
+            // Read into the profile as the profile's own HostPackage is.
+            if (prepared.hostSettings && Object.keys(prepared.hostSettings).length > 0) {
+                useAppStore.getState().patchConnectionProfile(this.connectionId, prepared.hostSettings);
+                if (prepared.hostSettings.outputBorders) this.session.windows.applyMainBorders();
+            }
             this.savePackageVariables(data);
             const problems = this.collectInstallProblems(manifest.name,
                 () => useAppStore.getState().installPackage(this.connectionId, manifest, data), data);
-            this.notifyPackageInstalled(manifest.name, path, problems);
+            this.finishInstall(manifest.name);
+            this.announceInstallLater(manifest.name, 'package', problems,
+                () => this.raiseEvent('sysInstallPackage', problems ? [manifest.name, path, problems] : [manifest.name, path]));
+            this.carryOutHeldRemovals();
             void vfs.flush();
+            this.saveAfterPackageChange();
             return { ok: true, error: problems };
         } catch (err) {
             const error = err instanceof Error ? err.message : String(err);
@@ -2708,6 +2962,16 @@ export class ScriptingEngine implements EngineHost {
             if (debug) console.debug(`${logPrefix} empty filename "${file}"`);
             return null;
         }
+        // `_profile/` and `_absolute/` hold the copies a script's own
+        // playSoundFile makes of files outside media/; a game's file there
+        // would be played in place of the script's (case-insensitively, as
+        // the folder is one on macOS and Windows). TMedia refuses both MSP and
+        // GMCP names in them — to play and to download alike.
+        const firstFolder = cleanSegments.length > 1 ? cleanSegments[0].toLowerCase() : '';
+        if (firstFolder === '_profile' || firstFolder === '_absolute') {
+            if (debug) console.debug(`${logPrefix} rejecting "${file}": a folder kept for scripts' copies`);
+            return null;
+        }
         const cleanFile = cleanSegments.join('/');
         const vfsPath = `media/${cleanFile}`;
         const absPath = `${vfs.profilePath}/${vfsPath}`;
@@ -2734,6 +2998,15 @@ export class ScriptingEngine implements EngineHost {
             downloadUrl = new URL(cleanFile, base).toString();
         } catch {
             if (debug) console.debug(`${logPrefix} invalid base URL "${baseUrl}"`);
+            return null;
+        }
+        // Media is fetched from the network only (TMedia::downloadFile): any
+        // other scheme is refused, and told the way a failed download is, so
+        // a script waiting on the media learns the request is over.
+        if (!/^https?:$/i.test(new URL(downloadUrl).protocol)) {
+            if (debug) console.debug(`${logPrefix} refusing non-HTTP(S) media URL ${downloadUrl}`);
+            this.raiseEvent('sysDownloadError',
+                [`Media can only be downloaded from an http:// or https:// URL, not "${downloadUrl}"`, absPath]);
             return null;
         }
         // TMedia::slot_writeFile reports every media download to scripts:
@@ -2769,7 +3042,7 @@ export class ScriptingEngine implements EngineHost {
         // this is a hard block, not the `game` mute gate (which still fetches
         // and plays, silently). Mudlet drops the message just as early, in
         // cTelnet::setGMCPVariables and again atop TMedia::parseGMCP, and it
-        // still advertises "Client.Media 1" in Core.Supports.Set either way,
+        // still advertises "Client.Media 2" in Core.Supports.Set either way,
         // so MudClient's handshake stays untouched.
         if (useAppStore.getState().connectionProfile[this.connectionId]?.allowServerMedia === false) {
             if (debug) console.debug(`[mudlet.gmcp] media ${action} ignored (disabled in settings)`);
@@ -2847,6 +3120,54 @@ export class ScriptingEngine implements EngineHost {
             return;
         }
 
+        // Client.Media 2 placement: a pan is a number (or a string reading as
+        // one) held to -100..100; a direction a word or degrees. One that is
+        // neither is ignored (TMedia::parseJSONByMediaPan / ...Direction).
+        const panOf = (): number | undefined => {
+            const p = num('pan');
+            if (p === undefined) return undefined;
+            const held = Math.max(-100, Math.min(100, p));
+            return held >= 0 ? Math.floor(held + 0.5) : Math.ceil(held - 0.5);
+        };
+        const directionOf = (): string | undefined => {
+            const d = obj.direction;
+            const c = typeof d === 'number' ? canonicalMediaDirection(d)
+                : typeof d === 'string' ? canonicalMediaDirection(d) : '';
+            return c || undefined;
+        };
+
+        if (action === 'listener') {
+            // Client.Media.Listener { facing } — the way the player now faces.
+            // A script's own choice is remembered apart (TMedia::setListenerFacing).
+            const f = obj.facing;
+            const facing = typeof f === 'number' ? canonicalMediaDirection(f)
+                : typeof f === 'string' ? canonicalMediaDirection(f) : '';
+            if (!this.session.sounds.setListenerFacing(facing, 'game') && debug) {
+                console.debug('[mudlet.gmcp] media listener ignored (not a compass direction or degrees)');
+            }
+            return;
+        }
+
+        if (action === 'update') {
+            // Client.Media.Update { name|key|tag, volume, pan, direction,
+            // duration } — move the server's sounds that it picks out. One
+            // naming nothing would move every sound the game has, so it is
+            // ignored (TMedia::parseJSONForMediaUpdate).
+            const type = str('type').toLowerCase();
+            const filter = { name: str('name') || undefined, key: str('key') || undefined, tag: tagOf(), origin: 'game' as const };
+            if (!filter.name && !filter.key && !filter.tag) return;
+            if (type && type !== 'sound') return;
+            const volume = num('volume');
+            const duration = num('duration');
+            this.session.sounds.updateSounds(filter, {
+                volume: volume === undefined ? undefined : Math.round(Math.max(1, Math.min(100, volume))),
+                pan: panOf(),
+                direction: directionOf(),
+                glideMs: duration === undefined ? 0 : Math.max(0, Math.round(duration)),
+            });
+            return;
+        }
+
         if (action !== 'play' && action !== 'load') {
             if (debug) console.debug(`[mudlet.gmcp] media ${action} ignored (unknown message)`);
             return;
@@ -2907,6 +3228,13 @@ export class ScriptingEngine implements EngineHost {
         if (tag) opts.tag = tag;
         const priority = num('priority');
         if (priority !== undefined) opts.priority = priority;
+
+        if (type === 'sound') {
+            const pan = panOf();
+            if (pan !== undefined) opts.pan = pan;
+            const direction = directionOf();
+            if (direction) opts.direction = direction;
+        }
 
         if (type === 'music') {
             // Mudlet's music `continue` defaults to true — a repeat Play of the
@@ -3119,6 +3447,120 @@ export class ScriptingEngine implements EngineHost {
         }
     }
 
+    /** The script whose body is running right now (Host's mRunningScript): its
+     *  chunk name and the package or module it came with ('' for the profile). */
+    private runningScript: { chunk: string; owner: string } | null = null;
+
+    /**
+     * Which package or module owns the code a Lua frame is running, '' for the
+     * profile's own — desktop's packageOfFrame, which addCommand asks so that a
+     * package's commands go with it.
+     *
+     * The running script's own body is its package's. Otherwise the chunk is
+     * whoever's items run under that chunk name, or whose folder the file lies
+     * in; when several do — a package script and a profile script may share a
+     * name — the running script's package still owns it if a main chunk of
+     * the same source calls this frame directly (a local function its body
+     * called), and anything else is the profile's: code a package merely runs
+     * for someone else is theirs.
+     */
+    packageOfCaller(source: string, isMain: boolean, calledFromMain: boolean): string {
+        const running = this.runningScript;
+        if (running && source === running.chunk && isMain) return running.owner;
+        const owners = this.ownersOfChunk(source);
+        if (owners.size === 1) return [...owners][0];
+        if (owners.size > 1 && running && source === running.chunk && owners.has(running.owner) && calledFromMain) {
+            return running.owner;
+        }
+        return '';
+    }
+
+    /**
+     * The chunks of a package's items as they are removed, with the package
+     * that owned them, until the next pass of the event loop. Desktop takes a
+     * removed item out of the tree at once but frees it only once the pass
+     * that is running it is over, so code of the item that is still running -
+     * a trigger that uninstalled its own package, then placed a command - is
+     * still its package's.
+     */
+    private readonly removedChunkOwners = new Map<string, string>();
+
+    private rememberOwnersOfRemovedItems(packageName: string): void {
+        const s = useAppStore.getState();
+        const id = this.connectionId;
+        const kinds: [string, readonly { isGroup?: boolean; name: string; packageName?: string }[]][] = [
+            ['Script', s.connectionScripts[id] ?? []],
+            [ITEM_CHUNK_PREFIX.trigger, s.connectionTriggers[id] ?? []],
+            [ITEM_CHUNK_PREFIX.alias, s.connectionAliases[id] ?? []],
+            [ITEM_CHUNK_PREFIX.timer, s.connectionTimers[id] ?? []],
+            [ITEM_CHUNK_PREFIX.key, s.connectionKeybindings[id] ?? []],
+            [ITEM_CHUNK_PREFIX.button, s.connectionButtons[id] ?? []],
+        ];
+        const first = this.removedChunkOwners.size === 0;
+        for (const [prefix, items] of kinds) {
+            for (const item of items) {
+                if (!item.isGroup && item.packageName === packageName) {
+                    this.removedChunkOwners.set(`${prefix}: ${item.name}`, packageName);
+                }
+            }
+        }
+        if (first && this.removedChunkOwners.size > 0) {
+            this.timerEngine.addTemp(0, () => this.removedChunkOwners.clear());
+        }
+    }
+
+    private ownersOfChunk(source: string): Set<string> {
+        const owners = new Set<string>();
+        const s = useAppStore.getState();
+        const id = this.connectionId;
+        const kinds: [string, readonly { isGroup?: boolean; name: string; packageName?: string }[]][] = [
+            ['Script', s.connectionScripts[id] ?? []],
+            [ITEM_CHUNK_PREFIX.trigger, s.connectionTriggers[id] ?? []],
+            [ITEM_CHUNK_PREFIX.alias, s.connectionAliases[id] ?? []],
+            [ITEM_CHUNK_PREFIX.timer, s.connectionTimers[id] ?? []],
+            [ITEM_CHUNK_PREFIX.key, s.connectionKeybindings[id] ?? []],
+            [ITEM_CHUNK_PREFIX.button, s.connectionButtons[id] ?? []],
+        ];
+        for (const [prefix, items] of kinds) {
+            for (const item of items) {
+                if (!item.isGroup && `${prefix}: ${item.name}` === source) owners.add(item.packageName ?? '');
+            }
+        }
+        // A file is its package's when it lies in the package's own folder.
+        // The VFS shim names a file in the profile by its path within it.
+        const home = this.vfs?.profilePath;
+        if (home && source.startsWith('@')) {
+            const path = source.slice(1);
+            const inProfile = path.startsWith(`${home}/`) ? path.slice(home.length + 1)
+                : path.startsWith('/') ? null : path;
+            if (inProfile !== null) {
+                for (const name of this.getPackageNames().concat(this.getModuleNames())) {
+                    if (inProfile.startsWith(`${name}/`)) owners.add(name);
+                }
+            }
+        }
+        if (owners.size === 0) {
+            const removedOwner = this.removedChunkOwners.get(source);
+            if (removedOwner !== undefined) owners.add(removedOwner);
+        }
+        return owners;
+    }
+
+    /**
+     * Lua `uninstallPackage(name)`: why it would not, or null once it has
+     * (TLuaInterpreter::uninstallPackage). Whether the package is installed is
+     * asked first — retrying one that is not never works, so a running save is
+     * not the reason to give for it — and an installed one is refused only
+     * while a profile save is running. A save a handler starts once the
+     * uninstall is under way is no reason to abandon it.
+     */
+    uninstallPackageFromScript(packageName: string): string | null {
+        const manifest = this.findManifest(packageName);
+        if (!manifest || manifest.kind === 'module') return `package '${packageName}' is not installed`;
+        if (this.profileSaveInFlight) return 'a profile save is in progress, try again once it has finished';
+        return this.uninstallPackageByName(packageName) ? null : `package '${packageName}' cannot be uninstalled`;
+    }
+
     /**
      * Uninstall a previously installed package by name. Raises sysUninstallPackage
      * before the store removal so the package's own handlers can still run.
@@ -3151,7 +3593,10 @@ export class ScriptingEngine implements EngineHost {
         // archive's own config.lua on a reinstall — inside the package's own
         // load script as well — where desktop starts again from config.lua.
         this.packageInfoOverrides.delete(packageName);
+        this.rememberOwnersOfRemovedItems(packageName);
         useAppStore.getState().uninstallPackage(this.connectionId, packageName);
+        this.api.addonCommands.removeOwnedBy(packageName);
+        this.saveAfterPackageChange();
         if (this.vfs) {
             const vfs = this.vfs;
             void uninstallPackageFiles(manifest, vfs).catch(err => {
@@ -3249,22 +3694,20 @@ export class ScriptingEngine implements EngineHost {
      * Same batching as toggleTriggerByName: one set() collapses N matches into
      * a single subscription tick (and a single TimerEngine.loadPerm rebuild).
      */
-    /** Whether the flush that makes a profile save durable is still running.
-     *  An install asked for during one is put off rather than interleaved. */
+    /** Whether a profile save still counts as running: a second save is
+     *  refused, and so is an uninstall, as Host::currentlySavingProfile()
+     *  makes them. */
     private profileSaveInFlight = false;
-    /** Paths handed to installPackage while a save was running, in order. */
-    private readonly postponedInstalls: string[] = [];
+    /** Which save the scheduled end below belongs to, so the end of one that
+     *  was waited out cannot cut a later save short. */
+    private profileSaveGeneration = 0;
 
     /**
-     * Hold installs until the save's flush has settled, then carry out the ones
-     * that arrived meanwhile.
-     *
-     * The postponed install already answered true to its caller, so there is no
-     * return value left for a failure to travel back on — saying it on the main
-     * console is all that remains, quiet caller or not.
+     * Mark a profile save as running until the next pass of the event loop.
      */
     markProfileSaveInFlight(): void {
         this.profileSaveInFlight = true;
+        const generation = ++this.profileSaveGeneration;
         // Scheduled on the TIMER ENGINE rather than a plain setTimeout, because
         // a spec never gives the browser its thread back: pumpEvents() stands in
         // for the event loop by firing Mudlet Web's own due timers in a synchronous
@@ -3277,16 +3720,62 @@ export class ScriptingEngine implements EngineHost {
         // the write it just started. Tying it to the VFS flush instead — the
         // durability step — is unbounded, and held installs for good.
         this.timerEngine.addTemp(0, () => {
+            if (generation !== this.profileSaveGeneration) return;
             this.profileSaveInFlight = false;
-            while (this.postponedInstalls.length > 0) {
-                const path = this.postponedInstalls.shift()!;
-                const outcome = this.installPackageFromVfsPath(path);
-                // The postponed install already answered true to its caller, so
-                // there is no return value left for the failure to travel back
-                // on. Saying it on the main console is all that remains.
-                if (!outcome.ok) this.api.postInfo(`Package install failed — ${outcome.error}`);
-            }
+            this.runPostponedReloads();
         });
+    }
+
+    /**
+     * Host::waitForProfileSave for a script's install: desktop runs the event
+     * loop until the save's writes are done, delivering nothing but the save's
+     * own completions. Mudlet Web's save has already written everything by the
+     * time it counts as running (the VFS flush that follows only makes it
+     * durable, and later writes join it), so what is left to wait for is the
+     * window itself - ended here and now, so nothing else gets to run in the
+     * middle of the waiting script either.
+     */
+    private waitOutProfileSave(): void {
+        if (!this.profileSaveInFlight) return;
+        this.profileSaveInFlight = false;
+        this.profileSaveGeneration++;
+        // The save's own completions are delivered by the wait, and the
+        // reloads it held up are among them (Host::profileSaveFinished).
+        this.runPostponedReloads();
+    }
+
+    private saveAfterPackageChangePending = false;
+
+    /**
+     * The profile save a package install or uninstall is followed by, put off
+     * to the next pass of the event loop (Host's mDeferredSaveTimer) so a batch
+     * of installs is not queued behind one save each — and again until no save
+     * or install is running, as one started under an install would hold its
+     * scripts up. Asked for twice, it saves once.
+     *
+     * Nothing is waiting on an answer, so a save that cannot be written is said
+     * on the console (Host::saveProfileReportingFailure); one turned away
+     * because another is running names no file and is let be.
+     */
+    private saveAfterPackageChange(): void {
+        if (this.saveAfterPackageChangePending) return;
+        this.saveAfterPackageChangePending = true;
+        const attempt = (): void => {
+            if (this.profileSaveInFlight || this.installing.size > 0) {
+                this.timerEngine.addTemp(0.1, attempt);
+                return;
+            }
+            this.saveAfterPackageChangePending = false;
+            this.saveSyncedModules();
+            const written = this.saveProfileXml();
+            if (written.ok) {
+                this.markProfileSaveInFlight();
+                void this.vfs?.flush();
+            } else if (written.path) {
+                this.api.postError(`The profile could not be saved to "${written.path}": ${written.err}`);
+            }
+        };
+        this.timerEngine.addTemp(0, attempt);
     }
 
     /** Runs a package's config.lua the way Mudlet does — in an environment with
@@ -3301,16 +3790,54 @@ export class ScriptingEngine implements EngineHost {
         return source => lua.readPackageConfig!(source);
     }
 
+    /**
+     * A crash part-way through an install leaves the folder it was unpacking
+     * into, a "mudlet-installing-" one marked ".mudlet-unpacking"; the next
+     * install of an archive clears it away (Host::installPackage). One
+     * holding files an install had moved out of the way (".mudlet-replaced")
+     * is all that is left of them, so it is kept and its place said instead.
+     * A package or module that is itself called that is left alone.
+     */
+    private clearAwayCrashedUnpacking(): void {
+        const vfs = this.vfs;
+        if (!vfs) return;
+        let names: string[];
+        try { names = vfs.readdir(vfs.profilePath); } catch { return; }
+        const installed = new Set([...this.getPackageNames(), ...this.getModuleNames()]);
+        for (const name of names) {
+            if (!name.startsWith('mudlet-installing-') || installed.has(name)) continue;
+            const folder = `${vfs.profilePath}/${name}`;
+            try { if (vfs.lstat(folder).type !== 'dir') continue; } catch { continue; }
+            if (vfs.exists(`${folder}/.mudlet-unpacking`)) {
+                try { vfs.rmdir(folder); } catch (err) {
+                    console.warn(`[installPackage] could not clear away ${folder}:`, err);
+                }
+            } else if (vfs.exists(`${folder}/.mudlet-replaced`)) {
+                this.api.postWarning(`Some files that were in the way of a package could not be put back, and are in "${folder}".`);
+            }
+        }
+    }
+
+    /** Said when a package's XML would not read, once per file that broke,
+     *  with the reader's reason — Host::installPackage's "Failed to load
+     *  package/module" warning. Only modules were ever asked whether their
+     *  contents loaded, so a package installed to silence. */
+    private announceUnreadableContents(
+        packageName: string,
+        data: Pick<MudletImportResult, 'loadErrors' | 'parseError'>,
+        kind: 'package' | 'module' = 'package',
+    ): void {
+        // A load error is "<package>[/<file>]: <reason>"; the warning gives the reason alone.
+        const reasons = data.loadErrors?.length
+            ? data.loadErrors.map(e => e.slice(e.indexOf(': ') + 2))
+            : [data.parseError ?? ''];
+        for (const reason of reasons) this.api.postWarning(`Failed to load ${kind} "${packageName}": ${reason}`);
+    }
+
     /** What a lost manifest costs, said once, where the player will see it: the
      *  package installed under the archive's own name and filed no details, so a
      *  name-based uninstall, a repository update and anything depending on it
      *  all stop matching with nothing to go on. */
-    /** Said when a package's XML would not read. Only modules were ever asked
-     *  whether their contents loaded, so a package installed to silence. */
-    private announceUnreadableContents(packageName: string, kind: 'package' | 'module' = 'package'): void {
-        this.api.postInfo(`Failed to load ${kind} "${packageName}" — its contents could not be read,`
-            + ' so it is installed but owns nothing.');
-    }
 
     private announceLostManifest(packageName: string, reason: string): void {
         this.api.postInfo(`The config.lua of "${packageName}" could not be read,`
@@ -3403,20 +3930,24 @@ export class ScriptingEngine implements EngineHost {
     /** The saved keybinding carrying this numeric id, or null. Lets getKeyCode
      *  answer for a permanent key by the id permKey handed back, not just by
      *  name — the key engine only indexes permanent keys by name. */
-    keyNodeByNumericId(numericId: number): { key: string; modifiers: string[] } | null {
+    savedKeyNode(idOrName: number | string): KeyNode | null {
         const list = useAppStore.getState().connectionKeybindings[this.connectionId] ?? [];
-        for (const node of list) {
-            if (this.uuidToNumericId.get(node.id) === numericId && node.key) {
-                return { key: node.key, modifiers: node.modifiers ?? [] };
-            }
-        }
-        return null;
+        return list.find(node => typeof idOrName === 'number'
+            ? this.uuidToNumericId.get(node.id) === idOrName
+            : node.name === idOrName) ?? null;
     }
 
+    /** Host::setForceMXPProcessorOn and the slot its signal drives: forcing on a
+     *  processor that is off turns it on locked to secure mode (IRE-style games
+     *  use secure tags without sending mode switches), while one the game
+     *  already had on keeps its mode. Turning it off leaves the modes alone and
+     *  stops the processor unless the game has MXP on. */
     setForceMxpProcessorOn(on: boolean): void {
+        const wasEnabled = this.mxpActive || this.forceMxpProcessorOn;
         this.forceMxpProcessorOn = on;
-        // Mudlet locks secure mode alongside the flag — see lockSecureMode.
-        this.mxp.lockSecureMode(on);
+        this.mxp.setForceLock(on);
+        if (on && !wasEnabled) this.mxp.applyMode(6);
+        if (!on && !this.telnetMxpEnabled) this.mxpActive = false;
     }
 
     /** Mudlet `cTelnet::autoEnableMXPProcessor`. Runs when MXP started from an
@@ -3436,7 +3967,14 @@ export class ScriptingEngine implements EngineHost {
         // key before storing, and the write below sets it literally.
         const alreadyPrompted =
             useAppStore.getState().connectionProfile[this.connectionId]?.config?.promptForMXPProcessorOn === true;
+        if (alreadyPrompted && this.forceMxpProcessorOn) {
+            this.mxp.applyMode(6);
+            return;
+        }
+        this.telnetMxpEnabled = true;
+        this.mxpAutoEnabled = true;
         this.setForceMxpProcessorOn(true);
+        this.mxp.applyMode(6);
         if (alreadyPrompted) return;
         const bag = useAppStore.getState().connectionProfile[this.connectionId]?.config ?? {};
         useAppStore.getState().patchConnectionProfile(this.connectionId, {
@@ -4303,24 +4841,27 @@ export class ScriptingEngine implements EngineHost {
      * Mudlet `tempButton(toolbar, name, orientation)`. Appends a transient
      * button under an existing toolbar group, with no command and no script:
      * TLuaInterpreter::tempButton gives it an empty one, and its third
-     * argument is the orientation. Returns the new id, or -1 when no toolbar
-     * of that name exists or a button or toolbar already has the name —
-     * desktop refuses a duplicate rather than adding a second button, so a
-     * script that makes its buttons on every load does not pile them up
-     * (mudlet-web#238). The Lua wrapper turns -1 into no value, as desktop
-     * returns. `orientation` is round-tripped
+     * argument is the orientation. Returns the new id, or a refusal code:
+     * -1 when nothing has the toolbar's name, -2 when what has it is a plain
+     * button (desktop's findAction(toolbar) takes the first action of that
+     * name and refuses one that is not a folder, as a button under a button
+     * never reaches a toolbar), -3 when a button or toolbar already has the
+     * name — desktop refuses a duplicate rather than adding a second button,
+     * so a script that makes its buttons on every load does not pile them up
+     * (mudlet-web#238). The Lua wrapper turns each into nil and desktop's
+     * message. `orientation` is round-tripped
      * onto the leaf for parity with Mudlet — the renderer doesn't use it at the
      * leaf, but ports that read it back via the store get a stable value.
      */
     createTempButton(toolbar: string, name: string, _orientation: number): number {
-        if (!toolbar || !name) return -1;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
-        const parent = buttons.find(b => b.isGroup && b.name === toolbar);
+        const parent = buttons.find(b => b.name === toolbar);
         if (!parent) return -1;
+        if (!parent.isGroup) return -2;
         // TLuaInterpreter::tempButton's findAction(name) looks at every
         // action, toolbars included, not just the ones on this toolbar.
-        if (buttons.some(b => b.name === name)) return -1;
+        if (buttons.some(b => b.name === name)) return -3;
         const uuid = store.addButton(this.connectionId, {
             name,
             enabled: true,
@@ -4345,7 +4886,6 @@ export class ScriptingEngine implements EngineHost {
      * desktop's findAction(name) is not limited to toolbars.
      */
     createTempButtonToolbar(name: string, orientation: number, location: number): number {
-        if (!name) return -1;
         const store = useAppStore.getState();
         const buttons = store.connectionButtons[this.connectionId] ?? [];
         if (buttons.some(b => b.name === name)) return -1;
@@ -4425,10 +4965,23 @@ export class ScriptingEngine implements EngineHost {
         const buttons = store.connectionButtons[this.connectionId] ?? [];
         const targets = buttons.filter(b => b.name === name);
         if (targets.length === 0) return false;
-        for (const target of targets) {
-            store.updateButton(this.connectionId, target.id, { styleSheet: String(css ?? '') });
-        }
+        this.layOutButtonBarsNow(() => {
+            for (const target of targets) {
+                store.updateButton(this.connectionId, target.id, { styleSheet: String(css ?? '') });
+            }
+        });
         return true;
+    }
+
+    /**
+     * Apply a change to the button bars and lay it out before the script goes
+     * on. A bar along the top or bottom takes its room from the main console,
+     * which getMainWindowSize() and sysWindowResizeEvent report at once on
+     * desktop — and a script holds the event loop a deferred render waits for.
+     */
+    private layOutButtonBarsNow(update: () => void): void {
+        flushSync(update);
+        this.session.windows.primeMainResize();
     }
 
     /**
@@ -4481,9 +5034,11 @@ export class ScriptingEngine implements EngineHost {
                 ? `toolbar '${name}' is set to float, which showToolBar() and hideToolBar() do not move`
                 : `toolbar '${name}' not found`;
         }
-        for (const target of targets) {
-            store.updateButton(this.connectionId, target.id, { enabled: !!show });
-        }
+        this.layOutButtonBarsNow(() => {
+            for (const target of targets) {
+                store.updateButton(this.connectionId, target.id, { enabled: !!show });
+            }
+        });
         return null;
     }
 
@@ -4639,6 +5194,8 @@ export class ScriptingEngine implements EngineHost {
         this.scriptCompiledAt.set(script.id, ++this.scriptCompileSeq);
         this.compiledThisLoad?.add(script.id);
         const wasFailed = this.failedScripts.has(script.id);
+        const outerScript = this.runningScript;
+        this.runningScript = { chunk: `Script: ${script.name}`, owner: script.packageName ?? '' };
         try {
             rt.load(script.code, script.name);
             this.failedScripts.delete(script.id);
@@ -4646,7 +5203,10 @@ export class ScriptingEngine implements EngineHost {
         } catch (err) {
             this.failedScripts.add(script.id);
             this.scriptLoadErrors.set(script.id, err);
-            this.reportEntityError('script', script.id, script.name, err);
+            this.reportEntityError('script', script.id, script.name, err,
+                rt.syntaxError?.(script.code, script.name) != null);
+        } finally {
+            this.runningScript = outerScript;
         }
         // A body that failed, or one that compiles again after failing, turns
         // its own handlers and those of everything under it off or back on.
@@ -4768,6 +5328,10 @@ export class ScriptingEngine implements EngineHost {
         try {
             return this.processInputPass(text);
         } finally {
+            // At every depth, as AliasUnit's guard does: once the pass is over,
+            // `command` holds the last command expanded, not the value an alias
+            // script was handed back.
+            this.runtimes.lua?.settleCommandAfterAliasPass?.();
             if (--this.aliasDepth <= 1) this.aliasRunawayStopped = false;
             // AliasUnit's doCleanup, once the outermost alias pass is over.
             if (this.aliasDepth === 0) this.aliasEngine.reapKilled();
@@ -4785,7 +5349,9 @@ export class ScriptingEngine implements EngineHost {
         // Mirror the input into the Lua `command` global before alias matching,
         // matching Mudlet's AliasUnit::processDataStream. Persists between inputs
         // so the stock "Repeat Last Command" key (`send(command)`) works.
-        this.runtimes.lua?.setCommand(text);
+        const lua = this.runtimes.lua;
+        if (lua?.setExpandedCommand) lua.setExpandedCommand(text);
+        else lua?.setCommand(text);
         // Every alias the command matches fires, not just the first: Mudlet's
         // pass walks the whole unit and matches each active alias in turn, so a
         // command two aliases claim runs both of them. The command is consumed
@@ -4856,6 +5422,18 @@ export class ScriptingEngine implements EngineHost {
         return this.api.getCmdLine();
     }
 
+    /** The game took hidden input (ECHO): what the command bar holds is put
+     *  aside as the command line, and the bar becomes the hidden-input box
+     *  (see ScriptingAPI.beginHiddenInput). */
+    beginHiddenInput(command: string): void {
+        this.api.beginHiddenInput(command);
+    }
+
+    /** The prompt for hidden input ended. */
+    endHiddenInput(): void {
+        this.api.endHiddenInput();
+    }
+
     /** The commands packages placed with addCommand, for the bar that draws
      *  them. Narrower than handing out the whole API: the toolbar needs to read
      *  the list, hear when it changes, and report a click. */
@@ -4908,10 +5486,14 @@ export class ScriptingEngine implements EngineHost {
      * failure). Mudlet requires the mapper open; Mudlet Web's renderer lives in the
      * map widget, so the same precondition applies.
      */
-    exportAreaImageToVfs(areaId: number, filePath: string, zLevel?: number | true): { path: string } | { error: string } {
+    exportAreaImageToVfs(areaId: number, filePath: string, zLevel?: number | true): { path: string } | { error: string; target?: boolean } {
         const vfs = this.vfs;
         if (!vfs) return { error: 'no profile filesystem mounted' };
-        if (!filePath) return { error: 'filePath is required' };
+        // An unknown area is refused (nil) before the target is looked at; a
+        // target that cannot be written is the export's own refusal (false).
+        if (!this.session.windows.mapStore.hasArea(areaId)) return { error: `areaID ${areaId} not found` };
+        const problem = exportTargetProblem(vfs, filePath, zLevel === true);
+        if (problem) return { error: problem, target: true };
         if (zLevel === true) return this.exportEveryAreaLevelToVfs(areaId, filePath);
         const bytes = this.session.windows.exportAreaImage(areaId, zLevel);
         if (!bytes) return { error: `area ${areaId} could not be rendered (is the mapper open?)` };
@@ -5414,7 +5996,7 @@ export class ScriptingEngine implements EngineHost {
     private collectInstallProblems(
         name: string,
         commit: () => void,
-        items: Pick<MudletImportResult, 'triggers' | 'timers' | 'aliases' | 'buttons' | 'keys'>,
+        items: Pick<MudletImportResult, 'triggers' | 'timers' | 'aliases' | 'buttons' | 'keys' | 'loadErrors'>,
     ): string | null {
         const outer = this.installProblems;
         const problems: string[] = [];
@@ -5426,23 +6008,64 @@ export class ScriptingEngine implements EngineHost {
             this.installProblems = outer;
             this.installing.delete(name);
         }
-        this.carryOutHeldRemovals();
         // Every kind whose Lua is compiled as it is read, in the order
         // XMLimport reads their packages — each unit names the items it could
-        // not compile (XMLimport::mItemsWithErrors).
+        // not compile (XMLimport::mItemsWithErrors), in document order: a
+        // group ahead of what is in it, and an item's script ahead of its
+        // patterns. A group's script is compiled like any other item's.
         const rt = this.runtimes.lua;
-        const kinds: [CodeItemKind, readonly { isGroup?: boolean; code?: string; language?: string; name: string }[]][] = [
+        const kinds: [CodeItemKind, readonly { code?: string; language?: string; name: string }[]][] = [
             ['trigger', items.triggers], ['timer', items.timers], ['alias', items.aliases],
             ['button', items.buttons], ['key', items.keys],
         ];
         for (const [kind, list] of kinds) {
             for (const item of list ?? []) {
-                if (item.isGroup || !item.code || item.language !== 'lua') continue;
-                const err = itemSyntaxError(rt, item.code, itemChunkName(kind, item.name));
-                if (err) problems.push(`${item.name}: ${err}`);
+                if (item.code && item.language === 'lua') {
+                    const err = itemSyntaxError(rt, item.code, itemChunkName(kind, item.name));
+                    if (err) problems.push(`${item.name}: Lua syntax error: ${err}`);
+                }
+                const patternError = kind === 'trigger' ? this.triggerPatternErrors(item as TriggerNode)
+                    : kind === 'alias' ? aliasPatternError((item as AliasNode).pattern)
+                        : null;
+                if (patternError) problems.push(`${item.name}: ${patternError}`);
             }
         }
+        // Then each file that could not be read whole, named by the package
+        // (and the file, for an archive): the install's loadErrors, which go
+        // to the caller and the install events behind the items' errors.
+        problems.push(...(items.loadErrors ?? []));
         return problems.length > 0 ? problems.join('; ') : null;
+    }
+
+    /**
+     * Why a trigger's patterns do not all compile, in the plain text
+     * XMLimport hands back for TTrigger::setRegexCodeList's error: one
+     * sentence per pattern that failed, numbered by its place in the list, or
+     * null when they all compile (a trigger with no patterns is kept for its
+     * script and is not broken).
+     */
+    private triggerPatternErrors(trigger: TriggerNode): string | null {
+        const errors: string[] = [];
+        (trigger.patterns ?? []).forEach((p, i) => {
+            if (!p.text && p.type !== 'prompt') return;
+            const item = i + 1;
+            if (p.type === 'regex') {
+                const reason = perlPatternError(p.text);
+                if (reason !== null) errors.push(`Error: in item ${item}, perl regex "${p.text}" failed to compile, reason: "${reason}".`);
+            } else if (p.type === 'luaFunction') {
+                const fn = `trigger${this.uuidToNumericId.get(trigger.id) ?? 0}condition${i}`;
+                const reason = this.runtimes.lua?.syntaxError?.(`function ${fn}() ${p.text}\nend`, fn) ?? null;
+                if (reason !== null) errors.push(`Error: in item ${item}, lua function "${p.text}" failed to compile, reason: "${reason}".`);
+            } else if (p.type === 'colorTrigger') {
+                const problem = colorPatternProblem(p.text);
+                if (problem === 'noColors') {
+                    errors.push(`Error: in item ${item}, no colors to match were set - at least one of the foreground or background must not be ignored.`);
+                } else if (problem === 'noMatch') {
+                    errors.push(`Error: in item ${item}, color pattern "${p.text}" names no color that can be matched.`);
+                }
+            }
+        });
+        return errors.length > 0 ? errors.join(' ') : null;
     }
 
     private reportEntityError(
@@ -5450,13 +6073,18 @@ export class ScriptingEngine implements EngineHost {
         id: string,
         name: string,
         err: unknown,
+        compileFailed = false,
     ): void {
         const prefix = formatErrorPrefix(kind, name);
         const msg = describeThrown(err, prefix);
         // A script that stops with an error while its package is installing
         // is reported to whoever asked for the install, too — see
-        // collectInstallProblems.
-        if (kind === 'script' && this.installProblems) this.installProblems.push(`${name}: ${msg}`);
+        // collectInstallProblems — saying, as desktop does, whether its body
+        // would not compile or raised as it ran.
+        if (kind === 'script' && this.installProblems) {
+            const what = compileFailed ? 'Lua syntax error' : 'Lua error';
+            this.installProblems.push(`${name}: ${what}: ${msg}`);
+        }
         const source: ScriptLogSource = { kind, id, name };
         const line = parseLuaErrorLine(msg);
         if (line !== undefined) source.line = line;
@@ -5474,8 +6102,11 @@ export class ScriptingEngine implements EngineHost {
         }
         if (alias.code && alias.language === 'lua') {
             try {
-                this.runtimes.lua?.runWithMatches(alias.code, alias.name, matches, undefined, named,
+                const lua = this.runtimes.lua;
+                const run = () => lua?.runWithMatches(alias.code, alias.name, matches, undefined, named,
                     undefined, undefined, undefined, undefined, itemChunkName('alias', alias.name));
+                if (lua?.asAliasScript) lua.asAliasScript(run);
+                else run();
             } catch (err) {
                 this.reportEntityError('alias', alias.id, alias.name, err);
             }
@@ -5569,14 +6200,18 @@ export class ScriptingEngine implements EngineHost {
             ...(fgColor ? { foreground: fgColor } : {}),
             ...(bgColor ? { background: bgColor } : {}),
         };
-        for (const { text, span } of highlightTargets(matches, matchStart, captureSpans, groupCount)) {
-            const ok = span
-                ? this.api.selectSection(span.start, span.length)
-                : this.api.selectString(text, 1) >= 0;
-            if (!ok) continue;
-            this.api.applyFormatToSelection(format);
-            this.api.deselect();
-        }
+        // On the line being processed, wherever an earlier trigger's script
+        // left the cursor.
+        this.api.onPassLine(() => {
+            for (const { text, span } of highlightTargets(matches, matchStart, captureSpans, groupCount)) {
+                const ok = span
+                    ? this.api.selectSection(span.start, span.length)
+                    : this.api.selectString(text, 1) >= 0;
+                if (!ok) continue;
+                this.api.applyFormatToSelection(format);
+                this.api.deselect();
+            }
+        });
     }
 
     private executePermKeybinding(binding: KeyNode): void {
@@ -5658,7 +6293,14 @@ export class ScriptingEngine implements EngineHost {
 
                 for (let i = 0; i < lines.length; i++) {
                     try {
-                        const line = lines[i];
+                        let line = lines[i];
+                        // A trigger on the line before may have fed an
+                        // unterminated line of its own; it sits in TBuffer's
+                        // mMudLine, which this line is then appended to.
+                        if (i > 0 && type === 'mud') {
+                            const held = this.api.takeHeldFeedText();
+                            if (held) line = held + line;
+                        }
                         const lineIsPrompt = this.promptPending && i === lines.length - 1;
                         if (lineIsPrompt) this.promptPending = false;
 
@@ -5968,7 +6610,7 @@ export class ScriptingEngine implements EngineHost {
         // short, fixed list of boolean settings only — the ones whose Host
         // setters go through raiseSettingChangedEvent (compactInputLine,
         // mapperPanelVisible, enableClosedCaption, advertiseScreenReader,
-        // announceIncomingText) and MudletMedia's two mute gates — always as
+        // announceIncomingText, accessibleLabels) and MudletMedia's two mute gates — always as
         // (getConfig key, boolean), and only when the value actually changed.
         // Every other setting changes silently, so the store is watched for
         // those keys alone, compared by the value getConfig would answer.
@@ -6029,9 +6671,10 @@ export class ScriptingEngine implements EngineHost {
                 else if (type !== 'error') this.visibility.onOutput();
             }),
             // Mudlet `sysTelnetEvent(type, option, message)` — fired by
-            // MudClient for every telnet IAC command but GA/EOR.
+            // MudClient for every telnet IAC command but GA/EOR. The message
+            // goes over as bytes (desktop's ARGUMENT_TYPE_BYTES), not text.
             session.events.on('telnet.event', (type, option, message) => {
-                this.raiseEvent('sysTelnetEvent', [type, option, message]);
+                this.raiseEvent('sysTelnetEvent', [type, option, new LuaBytes(message)]);
             }),
             // Mudlet `sysEchoAnomalyDetected` — raised once when the echo
             // handler trips its 5-toggles-in-5s safeguard and refuses ECHO
@@ -6060,7 +6703,10 @@ export class ScriptingEngine implements EngineHost {
                 this.enabledProtocols.delete(protocol);
                 // Mudlet stops the MXP processor when the option goes away,
                 // unless the profile forces it on (cTelnet, TN_WONT/TN_DONT).
-                if (protocol === 'MXP' && !this.forceMxpProcessorOn) this.mxpActive = false;
+                if (protocol === 'MXP') {
+                    this.telnetMxpEnabled = false;
+                    if (!this.forceMxpProcessorOn) this.mxpActive = false;
+                }
                 this.raiseEvent('sysProtocolDisabled', [protocol]);
             }),
             // Mudlet `sysCharacterModeDetected` — the server requested SGA and
@@ -6100,6 +6746,11 @@ export class ScriptingEngine implements EngineHost {
                 // open tags/modes and wait for the new session's mxp.negotiated.
                 this.mxp.reset();
                 this.mxpActive = false;
+                this.telnetMxpEnabled = false;
+                this.mxpAutoEnabled = false;
+                // The processor is off until the preference below turns it back
+                // on, locked secure as Host's signal_connected slot does.
+                this.forceMxpProcessorOn = false;
                 // Frames belong to the session that declared them, so the new
                 // one starts from an unsplit main window (Mudlet resets its
                 // TMxpFrameManager on connect for the same reason).
@@ -6126,6 +6777,7 @@ export class ScriptingEngine implements EngineHost {
                 // sysDisconnectionEvent for it — no sysProtocolDisabled per
                 // protocol — so nothing more is announced.
                 if (this.enabledProtocols.has('MXP')) this.mxpActive = false;
+                this.telnetMxpEnabled = false;
                 this.enabledProtocols.clear();
             }),
             // Built-in Client.GUI handler — Mudlet semantics. One entry point
@@ -6171,7 +6823,7 @@ export class ScriptingEngine implements EngineHost {
                 }
                 // Built-in Client.Media handler — Mudlet's GMCP media protocol
                 // (TMedia MediaProtocolGMCP). `Client.Media.Play/Load/Stop/
-                // Default` drive server-side audio; we advertise `Client.Media 1`
+                // Default` drive server-side audio; we advertise `Client.Media 2`
                 // in Core.Supports.Set, so a server may send these instead of MSP.
                 const lowerPath = path.toLowerCase();
                 if (lowerPath === 'client.media' || lowerPath.startsWith('client.media.')) {
@@ -6192,16 +6844,22 @@ export class ScriptingEngine implements EngineHost {
             // MXP finished negotiating (telnet option 91). Flip on in-band markup
             // parsing and mirror the GMCP/MSDP/MSSP pair so scripts can hook
             // sysProtocolEnabled('MXP').
-            session.events.on('mxp.negotiated', (viaTelnet, viaSubnegotiation) => {
+            session.events.on('mxp.negotiated', (viaTelnet) => {
+                if (viaTelnet) {
+                    // cTelnet::switchMxpOn, for a WILL, a DO or a bare IAC SB MXP
+                    // IAC SE alike: each time the game switches MXP on it starts in
+                    // open mode, the spec's initial default, over whatever an
+                    // earlier game or the auto-enable left (Force MXP keeps its
+                    // secure default); a mode the game locks in after that holds
+                    // when it repeats the switch-on.
+                    if (!this.telnetMxpEnabled || this.mxpAutoEnabled) this.mxp.applyMode(5);
+                    this.telnetMxpEnabled = true;
+                    this.mxpAutoEnabled = false;
+                }
                 this.mxpActive = true;
                 // MXP inferred from in-band line modes rather than negotiated:
                 // Mudlet turns the processor on for good and says so.
                 if (!viaTelnet) this.autoEnableMxpProcessor();
-                // A bare IAC SB MXP IAC SE starts the processor in locked mode:
-                // the server has said nothing about what it will send, so nothing
-                // it sends is markup until it switches modes itself (cTelnet sets
-                // MXP_MODE_CODE_LOCK_LOCKED on that subnegotiation).
-                if (viaSubnegotiation) this.mxp.setLockedMode('locked');
             }),
             // Mudlet `setChannel102Table` — the zMUD out-of-band channel writes
             // its numbered variable into the Lua `channel102` table and raises
@@ -6283,4 +6941,47 @@ function logMxpLine(raw: string, segments: BufferSegment[]): void {
     });
     // eslint-disable-next-line no-console
     console.debug(`[mudlet.mxp] raw=${JSON.stringify(raw)}\n${segs.join('\n')}`);
+}
+
+/** The image formats Qt's QImageWriter writes with its stock plugins — what
+ *  desktop's export accepts as a file suffix. */
+const EXPORT_IMAGE_FORMATS = new Set([
+    'bmp', 'cur', 'ico', 'jpeg', 'jpg', 'pbm', 'pgm', 'png', 'ppm', 'tif', 'tiff', 'wbmp', 'webp', 'xbm', 'xpm',
+]);
+
+/** `path` without the slashes it ends in. A loop rather than `/\/+$/`, which
+ *  backtracks quadratically over a long run of slashes that is not at the end. */
+function withoutTrailingSlashes(path: string): string {
+    let end = path.length;
+    while (end > 0 && path.charCodeAt(end - 1) === 0x2f) end--;
+    return path.slice(0, end);
+}
+
+/**
+ * T2DMap's exportTargetProblem: the image is saved after the call has answered,
+ * too late to report a failure, so the likely causes are checked first. A name
+ * template for every z level is never written itself, so only what its level
+ * files share is checked against it. Null when nothing is wrong.
+ */
+function exportTargetProblem(vfs: ProfileVFS, filePath: string, nameTemplate: boolean): string | null {
+    if (!filePath) return 'No file name given';
+    const abs = filePath.startsWith('/') ? filePath : `${vfs.profilePath}/${filePath}`;
+    const trimmed = withoutTrailingSlashes(abs) || '/';
+    const slash = abs.lastIndexOf('/');
+    const fileName = abs.slice(slash + 1);
+    const directory = withoutTrailingSlashes(abs.slice(0, slash)) || '/';
+    const target = vfs.stat(trimmed);
+    if (target?.type === 'dir' && (!nameTemplate || fileName === '')) return `${trimmed} is a directory`;
+    const dir = vfs.stat(directory);
+    if (!dir) return `Directory ${directory} does not exist`;
+    if (dir.type !== 'dir') return `${directory} is not a directory`;
+    if (fileName === '') return 'No file name given';
+    if (!nameTemplate) {
+        if (target && !(target.mode & 0o200)) return `File ${abs} is not writable`;
+        if (!target && !(dir.mode & 0o200)) return `Directory ${directory} is not writable`;
+    }
+    const dot = fileName.lastIndexOf('.');
+    const format = dot > 0 ? fileName.slice(dot + 1).toLowerCase() : 'png';
+    if (!EXPORT_IMAGE_FORMATS.has(format)) return `Image format "${format}" is not supported`;
+    return null;
 }

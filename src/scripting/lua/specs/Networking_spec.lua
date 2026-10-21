@@ -31,6 +31,57 @@ local function assertArgError(fn, needle)
   assert.is_true(contains(err, needle), tostring(err))
 end
 
+-- connectToServer's save flag writes the profile's url and port files. Returns a
+-- function for finally() that puts both back as they were, or removes them.
+-- Each file is restored on its own, so one that cannot be written back neither
+-- stops the other nor goes unreported.
+local ENOENT = 2
+
+local function preserveProfileAddress()
+  local directory = getMudletHomeDir()
+  local saved = {}
+  for _, name in ipairs({"url", "port"}) do
+    local path = directory .. "/" .. name
+    local handle, err, code = io.open(path, "rb")
+    if handle then
+      local contents, readErr = handle:read("*a")
+      handle:close()
+      assert(contents, "could not read " .. path .. ": " .. tostring(readErr))
+      saved[name] = contents
+    else
+      -- Only a missing file may be deleted afterwards; any other failure would
+      -- otherwise turn an unreadable address into a lost one.
+      assert(code == ENOENT, "could not read " .. path .. ": " .. tostring(err))
+      saved[name] = false
+    end
+  end
+  return function()
+    local failures = {}
+    for name, contents in pairs(saved) do
+      local path = directory .. "/" .. name
+      local ok, err = pcall(function()
+        if contents then
+          local handle = assert(io.open(path, "wb"))
+          assert(handle:write(contents))
+          assert(handle:close())
+        else
+          local removed, removeErr, code = os.remove(path)
+          assert(removed or code == ENOENT, removeErr)
+        end
+      end)
+      if not ok then
+        failures[#failures + 1] = tostring(err)
+      end
+    end
+    assert(#failures == 0, "could not restore the profile's address: " .. table.concat(failures, "; "))
+  end
+end
+
+local function storedProfileAddress()
+  local entry = getProfiles()[getProfileName()]
+  return entry.host, entry.port
+end
+
 describe("Networking send functions honour their disconnected/offline contracts", function()
   -- Force a non-connected telnet state so the connection guards fire
   -- deterministically regardless of what the self-test profile's socket is
@@ -126,6 +177,17 @@ describe("connectToServer validates its arguments without connecting", function(
     assert.is_nil(ok)
     assert.is_true(contains(err, "invalid port number"))
   end)
+
+  -- Checked before anything is written to the profile or a connection is tried.
+  it("raises a Lua error when the save flag is not a boolean, and saves nothing", function()
+    finally(preserveProfileAddress())
+    local hostBefore, portBefore = storedProfileAddress()
+    assertArgError(function() connectToServer("example.invalid", 23, "yes") end,
+                   "connectToServer: bad argument #3 type")
+    local hostAfter, portAfter = storedProfileAddress()
+    assert.equals(hostBefore, hostAfter)
+    assert.equals(portBefore, portAfter)
+  end)
 end)
 
 describe("getConnectionInfo returns a host/port/connected triple", function()
@@ -175,7 +237,25 @@ describe("HTTP and download functions validate arguments before issuing a reques
     end)
 
     it("raises a Lua error when a header value is not a string", function()
-      assertArgError(function() getHTTP("http://localhost/", {["X-Test"] = 5}) end, "getHTTP: bad argument")
+      assertArgError(function() getHTTP("http://localhost/", {["X-Test"] = 5}) end,
+        'getHTTP: bad argument #2 type (custom header "X-Test" must have a string value, got number)')
+    end)
+
+    it("blames the value, naming its header, when only the value is wrong", function()
+      assertArgError(function() getHTTP("http://localhost/", {["X-Test"] = {}}) end,
+        'getHTTP: bad argument #2 type (custom header "X-Test" must have a string value, got table)')
+    end)
+
+    it("blames the name when a header name is not a string", function()
+      assertArgError(function() getHTTP("http://localhost/", {"value"}) end,
+        "getHTTP: bad argument #2 type (custom header names must be strings, got number)")
+    end)
+
+    it("blames the name, not the value, when both are wrong", function()
+      assertArgError(function() getHTTP("http://localhost/", {[1] = {}}) end,
+        "getHTTP: bad argument #2 type (custom header names must be strings, got number)")
+      assertArgError(function() getHTTP("http://localhost/", {[true] = {}}) end,
+        "getHTTP: bad argument #2 type (custom header names must be strings, got boolean)")
     end)
   end)
 
@@ -248,6 +328,128 @@ describe("HTTP and download functions validate arguments before issuing a reques
       assert.is_nil(ok)
       assert.is_true(contains(err, "couldn't open"), tostring(err))
       assert.is_true(contains(err, "busted-no-such-upload.txt"), tostring(err))
+    end)
+  end)
+
+  describe("a url that is not http or https", function()
+    -- file:, qrc: and data: urls would hand local or bundled content back as
+    -- though it had been downloaded
+    -- a scratch file rather than a system one: Qt's file backend would write a
+    -- putHTTP payload into it if the scheme check ever stopped refusing it
+    -- file:/// and no leading slash: on Windows the home dir starts with a drive letter,
+    -- which file:// alone would parse as a host
+    local refused = {"file:///" .. getMudletHomeDir():gsub("^/", "") .. "/busted-refused-scheme-target.txt", "qrc:/icons/mudlet.png", "data:text/plain,hello", "ftp://localhost/file.txt"}
+    -- downloadFile() only copies to a path the script chose, so a local file is still allowed there
+    local refusedByDownloadFile = {"qrc:/icons/mudlet.png", "data:text/plain,hello", "ftp://localhost/file.txt"}
+
+    local function assertRefused(url, ok, err)
+      assert.is_nil(ok, url)
+      local scheme = url:match("^(%a+):")
+      assert.is_true(contains(err, "unsupported scheme '" .. scheme .. "'"), url .. " gave: " .. tostring(err))
+    end
+
+    it("is refused by downloadFile, unless it is a local file", function()
+      local target = getMudletHomeDir() .. "/busted-refused-scheme.txt"
+      finally(function() os.remove(target) end)
+      for _, url in ipairs(refusedByDownloadFile) do
+        local ok, err = downloadFile(target, url)
+        assertRefused(url, ok, err)
+      end
+    end)
+
+    it("is refused by downloadFile for a file url naming another host", function()
+      local target = getMudletHomeDir() .. "/busted-refused-host.txt"
+      finally(function() os.remove(target) end)
+      local ok, err = downloadFile(target, "file://example.invalid/share/x")
+      assert.is_nil(ok)
+      assert.is_true(contains(err, "file url names host 'example.invalid'"), tostring(err))
+    end)
+
+    it("is refused by downloadFile for a file url whose path names a share", function()
+      local target = getMudletHomeDir() .. "/busted-refused-share.txt"
+      finally(function() os.remove(target) end)
+      for _, url in ipairs({"file:////example.invalid/share/x", "file:///%5C%5Cexample.invalid%5Cshare%5Cx", "file://localhost//example.invalid/share/x"}) do
+        local ok, err = downloadFile(target, url)
+        assert.is_nil(ok, url)
+        assert.is_true(contains(err, "file url names a network path"), url .. " gave: " .. tostring(err))
+      end
+    end)
+
+    for _, case in ipairs({{"a plain path", nil}, {"a file://localhost url", "localhost"}, {"a file://LOCALHOST url", "LOCALHOST"}}) do
+      local description, authority = case[1], case[2]
+      local function asUrl(path)
+        return authority and ("file://" .. authority .. "/" .. path:gsub("^/", "")) or path
+      end
+      it("still lets downloadFile copy a local file given as " .. description, function()
+        local source = getMudletHomeDir() .. "/busted-local-download-source.txt"
+        local target = getMudletHomeDir() .. "/busted-local-download-copy.txt"
+        if not os.getenv("MUDLET_TEST_MODE") then
+          -- the copy needs pumpEvents(), which is refused outside MUDLET_TEST_MODE; a missing
+          -- source still shows the url is accepted, and leaves no copy behind
+          assert.is_true(downloadFile(target, asUrl(source .. "-missing")))
+          pending("waiting for the copy needs pumpEvents(), which is refused outside MUDLET_TEST_MODE")
+          return
+        end
+        -- a handler rather than waitForEvent(): another download still in flight
+        -- raises sysDownloadDone too, and one finishing alongside it would be missed
+        local copied, failure = false, nil
+        local doneHandler = registerAnonymousEventHandler("sysDownloadDone", function(_, localFile)
+          if localFile == target then
+            copied = true
+          end
+        end)
+        local errorHandler = registerAnonymousEventHandler("sysDownloadError", function(_, reason, localFile)
+          if localFile == target then
+            failure = reason
+          end
+        end)
+        finally(function()
+          killAnonymousEventHandler(doneHandler)
+          killAnonymousEventHandler(errorHandler)
+          os.remove(source)
+          os.remove(target)
+        end)
+        os.remove(target)
+        local file = io.open(source, "w")
+        file:write("mudlet-spec-local-copy")
+        file:close()
+
+        assert.is_true(downloadFile(target, asUrl(source)))
+        for _ = 1, 100 do
+          if copied or failure then
+            break
+          end
+          pumpEvents(20)
+        end
+        assert.is_nil(failure, "the copy failed: " .. tostring(failure))
+        assert.is_true(copied, "no sysDownloadDone for the copy")
+        local copy = io.open(target, "r")
+        assert.is_not_nil(copy, "the local file was not copied")
+        local body = copy:read("*a")
+        copy:close()
+        assert.equals("mudlet-spec-local-copy", body)
+      end)
+    end
+
+    it("is refused by getHTTP", function()
+      for _, url in ipairs(refused) do
+        assertRefused(url, getHTTP(url))
+      end
+    end)
+
+    it("is refused by postHTTP, putHTTP, deleteHTTP and customHTTP", function()
+      for _, url in ipairs(refused) do
+        assertRefused(url, postHTTP("payload", url))
+        assertRefused(url, putHTTP("payload", url))
+        assertRefused(url, deleteHTTP(url))
+        assertRefused(url, customHTTP("REPORT", "payload", url))
+      end
+    end)
+
+    it("is refused for a local path, which would otherwise be read as a file: url", function()
+      local ok, err = getHTTP(getMudletHomeDir())
+      assert.is_nil(ok)
+      assert.is_true(contains(err, "unsupported scheme 'file'"), tostring(err))
     end)
   end)
 
@@ -868,6 +1070,38 @@ describe("MMCP effects against a scripted chat peer", function()
   local peerRequired = os.getenv("MUDLET_TEST_REQUIRE_MMCP_PEER")
   local commandCounter = 0
   local originalChatName
+  local originalBorders
+  local dockWasShowing
+  local originalRouteChatLine
+
+  -- The chat lines these specs display ("<peer> chats to ...", "You chat to ...")
+  -- match the base UI's chat capture triggers, all of which go through
+  -- BaseUI.routeChatLine. That docks its chat window on the right border on first
+  -- use and keeps it there, leaving the main console narrower for every later spec.
+  setup(function()
+    originalBorders = getBorderSizes()
+    if BaseUI then
+      dockWasShowing = BaseUI.container ~= nil and not BaseUI.container.hidden
+      originalRouteChatLine = BaseUI.routeChatLine
+      BaseUI.routeChatLine = function() end
+    end
+  end)
+
+  -- Its own teardown, so a failing one below cannot leave chat routing switched
+  -- off. A dock some other path brought up here is put away the way BaseUI.hide()
+  -- does, which gives the border back.
+  teardown(function()
+    if not BaseUI then
+      return
+    end
+    if originalRouteChatLine then
+      BaseUI.routeChatLine = originalRouteChatLine
+    end
+    if not dockWasShowing and BaseUI.container and not BaseUI.container.hidden then
+      BaseUI.container:hide()
+      BaseUI.container:adjustBorder()
+    end
+  end)
 
   local function readFile(path)
     local handle = io.open(path, "r")
@@ -1449,6 +1683,26 @@ describe("MMCP effects against a scripted chat peer", function()
       assert.is_true(contains(received[2][2], "second of two"), tostring(received[2][2]))
     end)
 
+    it("handles a command and the start of the next one in a single write", function()
+      if peerUnavailable() then return end
+      ensurePeer()
+      -- The complete command must not wait for the next one to finish, and the
+      -- start of the next one must be kept for when the rest of it arrives.
+      local received = collectEvents("sysMMCPChatMessage", function()
+        peerSendsRaw(string.char(7) .. "<CHAT> whole one" .. string.char(255)
+                     .. string.char(7) .. "<CHAT> started ")
+        pump(500)
+      end)
+      assert.equals(1, #received)
+      assert.is_true(contains(received[1][2], "whole one"), tostring(received[1][2]))
+      received = collectEvents("sysMMCPChatMessage", function()
+        peerSendsRaw("and finished" .. string.char(255))
+        pump(500)
+      end)
+      assert.equals(1, #received)
+      assert.is_true(contains(received[1][2], "started and finished"), tostring(received[1][2]))
+    end)
+
     it("skips a command it does not know without losing the next one", function()
       if peerUnavailable() then return end
       ensurePeer()
@@ -1751,6 +2005,55 @@ describe("MMCP effects against a scripted chat peer", function()
       assert.equals("after the gap", after.text, "payload bytes: " .. after.hex)
     end)
 
+    it("sends a snooper a prompt without the marker Mudlet ends it with", function()
+      if peerUnavailable() then return end
+      ensurePeer()
+      assert.is_true(mmcp.allowSnoop(PEER_NAME))
+      finally(function()
+        if mmcp.getClientFlags(PEER_NAME) == "      N " then
+          peerSends(30, "")
+          waitUntil(function() return mmcp.getClientFlags(PEER_NAME) == "      n " end, 2000)
+        end
+        mmcp.allowSnoop(PEER_NAME)
+      end)
+      peerSends(30, "")
+      assert.is_true(waitUntil(function()
+        return mmcp.getClientFlags(PEER_NAME) == "      N "
+      end, 2000))
+
+      -- IAC GA, then IAC EOR
+      for _, ending in ipairs({"\255\249", "\255\239"}) do
+        local mark = captureSeq()
+        feedTelnet("a normal line\r\n<100hp 50mp> " .. ending)
+        local prompt = waitForPeerEvent(mark, function(event)
+          return event.type == "command" and event.name == "SnoopData" and contains(event.text, "100hp")
+        end, 2000)
+        assert.is_table(prompt)
+        assert.equals("<100hp 50mp> ", prompt.text, "payload bytes: " .. prompt.hex)
+      end
+
+      -- and a GA straight after a line ending sends no blank line of its own
+      local mark = captureSeq()
+      feedTelnet("a line before a bare GA\r\n\255\249")
+      feedTelnet("the next line\r\n")
+      assert.is_table(waitForPeerEvent(mark, function(event)
+        return event.type == "command" and event.name == "SnoopData" and contains(event.text, "the next line")
+      end, 2000))
+      local blank = waitForPeerEvent(mark, function(event)
+        return event.type == "command" and event.name == "SnoopData" and (event.text == "" or event.text == "?")
+      end, 0)
+      assert.is_nil(blank, "a bare GA reached the snooper as a line of its own")
+
+      -- a literal 0xff (IAC IAC) that ends a read is game text, not the marker
+      mark = captureSeq()
+      feedTelnet("a read that ends in \255\255")
+      local literal = waitForPeerEvent(mark, function(event)
+        return event.type == "command" and event.name == "SnoopData" and contains(event.text, "a read that ends in")
+      end, 2000)
+      assert.is_table(literal, "a literal 0xff ending a read lost the snooper the frame")
+      assert.equals("a read that ends in ?", literal.text, "payload bytes: " .. literal.hex)
+    end)
+
     it("raises sysMMCPIncomingSnoopMessage for snooped output", function()
       if peerUnavailable() then return end
       ensurePeer()
@@ -1770,6 +2073,19 @@ describe("MMCP effects against a scripted chat peer", function()
       peerSendsRaw(string.char(31) .. "\27[1;32ma green snooped line\27[0m" .. string.char(255))
       local _, _, message = waitForEvent("sysMMCPIncomingSnoopMessage", 2000)
       assert.is_true(contains(message, "\27[1;32ma green snooped line"), tostring(message))
+    end)
+
+    it("keeps all of a snooped frame longer than 64 KiB", function()
+      if peerUnavailable() then return end
+      ensurePeer()
+      -- A frame's length was once carried in 16 bits, so one 10 bytes past
+      -- 65536 was shown as just its last 10.
+      local length = 65536 + 10
+      peerSendsRaw(string.char(31) .. string.rep("x", length) .. string.char(255))
+      local _, _, message = waitForEvent("sysMMCPIncomingSnoopMessage", 5000)
+      assert.is_string(message)
+      local _, count = message:gsub("x", "")
+      assert.equals(length, count)
     end)
   end)
 
@@ -2126,6 +2442,49 @@ describe("MMCP effects against a scripted chat peer", function()
   end)
 
   describe("disconnection", function()
+    it("drops a peer that sends more than 1 MiB without ending a command", function()
+      if peerUnavailable() then return end
+      ensurePeer()
+      local mark = captureSeq()
+      local line = getLastLineNumber("main")
+      -- a snoop frame that never gets its 0xff terminator
+      tellPeer({action = "send_hex", hex = "1f" .. string.rep("78", 1024 * 1024 + 1)})
+      assert.is_table(waitForPeerEvent(mark, function(event)
+        return event.type == "disconnect"
+      end, 5000))
+      assert.is_nil(peerClient())
+      local shown = table.concat(getLines("main", line, getLastLineNumber("main") + 1), " ")
+      assert.is_true(contains(shown, PEER_NAME .. " sent more than 1048576 bytes without ending a command"), shown)
+    end)
+
+    it("keeps a peer whose command is only just within that limit", function()
+      if peerUnavailable() then return end
+      ensurePeer()
+      local mark = captureSeq()
+      -- 1 MiB exactly: the code byte and the payload, with the 0xff after them.
+      -- A side channel frame, as snoop data is drawn on the console as one line,
+      -- which takes many minutes to lay out under a sanitizer
+      local payloadLength = 1024 * 1024 - 1 - #"Big,"
+      tellPeer({action = "send_hex", hex = "28" .. "4269672c" .. string.rep("78", payloadLength)})
+      pump(500)
+      local name, from, channel, message = nil, nil, nil, nil
+      local handlerId = registerAnonymousEventHandler("sysMMCPSideChannelMessage", function(_, ...)
+        name = "sysMMCPSideChannelMessage"
+        from, channel, message = ...
+      end)
+      finally(function() killAnonymousEventHandler(handlerId) end)
+      peerSendsRaw(string.char(255))
+      assert.is_true(waitUntil(function() return name ~= nil end, 5000))
+      assert.equals(PEER_NAME, from)
+      assert.equals("Big", channel)
+      assert.is_string(message)
+      assert.equals(payloadLength, #message)
+      assert.is_table(peerClient())
+      assert.is_nil(waitForPeerEvent(mark, function(event)
+        return event.type == "disconnect"
+      end, 0))
+    end)
+
     it("notices when the peer closes the connection", function()
       if peerUnavailable() then return end
       ensurePeer()
@@ -2147,6 +2506,15 @@ describe("MMCP effects against a scripted chat peer", function()
       assert.is_false(capture().connected)
     end)
 
+  end)
+
+  it("leaves the main console's borders as it found them", function()
+    if peerUnavailable() then return end
+    if dockWasShowing then
+      pending("the base UI dock was already showing, so its border is not this block's to check")
+      return
+    end
+    assert.are.same(originalBorders, getBorderSizes())
   end)
 
   -- Restores whatever chat name the profile was carrying before these specs
@@ -2439,6 +2807,31 @@ describe("The IRC configuration functions round-trip through the profile", funct
       assert.equals("BustedKeptSecret", getConfig("ircPassword"))
     end)
 
+    it("keeps the stored password readable by its owner only", function()
+      if getOS() == "windows" then
+        pending("there are no POSIX permission bits to narrow")
+        return
+      end
+      restoreIrcConfigurationWithPassword()
+      local path = getMudletHomeDir() .. "/irc_password"
+      local function openToEveryone()
+        os.execute("chmod 644 '" .. (path:gsub("'", "'\\''")) .. "'")
+        assert.equals("rw-r--r--", lfs.attributes(path, "permissions"), "could not stage a file open to everyone")
+      end
+
+      -- A save takes the mode of the file it replaces, whatever the umask, so
+      -- saving over an open one shows whether the save itself narrows
+      assert.is_true(setConfig("ircPassword", "BustedStaging"))
+      openToEveryone()
+      assert.is_true(setIrcServer("irc.busted-owneronly.invalid", 6667, false, "BustedOwnerSecret"))
+      assert.equals("rw-------", lfs.attributes(path, "permissions"))
+
+      -- and reading one that is open narrows it
+      openToEveryone()
+      assert.equals("BustedOwnerSecret", getConfig("ircPassword"))
+      assert.equals("rw-------", lfs.attributes(path, "permissions"))
+    end)
+
     it("falls back to port 6667 and an insecure connection when only a hostname is given", function()
       restoreIrcConfiguration()
       assert.is_true(setIrcServer("irc.busted-secure.invalid", 6697, true))
@@ -2483,7 +2876,7 @@ describe("The IRC configuration functions round-trip through the profile", funct
       assert.is_nil(ok)
       assert.is_true(contains(err, "no (valid) channel names provided"), tostring(err))
 
-      -- a channel name has to start with #, & or +, and only strings are read
+      -- a channel name has to start with #, &, + or !, and only strings are read
       ok, err = setIrcChannels({"mudlet", 42, ""})
       assert.is_nil(ok)
       assert.is_true(contains(err, "no (valid) channel names provided"), tostring(err))
@@ -2781,6 +3174,82 @@ describe("sending protocol data to a game server that has not negotiated", funct
     assert.is_true(waitUntil(function() return sawSubnegotiation(before) end, 2000),
                    "the MSDP subnegotiation never reached the wire, saw: " .. tostring(wireHex()))
     assert.is_false(msdpNegotiated, "the fixture negotiated MSDP, so this no longer covers the unnegotiated state")
+  end)
+
+  it("puts the bytes after a NUL given to sendSocket on the wire", function()
+    if serverUnavailable() then return end
+    local before = connectionCount()
+    connectToServer("127.0.0.1", serverPort())
+    assert.is_true(waitUntil(connected, 5000), "never connected to the telnet fixture")
+
+    local ok, err = sendSocket("SendSocketNul\0Tail|")
+    assert.is_true(ok, "sendSocket refused a connected socket: " .. tostring(err))
+    local wanted = ("SendSocketNul\0Tail|"):gsub(".", function(c) return string.format("%02x", c:byte()) end)
+    assert.is_true(waitUntil(function()
+      local seen = capture()
+      return seen ~= nil and seen.connections > before and contains(seen.received, wanted)
+    end, 2000), "the bytes after the NUL never reached the wire, saw: " .. tostring(wireHex()))
+  end)
+
+  -- The profile is written before the connection is started, so it can be read
+  -- back straight away. after_each closes the connection.
+  --
+  -- Starts from no saved address at all, so that the specs above, which connect
+  -- to the fixture without saving, cannot have left its address behind to make
+  -- these pass (or fail) for a reason of their own.
+  local function clearSavedAddress(port)
+    local directory = getMudletHomeDir()
+    os.remove(directory .. "/url")
+    os.remove(directory .. "/port")
+    local host, storedPort = storedProfileAddress()
+    assert.is_false(host == "127.0.0.1" and storedPort == tostring(port),
+                    "the profile still reports the fixture's address, so this proves nothing")
+  end
+
+  it("saves the host and port to the profile when asked to", function()
+    if serverUnavailable() then return end
+    local port = serverPort()
+    finally(preserveProfileAddress())
+    clearSavedAddress(port)
+
+    assert.is_true(connectToServer("127.0.0.1", port, true))
+    local host, storedPort = storedProfileAddress()
+    assert.equals("127.0.0.1", host)
+    assert.equals(tostring(port), storedPort)
+  end)
+
+  it("leaves the profile alone when the save flag is false or left out", function()
+    if serverUnavailable() then return end
+    local port = serverPort()
+    finally(preserveProfileAddress())
+    clearSavedAddress(port)
+    local hostBefore, portBefore = storedProfileAddress()
+
+    assert.is_true(connectToServer("127.0.0.1", port, false))
+    local host, storedPort = storedProfileAddress()
+    assert.equals(hostBefore, host)
+    assert.equals(portBefore, storedPort)
+
+    disconnect()
+    assert.is_true(waitUntil(function() return not connected() end, 2000))
+    assert.is_true(connectToServer("127.0.0.1", port))
+    host, storedPort = storedProfileAddress()
+    assert.equals(hostBefore, host)
+    assert.equals(portBefore, storedPort)
+  end)
+
+  it("accepts a string second argument to sendGMCP and sendATCP before the enabled check", function()
+    if serverUnavailable() then return end
+    connectToServer("127.0.0.1", serverPort())
+    assert.is_true(waitUntil(connected, 5000), "never connected to the telnet fixture")
+
+    local gmcp, gmcpErr = sendGMCP("Core.Supports.Set", "[\"Char 1\"]")
+    assert.is_nil(gmcp)
+    assert.is_true(contains(gmcpErr, "GMCP is not currently enabled"), tostring(gmcpErr))
+
+    local atcp, atcpErr = sendATCP("Char.Login", "name password")
+    assert.is_nil(atcp)
+    assert.is_true(contains(atcpErr, "ATCP is not currently enabled"), tostring(atcpErr))
   end)
 
   -- sendGMCP and sendATCP keep the check sendMSDP does without: theirs has been

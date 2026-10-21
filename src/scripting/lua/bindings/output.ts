@@ -9,7 +9,9 @@ import { unarmor } from '../byteArmor';
  * Colour channels are validated through the shared 0..255 coercion; Mudlet
  * silently no-ops on an out-of-range channel rather than raising.
  */
-export function installOutputBindings({ lua, api }: BindingContext): void {
+export function installOutputBindings(
+    { lua, api, pushNestedDispatchState, popNestedDispatchState, inDispatchPass }: BindingContext,
+): void {
     // ── Output / format ───────────────────────────────────────────────────
     lua.global.set('fg',          (name: string)  => api.fg(name));
     lua.global.set('bg',          (name: string)  => api.bg(name));
@@ -29,8 +31,21 @@ export function installOutputBindings({ lua, api }: BindingContext): void {
     // carries bytes already in the game's encoding, which are not UTF-8 and
     // would not survive the wasmoon crossing as text. See byteArmor.ts.
     // Returns the refusal message, or nil when the text was fed.
-    lua.global.set('feedTriggers', (data: string, utf8Encoded?: unknown) =>
-        api.feedTriggers(unarmor(String(data ?? '')), utf8Encoded !== false));
+    //
+    // Fed from an alias or trigger script, it runs a whole trigger pass inside
+    // that script, and the pass sets the capture globals for the scripts IT
+    // runs — so the caller's are parked for it and handed back, or the caller
+    // resumes with an emptied `matches` (TLuaInterpreter::feedTriggers). Not
+    // `command`: a fed trigger may expand one, and the caller reads that back
+    // as the last command sent. At the top level there is nothing to park.
+    lua.global.set('feedTriggers', (data: string, utf8Encoded?: unknown) => {
+        const depth = inDispatchPass() ? pushNestedDispatchState(false) : -1;
+        try {
+            return api.feedTriggers(unarmor(String(data ?? '')), utf8Encoded !== false);
+        } finally {
+            if (depth >= 0) popNestedDispatchState(depth);
+        }
+    });
     lua.global.set('deleteLine',  (win?: string)  => api.deleteLine(win));
     // Mudlet `wrapLine([window,] lineNumber)`. Re-displays a line, re-wrapping
     // it and interpreting embedded \n. Overloaded: a string first arg is the
@@ -38,7 +53,7 @@ export function installOutputBindings({ lua, api }: BindingContext): void {
     // The argument TYPES are settled in Bridge.lua, where a Lua table is still
     // a table — it reaches JS as an ordinary object, and a message built from
     // `typeof` here would name the wrong thing.
-    // Like desktop it answers nothing, whether or not there was a line to wrap.
+    // What it answers is settled in Bridge.lua's wrapper.
     lua.global.set('wrapLine', (a: unknown, b?: unknown) => {
         if (typeof a === 'string') api.wrapLine(Number(b), a);
         else api.wrapLine(Number(a));

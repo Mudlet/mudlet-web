@@ -141,9 +141,9 @@ describe('window API matches desktop (#380)', () => {
       expect(env.run('return (getUserWindowTitle("tw"))')).toBe('User window - Prof - tw');
     });
 
-    it('echoUserWindow returns nothing', () => {
+    it('echoUserWindow answers true', () => {
       env.run('openUserWindow("tw")');
-      expect(env.run('return select("#", echoUserWindow("tw", "x\\n"))')).toBe(0);
+      expect(env.run('return echoUserWindow("tw", "x\\n")')).toBe(true);
       expect(env.run('return (getCurrentLine("tw"))')).toBe('x');
     });
   });

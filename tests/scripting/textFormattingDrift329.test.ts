@@ -153,9 +153,16 @@ describe('insertText with a newline leaves the cursor where it was (mudlet-web#3
         expect(env.run('return table.concat(getLines(l, l + 3), "|")')).toBe('K05Wp|q abc|K06 after');
     });
 
+    // TConsoleModel::insertText in trigger mode only inserts: the newlines stay
+    // in the line until it is wrapped once the pass is done with it.
     it('on the line a trigger is processing', () => {
-        feedLine(env, 'K03 abc', 'moveCursor(3, getLineNumber()) insertText("x\\ny\\nz") insertText("W")'
-            + ' l = getLineNumber()');
+        const buffer = new AnsiAwareBuffer('K03 abc');
+        env.api.beginLine(buffer);
+        env.run('moveCursor(3, getLineNumber()) insertText("x\\ny\\nz") insertText("W")'
+            + ' l = getLineNumber() during = getCurrentLine()');
+        env.api.endLine();
+        expect(env.run('return during')).toBe('K03Wx\ny\nz abc');
+        env.api.wrapNetworkLine(buffer);
         expect(env.run('return table.concat(getLines(l, l + 3), "|")')).toBe('K03Wx|y|z abc');
     });
 

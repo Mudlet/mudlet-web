@@ -33,6 +33,7 @@ import {
     SessionCodec,
     toByteString,
     stripTelnetSequences,
+    type TextAheadSlot,
     TELNET_GA,
     TTYPE_COMMAND_CODE,
 } from "../protocol";
@@ -1228,7 +1229,7 @@ export class MudClient {
                 'Room 1',
                 'IRE.Rift 1',
                 'IRE.Composer 1',
-                'Client.Media 1',
+                'Client.Media 2',
                 'Char.Login 1',
             ]));
         } catch (error) {
@@ -1681,11 +1682,40 @@ export class MudClient {
         // unfinished one back for the next frame.
         this.negotiator.processFrame(processable);
         this.echoHandler.processData(processable);
-        let sanitized = stripTelnetSequences(processable, this.telnetOptionHandler).replace(/\r/g, '');
+        // A subnegotiation's handler — a CHARSET request, or a script's own
+        // for GMCP — can change the encoding mid-run. The text ahead of it was
+        // sent in the old encoding, so cTelnet::postHeldDataBeforeEncodingChange
+        // posts it before the change: the codec calls back here, and it is
+        // decoded and shown before the switch drops whatever it left held.
+        const textAhead: TextAheadSlot = { take: null };
+        let promptStartPosted = false;
+        // A trigger on the posted text may feed a run of its own.
+        const outerHook = this.codec.onBeforeEncodingChange;
+        this.codec.onBeforeEncodingChange = () => {
+            if (!textAhead.take) return;
+            let ahead = textAhead.take().replace(/\r/g, '');
+            if (ahead.length === 0) return;
+            // It may open a prompt, whose leading line feed the GA can then no
+            // longer see — so the fix-up is applied to it here instead, and
+            // not again at the GA.
+            const stripped = this.assembler.stripPostedPromptStart(ahead);
+            if (stripped !== null) {
+                ahead = stripped;
+                promptStartPosted = true;
+            }
+            this.decodeAndAssemble(ahead, false, ts);
+            this.flushMessageBuffer();
+        };
+        let sanitized: string;
+        try {
+            sanitized = stripTelnetSequences(processable, this.telnetOptionHandler, textAhead).replace(/\r/g, '');
+        } finally {
+            this.codec.onBeforeEncodingChange = outerHook;
+        }
         // `fixUnnecessaryLinebreaks` works on the whole run, before it is
         // decoded or split, because desktop decides it on the raw block at the
         // GA — a run with no marker after it is never touched.
-        if (hasPrompt) sanitized = this.assembler.stripPromptBlockNewline(sanitized);
+        if (hasPrompt && !promptStartPosted) sanitized = this.assembler.stripPromptBlockNewline(sanitized);
         if (hasPrompt && debugGaEnabled()) {
             const marker = processable.endsWith(TELNET_GA) ? 'GA' : 'EOR';
             // eslint-disable-next-line no-console
@@ -1705,14 +1735,18 @@ export class MudClient {
         // ASCII tail of any other — still goes through in one piece.
         let lastHighByte = sanitized.length - 1;
         while (lastHighByte >= 0 && sanitized.charCodeAt(lastHighByte) < 0x80) lastHighByte--;
-        let start = 0;
-        for (let nl = sanitized.indexOf('\n'); nl !== -1 && nl < lastHighByte; nl = sanitized.indexOf('\n', start)) {
-            this.decodeAndAssemble(sanitized.substring(start, nl + 1), false, ts);
+        // What a trigger feeds in while this run is shown is a read of its own,
+        // not the continuation of this one's MXP mode switch.
+        this.negotiator.keepingMxpDetectionTail(() => {
+            let start = 0;
+            for (let nl = sanitized.indexOf('\n'); nl !== -1 && nl < lastHighByte; nl = sanitized.indexOf('\n', start)) {
+                this.decodeAndAssemble(sanitized.substring(start, nl + 1), false, ts);
+                this.flushMessageBuffer();
+                start = nl + 1;
+            }
+            this.decodeAndAssemble(start === 0 ? sanitized : sanitized.substring(start), hasPrompt, ts);
             this.flushMessageBuffer();
-            start = nl + 1;
-        }
-        this.decodeAndAssemble(start === 0 ? sanitized : sanitized.substring(start), hasPrompt, ts);
-        this.flushMessageBuffer();
+        });
     }
 
     private decodeAndAssemble(sanitized: string, hasPrompt: boolean, ts: number): void {

@@ -81,11 +81,17 @@ describe('telnet negotiation parity with desktop Mudlet', () => {
       expect(events.map(([t, o]) => [t, o])).toEqual([[251, 201], [251, 69]]);
     });
 
-    it('raises every subnegotiation in a packet, payload decoded as UTF-8', () => {
+    it('raises every subnegotiation in a packet, payload as undecoded bytes', () => {
       const { sock, events } = connected();
       const utf8 = String.fromCharCode(...new TextEncoder().encode('Zażółć'));
       sock.deliver(IAC + SB + '\x96one' + IAC + SE + IAC + SB + '\x96' + utf8 + IAC + SE);
-      expect(events).toEqual([[250, 150, 'one'], [250, 150, 'Zażółć']]);
+      expect(events).toEqual([[250, 150, 'one'], [250, 150, utf8]]);
+    });
+
+    it('unescapes a doubled IAC and gives an empty subnegotiation an empty payload', () => {
+      const { sock, events } = connected();
+      sock.deliver(IAC + SB + '\x96A' + IAC + IAC + 'B' + IAC + SE + IAC + SB + '\x96' + IAC + SE);
+      expect(events).toEqual([[250, 150, 'A\xffB'], [250, 150, '']]);
     });
 
     it('is not raised for the subnegotiations of options Mudlet consumes itself', () => {

@@ -72,7 +72,14 @@ const CODE_DONT = 0xFE;
  * (mudlet-web#272). Subnegotiation payloads go to `handler` intact, so a NUL
  * inside one is untouched.
  */
-export const stripTelnetSequences = (data: string, handler: TelnetOptionHandler): string => {
+export interface TextAheadSlot {
+    /** While `handler` runs, hands over the text stripped so far — the text
+     *  ahead of the sequence being handled — and drops it from what the strip
+     *  returns; null otherwise. */
+    take: (() => string) | null;
+}
+
+export const stripTelnetSequences = (data: string, handler: TelnetOptionHandler, textAhead?: TextAheadSlot): string => {
     let iac = data.indexOf(GMCP_IAC);
     if (iac === -1) return data.includes("\0") ? data.replace(/\0/g, "") : data;
 
@@ -98,7 +105,24 @@ export const stripTelnetSequences = (data: string, handler: TelnetOptionHandler)
             else end = se + 2;
         }
         if (end === -1) end = cmd >= CODE_WILL && cmd <= CODE_DONT && next + 1 < len ? iac + 3 : iac + 2;
-        const replacement = handler(data.substring(iac, end));
+        let replacement: string;
+        if (textAhead && cmd === CODE_SB) {
+            // A handler can change the encoding, and the text ahead of the
+            // sequence must then be posted under the old one (cTelnet::
+            // processSubnegotiation), so it can be taken while the handler runs.
+            textAhead.take = () => {
+                const ahead = out.includes("\0") ? out.replace(/\0/g, "") : out;
+                out = "";
+                return ahead;
+            };
+            try {
+                replacement = handler(data.substring(iac, end));
+            } finally {
+                textAhead.take = null;
+            }
+        } else {
+            replacement = handler(data.substring(iac, end));
+        }
         // An IAC in a replacement is stripped like any other stray IAC; its
         // NULs go with the text's below.
         if (replacement) out += replacement.includes(GMCP_IAC) ? replacement.replace(/\xFF/g, "") : replacement;

@@ -47,6 +47,27 @@ describe('scanEscape', () => {
     expect(esc.kind).toBe('incomplete');
   });
 
+  it('takes an intermediate sequence up to its final byte, but reports no final', () => {
+    const s = `${ESC}[1;31 mX`;
+    const esc = scanEscape(s, 0);
+    expect(esc).toMatchObject({ kind: 'csi', end: 8 });
+    expect(esc.finalByte).toBeUndefined();
+    // parameter bytes after the intermediate belong to it too
+    expect(scanEscape(`${ESC}[38;5;-1mX`, 0)).toMatchObject({ kind: 'csi', end: 10 });
+    expect(scanEscape(`${ESC}[38;5;-1mX`, 0).finalByte).toBeUndefined();
+  });
+
+  it('leaves the byte that cuts a sequence short, and holds one that runs off the end', () => {
+    expect(scanEscape(`${ESC}[1 é`, 0)).toMatchObject({ kind: 'csi', end: 4 });
+    expect(scanEscape(`${ESC}[1 `, 0).kind).toBe('incomplete');
+  });
+
+  it('discards a sequence at the length cap, intermediates counted, keeping what cut it', () => {
+    const s = `${ESC}[${' '.repeat(4096)}\n`;
+    expect(scanEscape(s, 0)).toMatchObject({ kind: 'csi', end: s.length - 1 });
+    expect(scanEscape(`${ESC}[${' '.repeat(4096)}`, 0).kind).toBe('csi');
+  });
+
   it('classifies a short escape (charset designation)', () => {
     const s = `${ESC}(BX`;
     const esc = scanEscape(s, 0);
@@ -346,17 +367,24 @@ describe('256-colour SGR past index 255 (mudlet-web#174)', () => {
   const fgAt = (seq: string) => new AnsiAwareBuffer(`${ESC}[${seq}mX`).getStateAt(0)?.foreground;
   const bgAt = (seq: string) => new AnsiAwareBuffer(`${ESC}[${seq}mX`).getStateAt(0)?.background;
 
-  it('continues the greyscale ramp to 256, as Mudlet does', () => {
-    expect(fgAt('38;5;256')).toEqual({ space: 'rgb', r: 248, g: 248, b: 248 });
-    expect(bgAt('48;5;256')).toEqual({ space: 'rgb', r: 248, g: 248, b: 248 });
-    expect(fgAt('38:5:256')).toEqual({ space: 'rgb', r: 248, g: 248, b: 248 });
+  // as xterm does, an index past the palette changes nothing (TBuffer::decodeSGR38/48)
+  it('leaves the colour alone for an index past the palette', () => {
+    const red = fgAt('31');
+    const redBg = bgAt('41');
+    for (const index of ['256', '300', '2147483647']) {
+      expect(fgAt(`31;38;5;${index}`)).toEqual(red);
+      expect(fgAt(`31;38:5:${index}`)).toEqual(red);
+      expect(bgAt(`41;48;5;${index}`)).toEqual(redBg);
+      expect(bgAt(`41;48:5:${index}`)).toEqual(redBg);
+    }
   });
 
-  it('turns a foreground with no colour black and a background default', () => {
-    expect(fgAt('38;5;300')).toEqual({ space: 'rgb', r: 0, g: 0, b: 0 });
-    expect(fgAt('38:5:300')).toEqual({ space: 'rgb', r: 0, g: 0, b: 0 });
-    expect(bgAt('41;48;5;999')).toBeUndefined();
-    expect(bgAt('41;48:5:999')).toBeUndefined();
+  it('steps over just the type when it is empty, zero, unreadable or takes no arguments', () => {
+    for (const colour of ['38;;', '38;0;', '38;<;', '38;1;', '38;9;']) {
+      const state = new AnsiAwareBuffer(`${ESC}[${colour}4mX`).getStateAt(0);
+      expect(state?.underline, colour).toBe(true);
+      expect(state?.bold, colour).toBeFalsy();
+    }
   });
 
   it('never yields a hex colour without a value', () => {

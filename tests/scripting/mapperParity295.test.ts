@@ -72,25 +72,19 @@ describe('getPath between two equal-cost exits into the same room', () => {
     });
 });
 
-describe('setRoomIDbyHash before addRoom', () => {
-    it('keeps the hash for the room that is created afterwards', () => {
-        env.run('setRoomIDbyHash(60, "hash60")');
-        expect(env.run('return getRoomIDbyHash("hash60")')).toBe(60);
-        expect(env.run('return (getRoomHashByID(60))')).toBe('hash60');
+describe('setRoomIDbyHash needs the room', () => {
+    // Desktop used to file a hash under any id; it now refuses a room that
+    // does not exist, so there is no pending hash for addRoom to pick up.
+    it('refuses a room that does not exist yet', () => {
+        expect(env.run('return (setRoomIDbyHash(60, "hash60"))')).toBeNull();
+        expect(env.run('return select(2, setRoomIDbyHash(60, "hash60"))')).toBe('number 60 is not a valid roomID');
         env.run('addRoom(60)');
-        expect(env.run('return getRoomIDbyHash("hash60")')).toBe(60);
-        expect(env.run('return (getRoomHashByID(60))')).toBe('hash60');
+        expect(env.run('return getRoomIDbyHash("hash60")')).toBe(-1);
+        expect(env.run('return (getRoomHashByID(60))')).toBe(null);
     });
 
-    it('moving the hash to another id takes it off the pending one', () => {
-        env.run('setRoomIDbyHash(61, "h"); addRoom(62); setRoomIDbyHash(62, "h"); addRoom(61)');
-        expect(env.run('return getRoomIDbyHash("h")')).toBe(62);
-        expect(env.run('return (getRoomHashByID(61))')).toBe(null);
-        expect(env.run('return (getRoomHashByID(62))')).toBe('h');
-    });
-
-    it('re-hashing a pending id drops its old hash', () => {
-        env.run('setRoomIDbyHash(63, "old"); setRoomIDbyHash(63, "new")');
+    it('re-hashing a room drops its old hash', () => {
+        env.run('addRoom(63); setRoomIDbyHash(63, "old"); setRoomIDbyHash(63, "new")');
         expect(env.run('return getRoomIDbyHash("old")')).toBe(-1);
         expect(env.run('return getRoomIDbyHash("new")')).toBe(63);
     });
@@ -172,10 +166,10 @@ describe('setDoor', () => {
 });
 
 describe('return values', () => {
-    it('setExitStub and lockExit return nothing', () => {
+    it('setExitStub returns nothing, lockExit true', () => {
         env.run('addRoom(30); addRoom(31); setExit(30, 31, "n")');
         expect(env.run('return select("#", setExitStub(30, "s", true))')).toBe(0);
-        expect(env.run('return select("#", lockExit(30, "n", true))')).toBe(0);
+        expect(env.run('return lockExit(30, "n", true)')).toBe(true);
         expect(env.run('return (hasExitLock(30, "n"))')).toBe(true);
         expect(env.run('return getExitStubs(30)[0]')).toBe(6);
     });
