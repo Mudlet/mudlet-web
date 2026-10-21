@@ -1,5 +1,6 @@
 import type { TriggerPatternType } from '../../../storage/schema';
 import { parseQColor } from '../../../ui/labels/qColor';
+import { perlRegexCompileError } from '../../../mud/triggers/TriggerEngine';
 import type { BindingContext } from './context';
 
 /**
@@ -18,6 +19,12 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
     // caller bug and raises (in the Bridge.lua wrapper), but a name that simply
     // matches nothing answers (nil, message) — Other_spec pins that split, and
     // it lets a script probe for an optional package without pcall.
+    // Why a perl pattern will not compile (nil when it does), for the creators
+    // that refuse one: Bridge.lua's tempRegexTrigger, permRegexTrigger,
+    // tempComplexRegexTrigger, tempAlias and permAlias. `forTrigger` drops the
+    // newlines first, as a trigger compiles its patterns.
+    lua.global.set('__mudlet_regex_compile_error', (pattern: unknown, forTrigger: unknown) =>
+        perlRegexCompileError(String(pattern ?? ''), forTrigger === true) ?? undefined);
     lua.global.set('__enableScript', (name: unknown) => api.enableScript(String(name ?? '')));
     lua.global.set('__disableScript', (name: unknown) => api.disableScript(String(name ?? '')));
     // Rollback hook for permScript: a body that raises as it is compiled in

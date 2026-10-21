@@ -5219,6 +5219,10 @@ do
         pattern = __mudlet_check_string(pattern, "tempAlias", 1, "regex-type pattern", true)
         -- An uncompilable script still makes an alias, one that never fires
         local compiled = __mudlet_to_fn(fn, "tempAlias", 2)
+        -- A pattern that will not compile is refused with desktop's
+        -- perlRegexCompileError message (warnArgumentValue: the text alone)
+        local bad = __mudlet_regex_compile_error(pattern, false)
+        if bad then return nil, bad end
         return _raw(pattern, __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true)
     end
 end
@@ -5239,8 +5243,15 @@ do
     -- report active, as tempAlias does — so the engine is told.
     -- The third answer is whether the body is the empty script, which desktop
     -- never calls: such a fire leaves `matches` as the last script left it.
-    local function body(fn, who, argN)
+    -- `pattern`, when given, is a perl one: after the body's type is checked
+    -- and before anything is registered, one that will not compile is refused
+    -- (the second answer is then desktop's message).
+    local function body(fn, who, argN, pattern)
         local compiled = __mudlet_to_fn(fn, who, argN)
+        if pattern then
+            local bad = __mudlet_regex_compile_error(pattern, true)
+            if bad then return nil, bad end
+        end
         return __mudlet_register_cb(compiled), __mudlet_uncompiled[compiled] == true, fn == ''
     end
     local _sub = __mudlet_tempTrigger
@@ -5252,7 +5263,8 @@ do
     local _re = __mudlet_tempRegexTrigger
     function tempRegexTrigger(pattern, fn, expirationCount)
         pattern = __mudlet_check_string(pattern, "tempRegexTrigger", 1, "pattern")
-        local cb, uncompiled, noScript = body(fn, "tempRegexTrigger", 2)
+        local cb, uncompiled, noScript = body(fn, "tempRegexTrigger", 2, pattern)
+        if cb == nil then return nil, uncompiled end
         return _re(pattern, cb, expirationCount, nil, uncompiled, noScript)
     end
     local _ex = __mudlet_tempExactMatchTrigger
@@ -5398,6 +5410,12 @@ do
     local SEP = '\1'
     function permRegexTrigger(name, parent, regexes, code)
         local rs = __mudlet_perm_patterns(regexes)
+        -- Every pattern is compiled before the trigger is made, and the first
+        -- that will not compile refuses it (TLuaInterpreter::permRegexTrigger)
+        for _, pattern in ipairs(rs) do
+            local bad = __mudlet_regex_compile_error(pattern, true)
+            if bad then return nil, bad end
+        end
         return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), table.concat(rs, SEP), tostring(code or "")),
             "permRegexTrigger", "trigger", parent)
@@ -5470,6 +5488,8 @@ do
         parent = __mudlet_check_string(parent, "permAlias", 2, "alias group/parent", true)
         regex = __mudlet_check_string(regex, "permAlias", 3, "regex")
         code = __mudlet_check_lua_code(code, "permAlias", 4)
+        local bad = __mudlet_regex_compile_error(regex, false)
+        if bad then return nil, bad end
         return __mudlet_perm_result(
             _raw(tostring(name or ""), tostring(parent or ""), regex, code),
             "permAlias", "alias", parent)
@@ -8477,6 +8497,14 @@ do
             local err, count = __mudlet_check_expiry(args[14], "tempComplexRegexTrigger", 14)
             if err then return nil, err end
             args[14] = count
+        end
+        -- A perl pattern that will not compile is refused before the trigger of
+        -- that name is touched, so it keeps the patterns it had. Desktop judges
+        -- only a trigger that is no colour trigger: one whose foreground or
+        -- background argument (#5, #6) is a number.
+        if __mudlet_num(args[5]) ~= nil or __mudlet_num(args[6]) ~= nil then
+            local bad = __mudlet_regex_compile_error(args[2], true)
+            if bad then return nil, bad end
         end
         return _rawTempComplexRegexTrigger(unpack(args, 1, n))
     end
