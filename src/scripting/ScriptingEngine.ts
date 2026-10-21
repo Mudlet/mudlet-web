@@ -6722,6 +6722,14 @@ const EXPORT_IMAGE_FORMATS = new Set([
     'bmp', 'cur', 'ico', 'jpeg', 'jpg', 'pbm', 'pgm', 'png', 'ppm', 'tif', 'tiff', 'wbmp', 'webp', 'xbm', 'xpm',
 ]);
 
+/** `path` without the slashes it ends in. A loop rather than `/\/+$/`, which
+ *  backtracks quadratically over a long run of slashes that is not at the end. */
+function withoutTrailingSlashes(path: string): string {
+    let end = path.length;
+    while (end > 0 && path.charCodeAt(end - 1) === 0x2f) end--;
+    return path.slice(0, end);
+}
+
 /**
  * T2DMap's exportTargetProblem: the image is saved after the call has answered,
  * too late to report a failure, so the likely causes are checked first. A name
@@ -6731,10 +6739,10 @@ const EXPORT_IMAGE_FORMATS = new Set([
 function exportTargetProblem(vfs: ProfileVFS, filePath: string, nameTemplate: boolean): string | null {
     if (!filePath) return 'No file name given';
     const abs = filePath.startsWith('/') ? filePath : `${vfs.profilePath}/${filePath}`;
-    const trimmed = abs.replace(/\/+$/, '') || '/';
+    const trimmed = withoutTrailingSlashes(abs) || '/';
     const slash = abs.lastIndexOf('/');
     const fileName = abs.slice(slash + 1);
-    const directory = abs.slice(0, slash).replace(/\/+$/, '') || '/';
+    const directory = withoutTrailingSlashes(abs.slice(0, slash)) || '/';
     const target = vfs.stat(trimmed);
     if (target?.type === 'dir' && (!nameTemplate || fileName === '')) return `${trimmed} is a directory`;
     const dir = vfs.stat(directory);

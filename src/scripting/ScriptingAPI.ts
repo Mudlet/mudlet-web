@@ -6706,8 +6706,10 @@ export class ScriptingAPI {
         this.userWindowCss.set(name, css ?? '');
         // Qt writes a qproperty through the widget's own setter, so a dock's
         // `qproperty-windowTitle` is its title from then on.
-        const title = /qproperty-windowTitle\s*:\s*(["'])(.*?)\1/i.exec(css ?? '');
-        if (title) this.session.windows.setTitle(name, title[2]);
+        // Each quote form scans only to its own next quote, so an unclosed one
+        // costs no more than the text up to the following quote.
+        const title = /qproperty-windowTitle\s*:\s*(?:"([^"]*)"|'([^']*)')/i.exec(css ?? '');
+        if (title) this.session.windows.setTitle(name, title[1] ?? title[2]);
         return true;
     }
 
