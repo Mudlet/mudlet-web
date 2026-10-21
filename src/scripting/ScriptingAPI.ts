@@ -11,7 +11,7 @@ import { timeZoneAbbreviation, timeZoneLongName, timeZoneOffset } from '../utils
 import { getBrand } from '../branding';
 import type { WindowHandle, WindowOpenOptions } from '../ui/windows/types';
 import { MAP_WIDGET_ID, MAPPER_WIDGET_ID, mapViewWindowId } from '../ui/windows/types';
-import type { LabelManager, LabelCreateOptions, LabelMouseEvent, LabelWheelEvent } from '../ui/labels/LabelManager';
+import type { LabelManager, LabelCreateOptions, LabelMouseEvent, LabelWheelEvent, LabelLiveRegion } from '../ui/labels/LabelManager';
 import { classifyLabelLink } from '../ui/labels/labelLinks';
 import { styleSheetWithoutBackgroundImage } from '../ui/labels/labelModel';
 import { AddonCommandRegistry } from '../ui/commands/addonCommands';
@@ -412,6 +412,10 @@ const CONFIG_PERSIST_ONLY: Record<string, {
     // Consumed by ProfileSession (fed into MudSession.setProtocolOptions →
     // TelnetNegotiator's MTTS/NEW-ENVIRON SCREEN_READER reporting) on the next
     // connect — see docs/config-api.md group 2a.
+    // Host::mAccessibleLabels, off by default: with it on, a label acting as a
+    // button can be reached with Tab and pressed with Space or Return, and a
+    // label's live region speaks its text changes. LabelManager follows it.
+    accessibleLabels:               { type: 'bool', default: false },
     advertiseScreenReader:          { type: 'bool', default: false },
     // Default true, matching Mudlet's mAnnounceIncomingText: the off-screen
     // ARIA live region (ScreenReaderLog) mirrors incoming output to the user's
@@ -1059,6 +1063,24 @@ class ScriptingLabelsAPI {
     setTooltip(name: string, text: string | undefined): boolean {
         return this.manager.setTooltip(name, text);
     }
+    setAccessibleName(name: string, accessibleName: string): boolean {
+        return this.manager.setAccessibleName(name, accessibleName);
+    }
+    getAccessibleName(name: string): string | undefined {
+        return this.manager.getAccessibleName(name);
+    }
+    setAccessibleButton(name: string, button: boolean | undefined): boolean {
+        return this.manager.setAccessibleButton(name, button);
+    }
+    getAccessibleRole(name: string): string | undefined {
+        return this.manager.getAccessibleRole(name);
+    }
+    setLiveRegion(name: string, liveRegion: LabelLiveRegion): boolean {
+        return this.manager.setLiveRegion(name, liveRegion);
+    }
+    getLiveRegion(name: string): LabelLiveRegion | undefined {
+        return this.manager.getLiveRegion(name);
+    }
     setClickThrough(name: string, value: boolean): boolean {
         return this.manager.setClickThrough(name, value);
     }
@@ -1342,11 +1364,19 @@ export class ScriptingAPI {
         // lives: unlike `setConfig`, the Settings UI writes straight to the store,
         // so without this the toggles wouldn't bite until a reload.
         this.syncMediaMuteFromConfig();
+        this.syncAccessibleLabelsFromConfig();
         this.apiUnsubs.push(useAppStore.subscribe((state, prev) => {
             const next = state.connectionProfile[this.connectionId]?.config;
             if (next === prev.connectionProfile[this.connectionId]?.config) return;
             this.syncMediaMuteFromConfig();
+            this.syncAccessibleLabelsFromConfig();
         }));
+    }
+
+    /** Push the persisted `accessibleLabels` setting onto the labels, which
+     *  Host::setAccessibleLabels does for every label model it holds. */
+    private syncAccessibleLabelsFromConfig(): void {
+        this.session.labels.setAccessibleLabels(configBool(this.configBag().accessibleLabels ?? false));
     }
 
     /** Push the persisted `muteMediaAPI` / `muteMediaGame` gates onto the live
@@ -7660,8 +7690,18 @@ export class ScriptingAPI {
      * Returns true, or desktop's refusal message — one wording for a name
      * nothing answers to and for a label image that cannot be loaded, since
      * TLuaInterpreter::setBackgroundImage only learns that one of them failed.
+     *
+     * `fullWindow` is the trailing boolean of `(main, path, mode, true)`. The
+     * full-window background is the main console's here, but desktop's
+     * TConsole::setWindowBackgroundImage loads the picture for mode 5 ('cover')
+     * up front and refuses one that will not load, which a script (the starter
+     * UI's background picture) relies on to know it is not showing.
      */
-    setBackgroundImage(a: string, b?: string | number, c?: number): true | string {
+    setBackgroundImage(a: string, b?: string | number, c?: number, fullWindow?: unknown): true | string {
+        if (fullWindow === true && typeof b === 'string' && Number(c) === 5 && (a === 'main' || a === '')
+            && !this.labelImageLoads(b)) {
+            return `could not use '${b}' as a full window background image`;
+        }
         // 1 arg, or (path, mode): the main window, default border (mode 1).
         if (b === undefined) return this.applyBackgroundImage(undefined, a, 1);
         if (typeof b === 'number') return this.applyBackgroundImage(undefined, a, b);

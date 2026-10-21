@@ -68,3 +68,12 @@
 .label-doc {
     box-sizing: border-box;
 }
+
+/* TLabel::paintEvent draws its own focus frame on a keyboard-operable label —
+   a 2px rectangle in the highlight colour, inset by a pixel — because a
+   script's stylesheet gives labels none. Only labels that can be pressed from
+   the keyboard (accessibleLabels on) are ever focusable here. */
+.label[role="button"]:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+}

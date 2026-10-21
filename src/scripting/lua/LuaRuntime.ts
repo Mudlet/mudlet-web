@@ -1169,9 +1169,14 @@ export class LuaRuntime implements IScriptingRuntime {
                 // profile VFS — see src/assets/qt-resources.
                 bytes = qtResourceBytes(p);
             } else {
-                if (!this.vfs) return false;
-                try { bytes = this.vfs.readBinaryFile(p); }
-                catch { return false; }
+                // The read-only /lua/ namespace first, as io.open sees it (the
+                // spec corpus keeps its fixture images there), then the profile.
+                bytes = this.readBuiltinBytes(p);
+                if (!bytes) {
+                    if (!this.vfs) return false;
+                    try { bytes = this.vfs.readBinaryFile(p); }
+                    catch { return false; }
+                }
             }
             if (!bytes) return false;
             const size = parseImageSize(bytes);
@@ -1387,6 +1392,22 @@ export class LuaRuntime implements IScriptingRuntime {
         // not part of what is read back.
         this.lua.global.set('__getLabelToolTip', (name: unknown) =>
             (typeof name === 'string' ? this.api.labels.get(name)?.tooltip ?? '' : ''));
+        // The accessibility primitives behind setLabelAccessibleName/Role and
+        // setLabelLiveRegion and their getters. Bridge.lua checks the name and
+        // the value first, as TLuaInterpreter does, so these only act.
+        this.lua.global.set('__mudlet_setLabelAccessibleName', (name: string, text: string) =>
+            this.api.labels.setAccessibleName(name, String(text)));
+        this.lua.global.set('__mudlet_getLabelAccessibleName', (name: string) =>
+            this.api.labels.getAccessibleName(name) ?? '');
+        // '' is the role the callbacks decide, which the label holds as unset.
+        this.lua.global.set('__mudlet_setLabelAccessibleRole', (name: string, role: string) =>
+            this.api.labels.setAccessibleButton(name, role === 'button' ? true : role === 'text' ? false : undefined));
+        this.lua.global.set('__mudlet_getLabelAccessibleRole', (name: string) =>
+            this.api.labels.getAccessibleRole(name) ?? 'text');
+        this.lua.global.set('__mudlet_setLabelLiveRegion', (name: string, mode: string) =>
+            this.api.labels.setLiveRegion(name, mode as 'off' | 'polite' | 'assertive'));
+        this.lua.global.set('__mudlet_getLabelLiveRegion', (name: string) =>
+            this.api.labels.getLiveRegion(name) ?? 'off');
         // Runtime clickthrough toggle. Flips pointer-events live; the click
         // handler set via setLabelClickCallback stays installed either way.
         // True once set, or the refusal for a label that is not there, which

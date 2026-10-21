@@ -241,7 +241,7 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     // ScriptingAPI.setBackgroundImage — keep the binding thin so the
     // C++/Lua overload set stays in one place. A refusal comes back as
     // desktop's message, which Bridge.lua shapes into (nil, errMsg).
-    lua.global.set('setBackgroundImage', (a: unknown, b?: unknown, c?: unknown) => {
+    lua.global.set('setBackgroundImage', (a: unknown, b?: unknown, c?: unknown, d?: unknown) => {
         if (typeof a !== 'string') return false;
         if (b === undefined) return api.setBackgroundImage(a);
         if (c === undefined) {
@@ -250,7 +250,7 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
             return false;
         }
         if (typeof b !== 'string') return false;
-        return api.setBackgroundImage(a, b, Number(c));
+        return api.setBackgroundImage(a, b, Number(c), d === true);
     });
 
     // Mudlet `resetBackgroundImage([windowName] [, fullWindow])`. No name →
