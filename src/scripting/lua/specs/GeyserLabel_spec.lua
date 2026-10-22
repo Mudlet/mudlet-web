@@ -136,6 +136,9 @@ describe("Tests functionality of Geyser.Label", function()
       label:setFont("")
       assertEchoes('<div align="right"  style="color: #405060; font-size: 12pt; "><s><u><i>MP</i></u></s></div>')
       assertEchoes('<div align="right"  style=" font-size: 12pt; "><s><u><i>MP</i></u></s></div>', "MP", "nocolor")
+      label:setFontSize(14)
+      assertEchoes('<div align="right"  style=" font-size: 14pt; "><s><u><i>MP</i></u></s></div>')
+      assertEchoes('<div align="right"  style="color: #405060; font-size: 14pt; "><s><u><i>MP</i></u></s></div>', "MP", "#405060")
     end)
   end)
 
@@ -1067,6 +1070,56 @@ describe("Tests functionality of Geyser.Label widget state", function()
       label:setBackgroundImage(":/icons/mudlet.png")
       assert.spy(background).was.called_with("glsBackground", ":/icons/mudlet.png")
       assert.are.equal("border: 1px solid red;", getLabelStyleSheet("glsBackground"))
+    end)
+
+    -- packages such as the-two-towers-exits-window clear their images this way
+    it("an empty path takes the image away", function()
+      local label = track(Geyser.Label:new({name = "glsEmptyPath", x = 0, y = 0, width = 40, height = 20}))
+      -- what a label with nothing on it measures depends on its font, which moves to the
+      -- application's on the first re-polish, so settle both labels before reading the twin
+      createLabel("glsEmptyTwin", 0, 0, 40, 20, 1)
+      for _, name in ipairs({"glsEmptyPath", "glsEmptyTwin"}) do
+        setLabelStyleSheet(name, getLabelStyleSheet(name))
+        setLabelStyleSheet(name, getLabelStyleSheet(name))
+      end
+      local blank = {getLabelSizeHint("glsEmptyTwin")}
+      deleteLabel("glsEmptyTwin")
+      local hint = function() return {getLabelSizeHint("glsEmptyPath")} end
+
+      assert.is_true(setBackgroundImage("glsEmptyPath", ":/icons/mudlet.png"))
+      assert.are.same({getImageSize(":/icons/mudlet.png")}, hint())
+      assert.is_true(setBackgroundImage("glsEmptyPath", ""))
+      assert.are.same(blank, hint())
+
+      assert.is_true(label:setBackgroundImage(":/icons/mudlet.png"))
+      assert.is_true(label:setBackgroundImage(""))
+      assert.are.same(blank, hint())
+
+      -- as setPixmap() did in 5.0.1, the text goes along with the image
+      label:echo("words")
+      assert.is_true(setBackgroundImage("glsEmptyPath", ""))
+      assert.are.equal("", getLabelText("glsEmptyPath"))
+      assert.are.same(blank, hint())
+
+      local svgPath = getMudletHomeDir() .. "/empty_path_spec.svg"
+      local file = io.open(svgPath, "w")
+      file:write([[<svg xmlns="http://www.w3.org/2000/svg" width="30" height="12"><rect width="30" height="12" fill="red"/></svg>]])
+      file:close()
+      finally(function() os.remove(svgPath) end)
+      assert.is_true(setBackgroundImage("glsEmptyPath", svgPath))
+      assert.are.same({30, 12}, hint())
+      assert.is_true(setBackgroundImage("glsEmptyPath", ""))
+      assert.are.same(blank, hint())
+    end)
+
+    it("a path that cannot be loaded leaves the image in place", function()
+      track(Geyser.Label:new({name = "glsBadPath", x = 0, y = 0, width = 40, height = 20}))
+      local imageWidth, imageHeight = getImageSize(":/icons/mudlet.png")
+      assert.is_true(setBackgroundImage("glsBadPath", ":/icons/mudlet.png"))
+      local ok, err = setBackgroundImage("glsBadPath", getMudletHomeDir() .. "/no-such-image.png")
+      assert.is_nil(ok)
+      assert.is_string(err)
+      assert.are.same({imageWidth, imageHeight}, {getLabelSizeHint("glsBadPath")})
     end)
 
     it("setTiledBackgroundImage goes through the stylesheet instead", function()
@@ -2979,5 +3032,35 @@ describe("Tests a Geyser.Label right click menu in a user window deleted behind 
     finally(function() sizeSpy:revert() end)
     label:onRightClick({button = "RightButton", buttons = {"RightButton"}, x = 1, y = 1, globalX = 1, globalY = 1})
     assert.spy(sizeSpy).was_not_called()
+  end)
+end)
+
+describe("Tests the typeface a label's colour leaves it with", function()
+  local geyserLabel
+
+  after_each(function()
+    if geyserLabel then
+      geyserLabel:delete()
+      geyserLabel = nil
+    end
+    deleteLabel("gltfDefault")
+    deleteLabel("gltfOther")
+  end)
+
+  local function otherColourFont()
+    createLabel("gltfOther", 0, 140, 300, 50, 1)
+    setBackgroundColor("gltfOther", 0, 0, 0, 255)
+    return getFont("gltfOther")
+  end
+
+  it("is the same for a Geyser.Label with no colour of its own as for one with a colour", function()
+    geyserLabel = Geyser.Label:new({name = "gltfOwn", x = 0, y = 0, width = 300, height = 50})
+    assert.are.equal(otherColourFont(), getFont("gltfOwn"))
+  end)
+
+  it("is the same for a label set to the default colour as for one set to another", function()
+    createLabel("gltfDefault", 0, 70, 300, 50, 1)
+    setBackgroundColor("gltfDefault", 32, 32, 32, 255)
+    assert.are.equal(otherColourFont(), getFont("gltfDefault"))
   end)
 end)
