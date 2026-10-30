@@ -68,6 +68,10 @@ export function installCursorBindings({ lua, api }: BindingContext): void {
         if (a === undefined) return api.scrollTo(undefined, undefined);
         return api.scrollTo(undefined, Number(a));
     });
+    // Whether a console follows its output — what Bridge.lua's scrollUp /
+    // scrollDown count from in place of getScroll while a trigger runs.
+    lua.global.set('__windowFollowsNewLines', (win?: unknown) =>
+        api.windowFollowsNewLines(typeof win === 'string' ? win : undefined));
     lua.global.set('getColumnNumber',(win?: string)=> api.getColumnNumber(win));
     lua.global.set('getColumnCount', (win?: string)=> api.getColumnCount(win));
     lua.global.set('getRowCount',    (win?: string)=> api.getRowCount(win));

@@ -1333,7 +1333,10 @@ export class ScriptingAPI {
         session.applyConsoleBufferSize(this.mainConsole);
         // Mudlet `sysBufferShrinkEvent("main", linesRemoved)` — named user
         // windows have the same hook wired in WindowManager.registerConsole.
-        this.mainConsole.onBufferShrink = (n) => this.host.raiseEvent('sysBufferShrinkEvent', ['main', n]);
+        this.mainConsole.onBufferShrink = (n) => {
+            this.session.windows.noteLinesRemoved('main', n);
+            this.host.raiseEvent('sysBufferShrinkEvent', ['main', n]);
+        };
         // Mudlet gives the main console the profile's wrap (Host::mWrapAt, 100
         // by default) when it is created, and again whenever the preferences
         // change it (TConsole::changeColors). The Settings UI writes the store
@@ -5081,7 +5084,25 @@ export class ScriptingAPI {
      *  only where desktop does nothing (scrolling disabled); Bridge.lua drops
      *  the result either way, as desktop's scrollTo returns nothing. */
     scrollTo(windowName: string | undefined, lineNumber: number | undefined): boolean {
-        return this.session.windows.scrollToLine(windowName || 'main', lineNumber);
+        // A buffer is never drawn, so it never shows itself scrolled back
+        // (TConsole::scrollTo): it stays at its end.
+        if (windowName && this.buffers.has(windowName)) return true;
+        const name = windowName || 'main';
+        // The last line, as getLastLineNumber() counts it, is the end: a
+        // trigger's scrollDown() to it goes on following the output. Mid pass
+        // that count is the script's, not the renderer's.
+        if (lineNumber !== undefined && lineNumber >= 0 && lineNumber >= this.getLastLineNumber(name)) lineNumber = undefined;
+        return this.session.windows.scrollToLine(name, lineNumber);
+    }
+
+    /** Whether the console follows its output (desktop's
+     *  `windowFollowsNewLines`), which scrollUp/scrollDown count from: while
+     *  a trigger runs, getScroll still answers the end as it was before the
+     *  packet, but a console at its end scrolls from the end it has now. */
+    windowFollowsNewLines(windowName?: string): boolean {
+        const name = windowName || 'main';
+        if (this.buffers.has(name)) return true;
+        return this.session.windows.followsNewLines(name);
     }
 
     /** Null when the window doesn't exist — the binding answers Mudlet's
@@ -8527,7 +8548,10 @@ export class ScriptingAPI {
             // from — a script mirroring a miniconsole's buffer has no other way
             // to hear that its saved indexes moved.
             const name = win;
-            con.onBufferShrink = (n) => this.host.raiseEvent('sysBufferShrinkEvent', [name, n]);
+            con.onBufferShrink = (n) => {
+                this.session.windows.noteLinesRemoved(name, n);
+                this.host.raiseEvent('sysBufferShrinkEvent', [name, n]);
+            };
             this.session.consoles.set(win, con);
             // The Console is made on first use, but a window can already carry
             // a width (setWindowWrap before any echo, or one restored with the

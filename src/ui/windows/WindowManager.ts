@@ -2464,6 +2464,23 @@ export class WindowManager {
      */
     private readonly scriptScrollLine = new Map<string, number>();
 
+    /** The buffer dropped `removed` lines off its top (TBuffer::shrinkBuffer).
+     *  A console scrolled back keeps showing the lines it showed, which are now
+     *  that many lines nearer the start, so the line a script parked it on
+     *  moves up with them, as desktop's upper pane cursor does. */
+    noteLinesRemoved(id: string, removed: number): void {
+        const parked = this.scriptScrollLine.get(id);
+        if (parked !== undefined) this.scriptScrollLine.set(id, Math.max(0, parked - removed));
+    }
+
+    /** Whether `id` follows its output (desktop's TTextEdit::mIsTailMode):
+     *  neither a script nor the reader has scrolled it back. */
+    followsNewLines(id: string): boolean {
+        if (this.scriptScrollLine.has(id)) return false;
+        const el = this.elements.get(id);
+        return !el || !this.scrolledBack.get(el);
+    }
+
     /** Called when the *user* scrolls a console, so a script's remembered
      *  position stops overriding what they can see. */
     noteUserScroll(id: string): void {

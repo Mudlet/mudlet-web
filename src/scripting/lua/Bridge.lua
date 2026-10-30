@@ -11378,6 +11378,25 @@ do
             return guarded(...)
         end
     end
+    -- scrollUp / scrollDown([window,] [lines]) — desktop's are C++
+    -- (TLuaInterpreter::scrollConsoleBy) and go through scrollTo for its range
+    -- check. A first argument that is a string names the window; a count
+    -- lua_isnumber refuses is one line. An unknown window answers
+    -- (nil, "window does not exist"); a scroll answers nothing. A console at
+    -- its end counts from the end it has now: getScroll still answers the end
+    -- as it was before the packet while the triggers on it run.
+    local function scrollConsoleBy(up, ...)
+        local window, lines = "main", (...)
+        if type((...)) == "string" then window, lines = (...), (select(2, ...)) end
+        lines = tonumber(lines) or 1
+        local scroll = getScroll(window)
+        if not scroll then return nil, "window does not exist" end
+        local lastLine = getLastLineNumber(window)
+        local from = __windowFollowsNewLines(window) and lastLine or scroll
+        scrollTo(window, up and math.max(from - lines, 0) or math.min(from + lines, lastLine))
+    end
+    function scrollUp(...) return scrollConsoleBy(true, ...) end
+    function scrollDown(...) return scrollConsoleBy(false, ...) end
     -- The main console always scrolls, and every name for it — "main", an
     -- empty name or none — is refused. So is a buffer, which is never drawn
     -- and so always left scrolling.
