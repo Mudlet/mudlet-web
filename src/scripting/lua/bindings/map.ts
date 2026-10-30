@@ -1353,15 +1353,19 @@ export function installMapBindings({
     // the keys, so build the table with integer keys directly here to match
     // real Mudlet (room ids are genuine integers — unlike GMCP/MSDP object
     // keys, which Mudlet's parseJSON keeps as strings).
+    //
+    // The table starts empty and takes its rooms one at a time, in the order
+    // the room map is walked, as desktop's does: `#` on a table with holes
+    // depends on how Lua split it between its array and hash parts, and
+    // scripts test a map for rooms with it. Sizing the hash up front put every
+    // id there, so `#getRooms()` was 0 on any map without a room 1.
     registerRawGlobal('getRooms', (L) => {
         const luaApi = lua.global.luaApi;
-        const rooms = api.map.getRooms();
-        const keys = Object.keys(rooms);
         luaApi.lua_checkstack(L, 4);
-        luaApi.lua_createtable(L, 0, keys.length);
-        for (const k of keys) {
-            luaApi.lua_pushstring(L, rooms[k as unknown as number]);
-            luaApi.lua_rawseti(L, -2, Number(k));
+        luaApi.lua_createtable(L, 0, 0);
+        for (const [id, name] of api.map.getRoomNamesInOrder()) {
+            luaApi.lua_pushstring(L, name);
+            luaApi.lua_rawseti(L, -2, id);
         }
         return 1;
     });

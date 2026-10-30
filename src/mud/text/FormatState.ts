@@ -834,7 +834,7 @@ function parseAnsiSegments(
     text: string,
     baseState?: FormatStateSnapshot,
     presets?: HyperlinkPresetRegistry,
-    wrapAt?: number,
+    out?: { hyperlink?: FormatHyperlink },
 ): BufferSegment[] {
     const segments: BufferSegment[] = [];
     const state = new FormatState(baseState);
@@ -875,7 +875,7 @@ function parseAnsiSegments(
                 // cursorForwardCount), so column-aligned output keeps its
                 // columns, stopping at the right margin (cursorForwardSpaces).
                 // An unreadable or zero count is consumed, nothing more.
-                const spaces = cursorForwardSpaces(cursorForwardCount(esc.params), written + buffer.length, wrapAt);
+                const spaces = cursorForwardSpaces(cursorForwardCount(esc.params), written + buffer.length);
                 if (spaces > 0) {
                     flush();
                     written += spaces;
@@ -937,6 +937,7 @@ function parseAnsiSegments(
         i += 1;
     }
     flush();
+    if (out) out.hyperlink = state.hyperlink ? {...state.hyperlink} : undefined;
     return segments;
 }
 
@@ -973,16 +974,19 @@ export class AnsiAwareBuffer {
     // drops lines from the buffer and `TTextEdit` repaints only what remains.
     private _lineElement: HTMLElement | null = null;
 
-    /** `wrapAt` is the wrap of the window a string `initial` is a line of —
-     *  where a cursor forward in it stops (see cursorForwardSpaces). */
+    /** The OSC 8 link still open where a string `initial` ends, which the
+     *  next line of the same stream starts inside (see computeTrailingState). */
+    readonly openHyperlink?: FormatHyperlink;
+
     constructor(
         initial?: string | BufferSegment[],
         state?: FormatStateSnapshot,
         presets?: HyperlinkPresetRegistry,
-        wrapAt?: number,
     ) {
         if (typeof initial === "string") {
-            this.segments = parseAnsiSegments(initial, state, presets, wrapAt);
+            const out: { hyperlink?: FormatHyperlink } = {};
+            this.segments = parseAnsiSegments(initial, state, presets, out);
+            this.openHyperlink = out.hyperlink;
             this.normalizeSegments();
         } else if (Array.isArray(initial)) {
             this.segments = initial.map(segment => ({
@@ -1031,6 +1035,13 @@ export class AnsiAwareBuffer {
      *  which is both what getTimestamp() hands back for them and how a later
      *  wrapLine() knows to give them the hanging indent rather than the first. */
     continuation = false;
+
+    /** Columns of indent a wrap put in front of this line, when it starts a
+     *  paragraph — desktop's wrapGapBuffer entry for such a line. Leading
+     *  spaces alone can't tell the indent from text, so a later wrapLine()
+     *  reads this (and that the spaces are still there) to know the line
+     *  already carries its indent and must not be given it again. */
+    wrapIndent = 0;
 
     removeFromDom(): void {
         // The row, when the renderer registered one; otherwise whatever single
@@ -2269,6 +2280,7 @@ export {cloneState as cloneFormatState, statesEqual as formatStatesEqual};
 export function computeTrailingState(
     text: string,
     baseState?: FormatStateSnapshot,
+    openHyperlink?: FormatHyperlink,
 ): FormatStateSnapshot | undefined {
     const state = new FormatState(baseState);
     let i = 0;
@@ -2286,6 +2298,11 @@ export function computeTrailingState(
         }
         i += 1;
     }
+    // An OSC 8 link left open at the end of the line goes on into the next,
+    // as TBuffer's mHyperlinkActive does: it ends at its closing sequence, not
+    // at a line ending. The line's own parse knows which link that is
+    // (AnsiAwareBuffer.openHyperlink), since opening one resolves presets.
+    state.hyperlink = openHyperlink ? {...openHyperlink} : undefined;
     const snapshot = state.toSnapshot();
     return isDefaultState(snapshot) ? undefined : snapshot;
 }

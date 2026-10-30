@@ -137,16 +137,18 @@ describe('wrapLine', () => {
   beforeEach(async () => { env = await createTestRuntime(); });
   afterEach(() => env.dispose());
 
-  // TLuaInterpreter::wrapLine answers true, found line or not, and refuses a
-  // window it cannot find.
-  it('answers true, for an in-range line or not', () => {
+  // TLuaInterpreter::wrapLine answers true for a line the window has (or one
+  // past its last, where deleteLine() leaves a trigger's getLineNumber()), and
+  // refuses any other line and a window it cannot find.
+  it('answers true for a line it has, and refuses one it does not', () => {
     env.run('createBuffer("tb"); cecho("tb", "Hello\\n")');
     // one line at index 0; getLineCount is the line *count* (Mudlet semantics),
     // so a single line reports 1 and the last index is getLineCount()-1.
     expect(env.run('return (getLineCount("tb"))')).toBe(1);
     expect(env.run('return wrapLine("tb", 0)')).toBe(true);
-    expect(env.run('return wrapLine("tb", 5)')).toBe(true);
-    expect(env.run('return wrapLine("tb", -1)')).toBe(true);
+    expect(env.run('return wrapLine("tb", getLastLineNumber("tb") + 1)')).toBe(true);
+    expect(env.run('return select(2, wrapLine("tb", 5))')).toBe('line 5 does not exist in window "tb"');
+    expect(env.run('return select(2, wrapLine("tb", -1))')).toBe('line -1 does not exist in window "tb"');
     expect(env.run('return wrapLine(0)')).toBe(true);
     expect(env.run('return select(2, wrapLine("nope", 0))')).toBe('window "nope" not found');
   });

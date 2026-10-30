@@ -204,6 +204,15 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             reason: TORN_DOWN_REASON,
         },
         {
+            name: 'Tests C++ functions in the Miscallaneous category / Tests a profile torn down while its script spins the event loop / never runs another function for a timer made while its state closed',
+            reason:
+                TORN_DOWN_REASON
+                + ' The hazard this one adds — a __gc finaliser making a timer while lua_close() runs, which then '
+                + 'outlives the state it was made in — is guarded here too, within one profile: once LuaRuntime.destroy() '
+                + 'has begun, tempTimer() from a finaliser makes no timer, so the timer engine a reset reuses is '
+                + 'never handed a callback into the closed state.',
+        },
+        {
             name: 'Tests C++ functions in the Miscallaneous category / Tests a profile torn down while its script spins the event loop / closes another profile after closeProfile(), then closes',
             reason: TORN_DOWN_REASON,
         },
@@ -246,6 +255,7 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             'Tests opening a profile whose script fails as it loads / names the scripts that failed on that profile\'s console, once',
             'Tests opening a profile whose script fails as it loads / names them again after a reset, leaving out those fixed or disabled since',
             'Tests opening a profile whose script fails as it loads / names a package\'s script when a module has the package\'s name too',
+            'Tests opening a profile whose script fails as it loads / runs a failing body of a module loaded before the profile\'s scripts only once',
         ].map(name => ({
             name,
             reason:
@@ -384,12 +394,42 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 'the handlers once the metatable is handed out / come off the globals metatable at the next line',
                 'the lazyCaptureGlobals setting / is on by default',
                 'the lazyCaptureGlobals setting / leaves them out again once switched back on',
+                // Mudlet's own Lua carries a write barrier (MUDLET_LUA_WATCH) the
+                // deferral leans on to know an empty `matches` was left alone
+                // between dispatches; these read its state off rearmLazyGlobals(),
+                // which with the deferral off answers a lone false, as desktop's
+                // does with the setting off
+                'leaves the checks to the write barrier of Mudlet\'s own Lua',
+                'hands a script the empty matches after the collector cleared it from a weak registry',
+                'hands a script its captures after the collector cleared __index from a weak globals metatable',
             ].map(name => ({ name: lazy + name, reason })),
-            {
-                name: 'Trigger processing / triggers ruled out from a copy of their pattern / leaves the pinned filters alone when a trigger creates another trigger',
+            // The same cases as their "(built up front)" twins, which pass, run a
+            // second time with the deferral re-armed — and they assert that it
+            // is, which with no deferral to arm they cannot
+            ...[
+                'keeps a regex fire\'s groups in order, unset and empty ones as empty strings',
+                'keeps every match of a match-all regex in order',
+                'hands a substring, start-of-line or exact-match fire its pattern',
+                'hands a colour fire the text of the run',
+                'hands a filter child the capture of its parent',
+                'hands a multiline fire the groups of each line',
+                'hands a multiline filter\'s script its groups, and its children the groups after',
+                'keeps its own captures across a nested pass in its script',
+            ].map(name => ({
+                name: 'Trigger processing / the captures a fire hands its script / ' + name + ' (read on demand)',
+                reason,
+            })),
+            ...[
+                'leaves the pinned filters alone when a trigger creates another trigger',
+                // the same, through triggers.unfilterableEpoch: how often a line in
+                // flight was made to drop its prefiltered candidate list
+                'drops a line\'s candidate list for a trigger its own match held open only on a line that fed it',
+            ].map(name => ({
+                name: 'Trigger processing / triggers ruled out from a copy of their pattern / ' + name,
                 reason:
-                    'Reads getProfileStats().triggers.rootFilterEpoch, a test-mode-only counter of how often '
-                    + 'TriggerUnit invalidated the per-pass copies of its root triggers\' bigram prefilters — the '
+                    'Reads getProfileStats().triggers.rootFilterEpoch or unfilterableEpoch, test-mode-only '
+                    + 'counters of how often TriggerUnit invalidated the per-pass copies of its root triggers\' bigram '
+                    + 'prefilters, or a line\'s list of candidates they left — the '
                     + 'summaries Mudlet uses to rule a trigger out of a line without running its pattern. mudlet '
                     + 'has no such prefilter (TriggerEngine runs each active pattern), so there are no pinned '
                     + 'copies to invalidate and no epoch to count; reporting one would be a number that measures '
@@ -398,7 +438,7 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                     + 'processed" block, which passes. The sibling prefilter probes in TriggerFlood_spec '
                     + '(prescanWorkers) find the field absent and pend themselves; this one has no such gate '
                     + 'beyond MUDLET_TEST_MODE, which the busted build sets.',
-            },
+            })),
         ];
     })(),
 };

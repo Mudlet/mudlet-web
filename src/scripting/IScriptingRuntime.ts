@@ -164,11 +164,6 @@ export interface IScriptingRuntime {
      */
     dispatchSendRequest(text: string): boolean;
     /**
-     * One command's alias pass ended with an alias consuming it: spend a
-     * denyCurrentSend() raised there that no send spent (Host::send).
-     */
-    endAliasPass?(): void;
-    /**
      * Start a speedwalk between two rooms (Mudlet Host::startSpeedWalk): find
      * the path and hand it to the mapper package's `doSpeedWalk`. Driven by the
      * map's double-click-to-walk gesture via WindowManager.startSpeedWalk.

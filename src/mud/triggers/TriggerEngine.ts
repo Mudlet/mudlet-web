@@ -66,6 +66,19 @@ type MatchResult = {
      *  capture list before the match-all loop appends to it, and the highlight
      *  uses it to tell a whole-match entry from a group one. */
     groupCount?: number;
+    /** Per entry of the flattened capture list (whole match first), whether it
+     *  is a whole-match entry the highlight and a filter's offerings skip. Set
+     *  for a "match all" regex, whose occurrences can contribute differing
+     *  counts — PCRE2 reports groups only up to the highest that took part —
+     *  so no single {@link groupCount} describes them (TTrigger::
+     *  processRegexMatch's wholeMatchSkipped). Overrides groupCount. */
+    wholeMatchSkipped?: boolean[];
+    /** The positions are in the columns the line has NOW rather than the ones
+     *  it arrived with: a colour pattern reads the line as earlier triggers
+     *  left it, and so does everything under a colour filter
+     *  (TTrigger::mPositionsInCurrentColumns). Text positions are otherwise
+     *  moved past earlier triggers' edits before use. */
+    positionsInCurrentColumns?: boolean;
     /** What this match offers a filter trigger's children. Defaults to
      *  `'whole'` when a matcher doesn't say. */
     filterMode?: FilterMode;
@@ -107,6 +120,10 @@ export type TriggerMatch = {
     namedSpans?: Record<string, CaptureSpan>;
     matchStart?: number;
     groupCount?: number;
+    /** See MatchResult.wholeMatchSkipped. */
+    wholeMatchSkipped?: boolean[];
+    /** See MatchResult.positionsInCurrentColumns. */
+    positionsInCurrentColumns?: boolean;
     /** No capture groups were set for this fire: the script's `matches` is
      *  left empty rather than built from `matchedText`/`captures`. True for a
      *  Lua-function or prompt match and for a fire-length (stay-open) line,
@@ -127,7 +144,17 @@ function mergeAllMatches(results: MatchResult[]): MatchResult | null {
     if (results.length === 1) return first;
     const captures = [...first.captures];
     const captureSpans = [...(first.captureSpans ?? [])];
+    // Which entries are whole matches with groups after them, per occurrence:
+    // PCRE2 reports groups only up to the highest that took part, so one
+    // occurrence can add more entries than another
+    const wholeMatchSkipped: boolean[] = [];
+    const noteMatch = (entries: number): void => {
+        wholeMatchSkipped.push(entries > 1);
+        for (let i = 1; i < entries; i++) wholeMatchSkipped.push(false);
+    };
+    noteMatch(1 + first.captures.length);
     for (const r of results.slice(1)) {
+        noteMatch(1 + r.captures.length);
         captures.push(r.matchedText, ...r.captures);
         captureSpans.push(
             { start: r.matchStart ?? 0, length: r.matchedText.length },
@@ -140,6 +167,7 @@ function mergeAllMatches(results: MatchResult[]): MatchResult | null {
         matchStart: first.matchStart,
         captureSpans,
         groupCount: 1 + first.captures.length,
+        wholeMatchSkipped,
         // A regex hands its filter children the groups of every occurrence; a
         // substring hands them only the first occurrence
         // (TTrigger::processSubstringMatch filters `captureList.front()`).
@@ -188,9 +216,10 @@ function filterOfferings(result: MatchResult): { text: string; start: number }[]
     ];
     if (list.length < 2) return [];
     const perOccurrence = result.groupCount ?? list.length;
+    const skipped = result.wholeMatchSkipped;
     const out: { text: string; start: number }[] = [];
     for (let i = 0; i < list.length; i++) {
-        if (perOccurrence > 0 && (i + 1) % perOccurrence === 1) continue;
+        if (skipped ? skipped[i] : perOccurrence > 0 && (i + 1) % perOccurrence === 1) continue;
         const { text, start } = list[i];
         if (!text) continue;
         out.push({ text, start });
@@ -227,11 +256,14 @@ export function highlightTargets(
     matchStart: number | undefined,
     captureSpans: readonly CaptureSpan[] | undefined,
     groupCount: number | undefined,
+    wholeMatchSkipped?: readonly boolean[],
 ): { text: string; span?: CaptureSpan }[] {
     const out: { text: string; span?: CaptureSpan }[] = [];
     const perOccurrence = groupCount ?? matches.length;
     for (let i = 0; i < matches.length; i++) {
-        if (matches.length > 1 && perOccurrence > 0 && (i + 1) % perOccurrence === 1) continue;
+        if (wholeMatchSkipped) {
+            if (wholeMatchSkipped[i]) continue;
+        } else if (matches.length > 1 && perOccurrence > 0 && (i + 1) % perOccurrence === 1) continue;
         const text = matches[i];
         if (!text) continue;
         // Entry 0 is the whole match; the rest line up with captureSpans.
@@ -261,6 +293,8 @@ function matchResultToTriggerMatch(trigger: TriggerNode, r: MatchResult): Trigge
         namedSpans: r.namedSpans,
         matchStart: r.matchStart,
         groupCount: r.groupCount ?? 1 + r.captures.length,
+        wholeMatchSkipped: r.wholeMatchSkipped,
+        positionsInCurrentColumns: r.positionsInCurrentColumns,
         captureless: r.captureless,
     };
 }
@@ -532,7 +566,18 @@ const colorMatchRef: {
  *  normally, and only the parent's capture for a child of a filter — a colour
  *  outside that capture is not the child's to see. Set around each item's tests
  *  in matchPermEntryOnce, which is the only place that knows the window. */
-const colorWindowRef: { window: { start: number; length: number } | null } = { window: null };
+const colorWindowRef: {
+    window: { start: number; length: number } | null;
+    /** The column the item's positions are counted from — the window's start
+     *  in the columns its filter's offering is in, which is not the window's
+     *  start once that has been moved past earlier triggers' edits. */
+    base: number;
+} = { window: null, base: 0 };
+
+/** Moves a stretch of the line being processed, given in the columns it
+ *  arrived with, past what earlier triggers in the pass edited — see
+ *  ScriptingAPI.passSpanNow. Identity until ScriptingEngine wires it. */
+const spanNowRef: { fn: ((span: CaptureSpan) => CaptureSpan) | null } = { fn: null };
 
 /** Where the same-line runaway report is printed. See setRunawayReporter. */
 const runawayReportRef: { fn: ((text: string) => void) | null } = { fn: null };
@@ -798,7 +843,10 @@ function buildMatcher(
                 const window = colorWindowRef.window;
                 const runs = colorMatchRef.fn(fg, bg, window);
                 if (runs.length === 0) return null;
-                const base = window?.start ?? 0;
+                // Offsets relative to where the engine counts this item's
+                // positions from, so re-basing them lands on the column each
+                // run is at now
+                const base = window ? colorWindowRef.base : 0;
                 // Every run goes into the one capture list, so the script's
                 // `matches` is {run1, run2, …} and the highlight paints each of
                 // them — one entry per occurrence, as a match-all substring
@@ -810,6 +858,8 @@ function buildMatcher(
                     captureSpans: runs.slice(1).map(r => ({ start: r.start - base, length: r.text.length })),
                     groupCount: 1,
                     offerings: runs.map(r => ({ text: r.text, start: r.start - base })),
+                    // The runs are read off the line as earlier triggers left it
+                    positionsInCurrentColumns: true,
                 };
             };
         }
@@ -1014,6 +1064,10 @@ export class TriggerEngine {
     // relative to it, so selectCaptureGroup/selectString need this offset added
     // back to land on the real line (Mudlet #7886).
     private filterActiveOffset = new Map<string, number>();
+    /** Filters whose offerings this line are in the line's current columns
+     *  rather than the ones it arrived with: a colour filter's, and any filter
+     *  under one (TTrigger::filter's positionsInCurrentColumns). */
+    private filterCurrentColumns = new Map<string, boolean>();
 
     /** Resolves once PCRE wasm is initialized and patterns can be compiled. */
     static ready(): Promise<void> {
@@ -1778,13 +1832,18 @@ export class TriggerEngine {
         const m = entry.re.tryMatchFrom(pcreSubject(line), 0) as PcreMatch | null;
         if (!m || !accepted()) return false;
         const result = pcreToMatchResult(m);
+        // Matched against the line as it arrived, and handed over where earlier
+        // triggers' edits have moved each capture (TTrigger::executeWithCaptures)
+        const now = (span: CaptureSpan): CaptureSpan => this.spanNow(span);
         entry.fn(
             [result.matchedText, ...result.captures],
             {
-                captureSpans: result.captureSpans ?? [],
-                namedSpans: result.namedSpans,
+                captureSpans: (result.captureSpans ?? []).map(now),
+                namedSpans: result.namedSpans
+                    ? Object.fromEntries(Object.entries(result.namedSpans).map(([k, v]) => [k, now(v)]))
+                    : undefined,
                 matchSpan: result.matchStart !== undefined
-                    ? { start: result.matchStart, length: result.matchedText.length }
+                    ? now({ start: result.matchStart, length: result.matchedText.length })
                     : undefined,
             },
             result.namedGroups,
@@ -1895,9 +1954,18 @@ export class TriggerEngine {
         // offset itself); pushed matches are re-based onto the original line.
         const effOffset = this.getEffectiveOffset(item, currentLine);
         const isChainHead = item.isGroup || this.hasChildren.has(item.id);
-        colorWindowRef.window = effectiveLine === line
-            ? null
-            : { start: effOffset, length: effectiveLine.length };
+        const previousColorBase = colorWindowRef.base;
+        const inCurrentColumns = this.inCurrentColumns(item, currentLine);
+        if (effectiveLine === line) {
+            colorWindowRef.window = null;
+        } else {
+            // A colour pattern reads the line as it is now, so a text parent's
+            // capture is looked for where earlier triggers' edits have moved it
+            // (match_color_pattern's triggerPassSpanNow)
+            const window = { start: effOffset, length: effectiveLine.length };
+            colorWindowRef.window = inCurrentColumns ? window : this.spanNow(window);
+            colorWindowRef.base = effOffset;
+        }
 
         // Whether the trigger matched this line, and the last fire that
         // produced. Feeds the shared fire-length bookkeeping at the end of the
@@ -1947,6 +2015,11 @@ export class TriggerEngine {
                     if (result !== null) break;
                 }
                 if (result !== null) {
+                    // Under a colour filter the offering is in current columns,
+                    // and so is everything matched inside it
+                    if (inCurrentColumns && !result.positionsInCurrentColumns) {
+                        result = { ...result, positionsInCurrentColumns: true };
+                    }
                     seen.add(seenKey);
                     matched = true;
                     if (isChainHead) this.openChain(item, currentLine, result);
@@ -1966,6 +2039,7 @@ export class TriggerEngine {
             }
         } finally {
             colorWindowRef.window = previousColorWindow;
+            colorWindowRef.base = previousColorBase;
         }
     }
 
@@ -2367,6 +2441,12 @@ export class TriggerEngine {
         colorMatchRef.fn = fn;
     }
 
+    /** Wire how a stretch of the line in its arrived columns is found where it
+     *  is now — see {@link spanNowRef}. */
+    setSpanMapper(fn: ((span: CaptureSpan) => CaptureSpan) | null): void {
+        spanNowRef.fn = fn;
+    }
+
     destroy(): void {
         for (const entry of this.temp.values()) {
             this.release(entry);
@@ -2617,6 +2697,8 @@ export class TriggerEngine {
                 .map(o => ({ text: o.text, offset: base + o.start }));
             this.filterCaptures.set(item.id, offerings);
             this.filterOfferLine.set(item.id, currentLine);
+            this.filterCurrentColumns.set(item.id,
+                !!result.positionsInCurrentColumns || this.inCurrentColumns(item, currentLine));
             if (offerings.length > 0) {
                 this.filterActiveText.set(item.id, offerings[0].text);
                 this.filterActiveOffset.set(item.id, offerings[0].offset);
@@ -2698,6 +2780,18 @@ export class TriggerEngine {
         const filterId = this.activeFilterId(item, currentLine);
         if (filterId === null) return originalLine;
         return this.filterActiveText.get(filterId) ?? originalLine;
+    }
+
+    /** Whether `item` is offered a filter's capture in the line's current
+     *  columns this line — see {@link filterCurrentColumns}. */
+    private inCurrentColumns(item: TriggerNode, currentLine: number): boolean {
+        const filterId = this.activeFilterId(item, currentLine);
+        return filterId !== null && this.filterCurrentColumns.get(filterId) === true;
+    }
+
+    /** See {@link spanNowRef}. */
+    private spanNow(span: CaptureSpan): CaptureSpan {
+        return spanNowRef.fn ? spanNowRef.fn(span) : span;
     }
 
     /** The offset within the ORIGINAL line at which `item`'s effective (filtered)

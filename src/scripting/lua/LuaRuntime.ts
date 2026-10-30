@@ -786,8 +786,10 @@ export class LuaRuntime implements IScriptingRuntime {
         for (const span of Object.values(this.currentNamedSpans)) shift(span);
     }
 
-    private _denyCurrentSend = false;
-    private _sendRequestDepth = 0;
+    /** One entry per sysDataSendRequest dispatch on the stack, innermost
+     *  last: whether a handler denied THAT command. A send a handler makes
+     *  dispatches its own, so a deny is never spent by the wrong command. */
+    private _sendRequestDenies: boolean[] = [];
 
     /** The read-only `/lua/` namespace: bundled Mudlet Lua, and in busted builds
      *  the spec corpus and its fixtures. Values are Latin-1 byte-strings. */
@@ -935,6 +937,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // below take them through `bindings`.
         const dispatchCb = (cbId: number, label: string): void => this.dispatchCb(cbId, label);
         const releaseCb = (cbId: number): void => {
+            if (this.destroyed) return;
             try { this.lua.doStringSync(`__mudlet_unregister_cb(${cbId})`); } catch {}
         };
 
@@ -1741,11 +1744,29 @@ export class LuaRuntime implements IScriptingRuntime {
                 // TTrigger::match_color_pattern collects them all: `matches` is
                 // {run1, run2, …}.
                 const runs = matches.length === 0 ? [] : this.api.currentLineColorRuns(wantFg, wantBg);
-                this.setMatches(runs.map(r => r.text));
+                const texts = runs.map(r => r.text);
+                // Each run's position goes with it, so selectCaptureGroup(1)
+                // selects the run it names rather than finding nothing. They
+                // are read off the line as it is now, as the colours are.
+                const prevSpans = this.currentCaptureSpans;
+                const prevNamed = this.currentNamedSpans;
+                const prevMatches = this.currentMatches;
+                const prevFullMatchSpan = this.currentFullMatchSpan;
+                if (runs.length > 0) {
+                    this.currentMatches = texts;
+                    this.currentFullMatchSpan = { start: runs[0].start, length: runs[0].text.length };
+                    this.currentCaptureSpans = runs.slice(1).map(r => ({ start: r.start, length: r.text.length }));
+                    this.currentNamedSpans = {};
+                }
+                this.setMatches(texts);
                 try {
                     dispatchCb(cbId, 'tempColorTrigger');
                 } finally {
                     if (runs.length > 0) this.clearCaptureGlobals();
+                    this.currentMatches = prevMatches;
+                    this.currentCaptureSpans = prevSpans;
+                    this.currentNamedSpans = prevNamed;
+                    this.currentFullMatchSpan = prevFullMatchSpan;
                 }
                 fires++;
                 if (max > 0 && fires >= max) triggers.killTemp(id);
@@ -1945,9 +1966,16 @@ export class LuaRuntime implements IScriptingRuntime {
         // the Bridge.lua wrapper, matching Mudlet's contract.
         this.lua.global.set('__mudlet_connectToServer', (host: unknown, port?: unknown, save?: unknown) =>
             this.api.connectToServer(String(host ?? ''), port === undefined ? 23 : Number(port), !!save));
-        // Cancels the in-flight sysDataSendRequest dispatch. Only meaningful while
-        // a sysDataSendRequest handler is on the stack — flag is reset before each send.
-        this.lua.global.set('denyCurrentSend', () => { this._denyCurrentSend = true; });
+        // Cancels the command the innermost sysDataSendRequest dispatch is
+        // vetting. Outside one there is no such command: desktop answers nil and
+        // a message and stops nothing, so a stray deny cannot swallow whatever
+        // command happens to come next.
+        this.lua.global.set('__mudlet_denyCurrentSend', () => {
+            const top = this._sendRequestDenies.length - 1;
+            if (top < 0) return false;
+            this._sendRequestDenies[top] = true;
+            return true;
+        });
 
         // -- Command bar, command lines, and their context menu --
         installCommandLineBindings(bindings);
@@ -2076,6 +2104,10 @@ export class LuaRuntime implements IScriptingRuntime {
 
         // ── Timers ────────────────────────────────────────────────────────────
         this.lua.global.set('__mudlet_tempTimer', (seconds: number, cbId: number, repeating?: boolean) => {
+            // A __gc finaliser run by lua_close() can still call tempTimer.
+            // The timer engine outlives this state (a reset reuses it), so a
+            // timer made now would fire into a state that is gone.
+            if (this.destroyed) return null;
             const isRepeat = repeating ?? false;
             return this.api.timers.addTemp(seconds, () => {
                 dispatchCb(cbId, 'tempTimer');
@@ -2262,7 +2294,7 @@ export class LuaRuntime implements IScriptingRuntime {
             this.api.warnReservedTempKey(keyCode, mods, typeof source === 'string' && source ? source : undefined);
             return this.api.keys.addTemp(keyCode, mods, () => {
                 dispatchCb(cbId, 'tempKey');
-            }, { keyCode: qtKey, modifier, uncompiled: uncompiled === true });
+            }, { keyCode: qtKey, modifier, uncompiled: uncompiled === true, onFree: () => releaseCb(cbId) });
         });
         this.lua.global.set('killKey', (idOrName: number | string) =>
             typeof idOrName === 'string'
@@ -5324,9 +5356,11 @@ end`);
         this.lua.global.set('__mudlet_mxp_attrs', flat);
         // Flattened for the same reason as the attributes: a Lua-side split is
         // cheaper and steadier than walking a proxy. Both are server text, so
-        // both use the separators no MXP attribute can contain.
+        // both use the separators no MXP attribute can contain. Each action is
+        // terminated rather than separated, so an empty one — the action of an
+        // <A> whose address Mudlet will not open — is still an entry.
         this.lua.global.set('__mudlet_mxp_text', body?.text ?? '');
-        this.lua.global.set('__mudlet_mxp_actions', (body?.actions ?? []).join('\x01'));
+        this.lua.global.set('__mudlet_mxp_actions', (body?.actions ?? []).map(a => a + '\x01').join(''));
         this.runChunk('__mudlet_set_mxp(__mudlet_mxp_name, __mudlet_mxp_attrs,'
             + ' __mudlet_mxp_text, __mudlet_mxp_actions)', `set-mxp "${name}"`);
     }
@@ -5472,36 +5506,18 @@ end`);
     }
 
     dispatchSendRequest(text: string): boolean {
-        // cTelnet::mSendRequestDispatchDepth: an alias pass run from inside a
-        // handler (one that denies the command and expands a replacement) must
-        // leave the deny for the command the handler is vetting.
-        this._sendRequestDepth++;
+        // cTelnet::sendData: a deny belongs to the command whose handlers raised
+        // it — including from an alias pass a handler runs — and to nothing
+        // else. A send made inside a handler (an alias's replacement) gets a
+        // frame of its own, so neither command's deny reaches the other.
+        this._sendRequestDenies.push(false);
+        let denied = false;
         try {
             this.emitEvent('sysDataSendRequest', [text]);
         } finally {
-            this._sendRequestDepth--;
+            denied = this._sendRequestDenies.pop() === true;
         }
-        if (!this._denyCurrentSend) return false;
-        // Mudlet's Host::mAllowToSendCommand is consumed by the send it blocks,
-        // never cleared ahead of the event (cTelnet::sendData puts it back only
-        // on the branch that refused). Clearing it first — as this used to —
-        // silently threw away every denyCurrentSend() issued from anywhere but
-        // inside a sysDataSendRequest handler: a key binding or timer that
-        // denied the command about to go out had no effect at all.
-        this._denyCurrentSend = false;
-        return true;
-    }
-
-    /**
-     * The end of one command's alias pass that an alias consumed (Host::send).
-     * A deny raised there and never spent by a send of the alias's own would
-     * otherwise swallow whatever command comes next, so desktop puts
-     * mAllowToSendCommand back - unless the pass ran under a
-     * sysDataSendRequest handler, where the deny is meant for the command
-     * being handled.
-     */
-    endAliasPass(): void {
-        if (this._sendRequestDepth === 0) this._denyCurrentSend = false;
+        return denied;
     }
 
     syncScriptHandlers(entries: ScriptHandlerEntry[]): void {

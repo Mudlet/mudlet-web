@@ -1,6 +1,7 @@
 import type { MudSession, ScriptLogSource, ShowSentTextMode, BlankLinesBehaviour } from '../mud/MudSession';
 import type { TelnetNegotiatorFlags } from '../mud/connection/TelnetNegotiator';
 import { splitSentCommands } from '../mud/commandSplit';
+import { mxpLinkOpens } from '../mud/protocol/mxp';
 import type { AliasEngine } from '../mud/aliases/AliasEngine';
 import type { TriggerEngine } from '../mud/triggers/TriggerEngine';
 import type { TimerEngine } from '../mud/timers/TimerEngine';
@@ -17,7 +18,7 @@ import { styleSheetWithoutBackgroundImage } from '../ui/labels/labelModel';
 import { AddonCommandRegistry } from '../ui/commands/addonCommands';
 import { decodeGif, decodeAnimatedImage, sniffDecodableImage, supportsImageDecoder, MoviePlayer } from '../ui/labels/gifMovie';
 import { isSvgCandidate, isSvgUrl, resolveSvgIntrinsicSize, svgIntrinsicSizeFromBytes } from '../ui/labels/backgroundImageSize';
-import { looksLikeImage } from './lua/imageSize';
+import { looksLikeImage, parseImageSize } from './lua/imageSize';
 import type { CommandLineManager } from '../ui/cmdline/CommandLineManager';
 import type { ScrollBoxManager } from '../ui/scrollbox/ScrollBoxManager';
 import { TextEditManager } from '../ui/textedit/TextEditManager';
@@ -54,7 +55,7 @@ import {
     getFontGeneration,
     DEFAULT_OUTPUT_FONT_FAMILY,
 } from '../utils/fontLoader';
-import { isQtResourcePath, qtResourceUrl } from '../assets/qt-resources';
+import { isQtResourcePath, qtResourceBytes, qtResourceUrl } from '../assets/qt-resources';
 import { ProfilesPresence } from './profilesPresence';
 import { MapStore } from '../map/MapStore';
 import { MAP_STYLES, DEFAULT_MAP_STYLE } from '../map/mapStyle';
@@ -640,9 +641,6 @@ if (typeof document !== 'undefined') {
 // generation moves (see fontLoader.getFontGeneration) rather than keyed by it,
 // so the entries measured against the fallback don't linger.
 let measureCtx: CanvasRenderingContext2D | null | undefined;
-/** The addresses an MXP `<A>` click opens in a browser tab — see
- *  {@link ScriptingAPI.createMxpHyperlink}. */
-const MXP_OPENABLE_URL = /^(https?|ftp|mailto):/i;
 
 const measureCache = new Map<string, [number, number]>();
 let measureCacheGeneration = -1;
@@ -1335,7 +1333,10 @@ export class ScriptingAPI {
         session.applyConsoleBufferSize(this.mainConsole);
         // Mudlet `sysBufferShrinkEvent("main", linesRemoved)` — named user
         // windows have the same hook wired in WindowManager.registerConsole.
-        this.mainConsole.onBufferShrink = (n) => this.host.raiseEvent('sysBufferShrinkEvent', ['main', n]);
+        this.mainConsole.onBufferShrink = (n) => {
+            this.session.windows.noteLinesRemoved('main', n);
+            this.host.raiseEvent('sysBufferShrinkEvent', ['main', n]);
+        };
         // Mudlet gives the main console the profile's wrap (Host::mWrapAt, 100
         // by default) when it is created, and again whenever the preferences
         // change it (TConsole::changeColors). The Settings UI writes the store
@@ -2206,6 +2207,18 @@ export class ScriptingAPI {
         const ctx = canvas?.getContext('2d');
         if (!ctx) return null;
         ctx.font = `32px "${family}"`;
+        // A face the page declares but has not fetched yet (the bundled
+        // Ubuntu Mono, until something draws with it) measures as the
+        // fallback font, which has none of the font's own Private Use Area
+        // glyphs — so every icon would be reported missing from a font that
+        // has it. A font still loading cannot be judged: start the load so the
+        // map draws with it, and complain about nothing rather than wrongly.
+        const faces = typeof document !== 'undefined' ? document.fonts : undefined;
+        const sample = symbols.join('');
+        if (faces && !faces.check(ctx.font, sample)) {
+            void faces.load(ctx.font, sample).catch(() => undefined);
+            return null;
+        }
         // U+10FFFD: unassigned, and unassignable — nothing can have a glyph for
         // it, so its width IS the notdef width for this font.
         const notdef = ctx.measureText('\u{10FFFD}').width;
@@ -3565,7 +3578,7 @@ export class ScriptingAPI {
             // a page of this app, and `javascript:` would run in it — those do
             // nothing, as an address the desktop cannot open does nothing.
             return {
-                onClick: () => { if (isLive() && MXP_OPENABLE_URL.test(payload)) this.openUrl(payload); },
+                onClick: () => { if (isLive() && mxpLinkOpens(payload)) this.openUrl(payload); },
                 title: hint || undefined,
                 autoUnderline: true,
             };
@@ -3760,6 +3773,7 @@ export class ScriptingAPI {
             // As for insertText: TConsole::insertLink moves the capture
             // positions past the link, and the colours go with the text.
             this.captureShiftHook?.(at, padding.length + text.length);
+            this.noteTriggerPassLineEdit(buf, at, 0, padding.length + text.length);
             this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text: padding + text });
         } else {
             con.setCursorColumn(col + text.length);
@@ -4136,7 +4150,7 @@ export class ScriptingAPI {
         if (!buf) return null;
         const start = selected ? selected.start : 0;
         if (start < 0 || start >= buf.length) return null;
-        return this.readColorAt(buf, start, channel);
+        return this.readColorAt(buf, start, channel, selected ? selected.windowName : windowName);
     }
 
     /**
@@ -4149,13 +4163,39 @@ export class ScriptingAPI {
         buf: AnsiAwareBuffer,
         pos: number,
         channel: 'foreground' | 'background',
+        windowName?: string,
     ): [number, number, number] {
+        const own = formatColorToRgb(this.cellColorAt(buf, pos, channel));
+        if (own) return own;
+        const consoleBg = channel === 'background' ? this.consoleOwnBackground(windowName) : null;
+        return consoleBg ? [consoleBg.r, consoleBg.g, consoleBg.b] : this.defaultColorRgb(channel);
+    }
+
+    /** The colour the character at `pos` carries on `channel` itself (a
+     *  link's own style first), or undefined for the console's default. */
+    private cellColorAt(buf: AnsiAwareBuffer, pos: number, channel: 'foreground' | 'background'): FormatColor | undefined {
         const state = buf.getStateAt(pos);
         const link = linkStyleOf(state);
-        const color = channel === 'foreground'
+        return channel === 'foreground'
             ? link?.style.foreground ?? (link?.replaces ? undefined : state?.foreground)
             : link?.style.background ?? (link?.replaces ? undefined : state?.background);
-        return formatColorToRgb(color) ?? this.defaultColorRgb(channel);
+    }
+
+    /** The background setBackgroundColor gave a miniconsole or user window,
+     *  which its characters with no background of their own are drawn in —
+     *  desktop's TBuffer::updateColors() makes it their format's. */
+    private consoleOwnBackground(windowName: string | undefined): { r: number; g: number; b: number; a: number } | null {
+        if (!windowName || windowName === 'main') return null;
+        return this.getBackgroundColor(windowName);
+    }
+
+    /** The alpha of the background the character at `pos` is drawn on, as
+     *  getTextFormat's `backgroundAlpha` reports it: a decho alpha the
+     *  character carries, else its console's own translucent background. */
+    private readBackgroundAlphaAt(buf: AnsiAwareBuffer, pos: number, windowName?: string): number {
+        const color = this.cellColorAt(buf, pos, 'background');
+        if (color && formatColorToRgb(color)) return color.space === 'rgb' && color.a !== undefined ? color.a : 255;
+        return this.consoleOwnBackground(windowName)?.a ?? 255;
     }
 
     /** The blue a link gets in `windowName` when the caller did not pass a
@@ -4211,6 +4251,7 @@ export class ScriptingAPI {
         blinking: 'none' | 'slow' | 'fast';
         foreground: [number, number, number];
         background: [number, number, number];
+        backgroundAlpha: number;
     } | null {
         // Mudlet reads the char "under the cursor or selection": prefer an active
         // selection, otherwise fall back to the cursor position on the current
@@ -4218,6 +4259,7 @@ export class ScriptingAPI {
         let buf: AnsiAwareBuffer | null;
         let pos: number;
         const sel = this.selectionOf(windowName);
+        const console = sel ? sel.windowName : windowName;
         if (sel) {
             buf = this.selectionBuffer(sel);
             pos = sel.start;
@@ -4233,8 +4275,9 @@ export class ScriptingAPI {
         // one past the end answer for the one before it, which looks the same as
         // a container running one entry long.
         if (!buf || buf.length === 0 || pos < 0 || pos >= buf.length) return null;
-        const foreground = this.readColorAt(buf, pos, 'foreground');
-        const background = this.readColorAt(buf, pos, 'background');
+        const foreground = this.readColorAt(buf, pos, 'foreground', console);
+        const background = this.readColorAt(buf, pos, 'background', console);
+        const backgroundAlpha = this.readBackgroundAlphaAt(buf, pos, console);
         const state = buf.getStateAt(pos);
         // A link's own style wins over the run's; a link drawn in its selected
         // style has that in place of the formatting the game wrapped it in.
@@ -4266,6 +4309,7 @@ export class ScriptingAPI {
             blinking: state?.rapidBlink ? 'fast' : state?.slowBlink ? 'slow' : 'none',
             foreground,
             background,
+            backgroundAlpha,
         };
     }
 
@@ -4331,6 +4375,7 @@ export class ScriptingAPI {
         this.triggerLinePrompts.push(isPrompt);
         this.lineColorSnapshots.push(this.colorKeySegments(buffer, 0));
         this.lineColorLive.push(buffer);
+        this.passLineEdits.push([]);
         // Which line the cursor was on before this one was appended, so a line
         // fed from inside a trigger can hand the outer pass its own line back.
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
@@ -4357,6 +4402,7 @@ export class ScriptingAPI {
     endLine(): void {
         this.lineColorSnapshots.pop();
         this.lineColorLive.pop();
+        this.passLineEdits.pop();
         this.triggerLinePrompts.pop();
         // A trigger can call feedTriggers, which processes a line of its own
         // inside this one. Only the OUTERMOST line leaves trigger context —
@@ -4664,6 +4710,63 @@ export class ScriptingAPI {
     }
 
     /**
+     * What triggers have done to the text of each line being processed, in
+     * the order they did it and each in the columns the line had at the time
+     * (TBuffer::mTriggerPassLineEdits). A stack parallel to
+     * {@link lineColorLive}, as a trigger may feed a line of its own.
+     *
+     * Every trigger matches the line as it ARRIVED, so a later trigger's capture
+     * positions are in the arrived columns; {@link passSpanNow} moves them past
+     * what earlier triggers inserted, deleted or replaced before they are
+     * highlighted, selected or replaced.
+     */
+    private passLineEdits: { x: number; removed: number; inserted: number }[][] = [];
+
+    /**
+     * Record an edit to `buf`'s text against every pass running on that line
+     * (TBuffer::noteTriggerPassLineEdit). A removal followed by an insertion at
+     * the same column is one replacement, so a column inside the removed text
+     * is not pushed past what went in its place (appendTriggerPassLineEdit).
+     */
+    private noteTriggerPassLineEdit(buf: AnsiAwareBuffer | null | undefined, x: number, removed: number, inserted: number): void {
+        if (!buf || (removed === 0 && inserted === 0)) return;
+        for (let i = 0; i < this.lineColorLive.length; i++) {
+            if (this.lineColorLive[i] !== buf) continue;
+            const edits = this.passLineEdits[i];
+            if (!edits) continue;
+            const last = edits[edits.length - 1];
+            if (removed === 0 && last && last.x === x && last.inserted === 0) last.inserted = inserted;
+            else edits.push({ x, removed, inserted });
+        }
+    }
+
+    /**
+     * Where a stretch of the innermost pass line, given in the columns the line
+     * arrived with, is now (TBuffer::triggerPassSpanNow). Text replacing part of
+     * the stretch counts as part of it; text put in at either end does not.
+     */
+    passSpanNow(span: { start: number; length: number }): { start: number; length: number } {
+        const edits = this.passLineEdits[this.passLineEdits.length - 1];
+        if (!edits || edits.length === 0) return { start: span.start, length: span.length };
+        let start = span.start;
+        let end = span.start + span.length;
+        for (const edit of edits) {
+            const delta = edit.inserted - edit.removed;
+            if (start >= edit.x + edit.removed) start += delta;
+            else if (start > edit.x) start = edit.x;
+            if (end > edit.x + edit.removed) end += delta;
+            else if (end > edit.x) end = edit.x + edit.inserted;
+        }
+        return { start, length: Math.max(0, end - start) };
+    }
+
+    /** Whether text triggers earlier in the innermost pass edited its line. */
+    passLineEdited(): boolean {
+        const edits = this.passLineEdits[this.passLineEdits.length - 1];
+        return !!edits && edits.length > 0;
+    }
+
+    /**
      * Flush echo output collected during the just-processed line's trigger run.
      * Called once per line (right after that line is rendered) so a trigger's
      * `echo`/`cecho` lands immediately after the line it fired on — matching
@@ -4758,6 +4861,7 @@ export class ScriptingAPI {
             data = data.replace(/\r/g, '');
             if (flushesLine) data += '\r';
         }
+        this.session.adoptPendingEncoding();
         const encoding = this.session.getServerEncoding();
         let text: string;
         if (utf8Encoded && encoding === 'UTF-8') {
@@ -5010,7 +5114,25 @@ export class ScriptingAPI {
      *  only where desktop does nothing (scrolling disabled); Bridge.lua drops
      *  the result either way, as desktop's scrollTo returns nothing. */
     scrollTo(windowName: string | undefined, lineNumber: number | undefined): boolean {
-        return this.session.windows.scrollToLine(windowName || 'main', lineNumber);
+        // A buffer is never drawn, so it never shows itself scrolled back
+        // (TConsole::scrollTo): it stays at its end.
+        if (windowName && this.buffers.has(windowName)) return true;
+        const name = windowName || 'main';
+        // The last line, as getLastLineNumber() counts it, is the end: a
+        // trigger's scrollDown() to it goes on following the output. Mid pass
+        // that count is the script's, not the renderer's.
+        if (lineNumber !== undefined && lineNumber >= 0 && lineNumber >= this.getLastLineNumber(name)) lineNumber = undefined;
+        return this.session.windows.scrollToLine(name, lineNumber);
+    }
+
+    /** Whether the console follows its output (desktop's
+     *  `windowFollowsNewLines`), which scrollUp/scrollDown count from: while
+     *  a trigger runs, getScroll still answers the end as it was before the
+     *  packet, but a console at its end scrolls from the end it has now. */
+    windowFollowsNewLines(windowName?: string): boolean {
+        const name = windowName || 'main';
+        if (this.buffers.has(name)) return true;
+        return this.session.windows.followsNewLines(name);
     }
 
     /** Null when the window doesn't exist — the binding answers Mudlet's
@@ -5433,6 +5555,7 @@ export class ScriptingAPI {
             if (!literal && text.includes('\n')) this.rewrapInserted(con, windowName, line);
             if (literal) {
                 this.captureShiftHook?.(at, inserted.length);
+                this.noteTriggerPassLineEdit(buf, at, 0, inserted.length);
                 // The colours have to move with the text for the same reason
                 // the captures do — the inserted characters are not the ones
                 // the server coloured, and a later colour trigger must not
@@ -5968,17 +6091,20 @@ export class ScriptingAPI {
      * no window argument in Mudlet — it always acts on the main console — and is
      * a no-op without a selection there.
      */
-    cut(): void {
-        const sel = this.selectionOf('main');
-        if (!sel) return;
-        this.copy('main');
+    cut(windowName?: string): boolean {
+        if (windowName !== undefined && !this.consoleExists(windowName)) return false;
+        const target = !windowName ? 'main' : windowName;
+        const sel = this.selectionOf(target);
+        this.copy(target);
+        if (!sel) return true;
         const buf = this.selectionBuffer(sel);
-        if (!buf) return;
+        if (!buf) return true;
         const start = Math.max(0, Math.min(sel.start, buf.length));
         const end = Math.max(start, Math.min(sel.start + sel.length, buf.length));
         buf.remove([start, end]);
-        this.clearSelection('main');
-        if (!this.inTriggerProcessing) buf.rerender();
+        this.clearSelection(target);
+        if (target !== 'main' || !this.inTriggerProcessing) buf.rerender();
+        return true;
     }
 
     /**
@@ -6257,6 +6383,7 @@ export class ScriptingAPI {
             // found where its text now is; the one that was the replaced text
             // keeps its start and spans the replacement
             this.captureShiftHook?.(sel.start, newText.length - sel.length, sel.length);
+            this.noteTriggerPassLineEdit(buf, sel.start, sel.length, newText.length);
             // Same alignment the insert path needs: a replace that changes the
             // line's LENGTH moves every colour run after it. With keepColor the
             // replacement wears whatever the snapshot already had at that
@@ -7727,6 +7854,10 @@ export class ScriptingAPI {
         if (a === 'main') return this.applyBackgroundImage(undefined, b, mode);
         const refused = `console or label '${a}' not found, or '${b}' could not be loaded as an image`;
         if (this.session.labels.has(a)) {
+            // An empty path is how scripts cleared the image before
+            // resetBackgroundImage() existed: TLabel::setBackgroundImage sets an
+            // empty pixmap, which takes the picture, a movie and the text away.
+            if (b === '') return this.session.labels.clearPixmap(a) ? true : refused;
             // TLabel::setBackgroundImage keeps what the label shows when the
             // file is not an image at all, and the caller is told.
             if (!this.labelImageLoads(b)) return refused;
@@ -7911,11 +8042,18 @@ export class ScriptingAPI {
         // setting it. A remote URL can only be judged by its name, and sized
         // once it has been fetched.
         let bytes: Uint8Array | null = null;
-        if (!isQtResourcePath(path)) {
+        if (isQtResourcePath(path)) {
+            bytes = qtResourceBytes(path);
+        } else {
             try { bytes = this.host.readFileBytes(path); } catch { bytes = null; }
         }
         const svg = bytes ? isSvgCandidate(bytes) : isSvgUrl(url);
-        const size = bytes && svg ? svgIntrinsicSizeFromBytes(bytes) ?? undefined : undefined;
+        // A raster image is a QLabel pixmap, whose size is the label's size
+        // hint (getLabelSizeHint) — read from the file's header, so a script
+        // that sizes the label to it can ask straight after setting it.
+        const size = !bytes ? undefined
+            : svg ? svgIntrinsicSizeFromBytes(bytes) ?? undefined
+            : parseImageSize(bytes) ?? undefined;
         const ok = this.session.labels.setBackgroundImage(name, url, svg, size);
         if (ok && svg && !size) {
             resolveSvgIntrinsicSize(url).then(size => {
@@ -8454,7 +8592,10 @@ export class ScriptingAPI {
             // from — a script mirroring a miniconsole's buffer has no other way
             // to hear that its saved indexes moved.
             const name = win;
-            con.onBufferShrink = (n) => this.host.raiseEvent('sysBufferShrinkEvent', [name, n]);
+            con.onBufferShrink = (n) => {
+                this.session.windows.noteLinesRemoved(name, n);
+                this.host.raiseEvent('sysBufferShrinkEvent', [name, n]);
+            };
             this.session.consoles.set(win, con);
             // The Console is made on first use, but a window can already carry
             // a width (setWindowWrap before any echo, or one restored with the

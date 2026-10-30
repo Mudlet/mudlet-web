@@ -1552,10 +1552,25 @@ do
         end
         -- a name that finds no console is refused, as the console functions'
         -- lookup refuses one, and a wrap that could go ahead answers true
+        local window, line = 'main', first
         if type(first) == 'string' then
             local err = __mudlet_console_missing(first)
             if err then return nil, err end
-            _rawWrapLine(__mudlet_console_key(first), select(2, ...))
+            window, line = __mudlet_console_key(first), (select(2, ...))
+        end
+        -- So is a line the console does not have. One past the last line is
+        -- where deleteLine() leaves a trigger's getLineNumber(), so the
+        -- documented deleteLine(), echo(), wrapLine(getLineNumber()) sequence
+        -- is not refused (TLuaInterpreter::wrapLine).
+        local n = __mudlet_num(line)
+        if n ~= nil then
+            local isMain = window == nil or window == '' or window == 'main'
+            if n < 0 or n > getLastLineNumber(isMain and 'main' or window) + 1 then
+                return nil, ('line %d does not exist in window "%s"'):format(n, isMain and 'main' or window)
+            end
+        end
+        if type(first) == 'string' then
+            _rawWrapLine(window, select(2, ...))
         else
             _rawWrapLine(...)
         end
@@ -1998,6 +2013,9 @@ function getTextFormat(windowName)
         -- "dotted" or "dashed". Appended after the colours rather than beside
         -- `underline` so the flat array's existing indices do not shift.
         underlineStyle = t[15],
+        -- A key of its own, as desktop's: scripts compare background with
+        -- {r, g, b}, so it stays three long.
+        backgroundAlpha = t[16],
     }
 end
 
@@ -4855,7 +4873,8 @@ function __mudlet_set_mxp(element, flatAttrs, text, flatActions)
         local k, v = entry:match("^([^\2]*)\2(.*)$")
         if k and k ~= "" then t[k] = v end
     end
-    for action in tostring(flatActions or ""):gmatch("[^\1]+") do
+    -- each action ends in \1, and may be empty
+    for action in tostring(flatActions or ""):gmatch("([^\1]*)\1") do
         t.actions[#t.actions + 1] = action
     end
     mxp[element] = t
@@ -5760,7 +5779,7 @@ do
             matchAllOn,
             tonumber(fireLength) or 0,
             tonumber(lineDelta) or 0,
-            hlFgColor, hlBgColor, uncompiled)
+            hlFgColor, hlBgColor, uncompiled, cbId)
         return id
     end
 end
@@ -6061,7 +6080,7 @@ end
 -- insertText / replace([window,] ...). A command may be Lua code or a Lua
 -- function: a function is stored here and the link carries the code that calls
 -- it, so it survives the trip to JS as a string. Every argument is checked, and
--- then the console is looked for (__mudlet_console_missing), BEFORE any
+-- then the console is looked for (__mudlet_console_refusal), BEFORE any
 -- function is stored — a call that is refused or raises keeps no function.
 do
     -- Each function is held straight in the registry, as desktop holds a link's
@@ -6102,10 +6121,20 @@ do
         holdClipboardLinks()
         return result
     end
+    -- cut([window]) answers true, or (nil, why) for a name that finds no
+    -- console; anything but a string is the main console (TLuaInterpreter::cut).
     function cut(...)
-        local result = _rawCut(...)
+        local name = (...)
+        if type(name) == 'string' then
+            local err = __mudlet_console_missing(name)
+            if err then return nil, err end
+            name = __mudlet_console_key(name)
+        else
+            name = nil
+        end
+        _rawCut(name)
         holdClipboardLinks()
-        return result
+        return true
     end
 
     -- A link holds its function only while its text is shown, as desktop's
@@ -6180,7 +6209,7 @@ do
             end
             hint = __mudlet_check_string(hint, who, 3 + o, "hint", n >= 3 + o)
             checkFormat(who, fmt, 4 + o, hasFmt)
-            local err = __mudlet_console_missing(win)
+            local err = __mudlet_console_refusal(win)
                 or (inserts and insertRefusal(__mudlet_console_key(win), text, "link"))
             if err then return nil, err end
             if hasWin then
@@ -6207,7 +6236,7 @@ do
                 .. __mudlet_typename(cmd, n >= 1 + o) .. "!)", 2)
         end
         hint = __mudlet_check_string(hint, "setLink", 2 + o, "tooltip", n >= 2 + o)
-        local err = __mudlet_console_missing(win) or selectionRefusal(__mudlet_console_key(win), "link")
+        local err = __mudlet_console_refusal(win) or selectionRefusal(__mudlet_console_key(win), "link")
         if err then return nil, err end
         if o == 1 then
             _rawSetLink(__mudlet_console_key(win), __mudlet_popup_cmd(cmd), hint)
@@ -6281,7 +6310,7 @@ do
             text = __mudlet_check_string(text, who, 1 + o, "text", n >= 1 + o)
             local nc, nh = checkPopupTables(who, cmds, hints, 2 + o, n)
             checkFormat(who, fmt, 4 + o, hasFmt)
-            local err = __mudlet_console_missing(win) or sizeError(nc, nh)
+            local err = __mudlet_console_refusal(win) or sizeError(nc, nh)
                 or (inserts and insertRefusal(__mudlet_console_key(win), text, "popup"))
             if err then return nil, err end
             local cs, hs = flatten(cmds, hints)
@@ -6302,7 +6331,7 @@ do
         if o == 1 then win = __mudlet_check_string((...), "setPopup", 1, "window name") end
         local cmds, hints = select(o + 1, ...)
         local nc, nh = checkPopupTables("setPopup", cmds, hints, 1 + o, n)
-        local err = __mudlet_console_missing(win) or sizeError(nc, nh)
+        local err = __mudlet_console_refusal(win) or sizeError(nc, nh)
             or selectionRefusal(__mudlet_console_key(win), "popup")
         if err then return nil, err end
         local cs, hs = flatten(cmds, hints)
@@ -6317,7 +6346,7 @@ do
         if n >= 2 then
             local win = __mudlet_check_string((...), "insertText", 1, "window name")
             local text = __mudlet_check_string((select(2, ...)), "insertText", 2, "text")
-            local err = __mudlet_console_missing(win)
+            local err = __mudlet_console_refusal(win)
             if err then return nil, err end
             _rawInsertText(__mudlet_console_key(win), text)
             return true
@@ -6334,7 +6363,7 @@ do
         if n >= 2 then
             local win = __mudlet_check_string((...), "replace", 1, "window name")
             local text = __mudlet_check_string((select(2, ...)), "replace", 2, "with")
-            local err = __mudlet_console_missing(win)
+            local err = __mudlet_console_refusal(win)
             if err then return nil, err end
             _rawReplace(__mudlet_console_key(win), text)
             return true
@@ -7238,6 +7267,15 @@ function getProfileStats()
     local triggers = fam(r.triggers)
     local pat = (r.triggers and r.triggers.patterns) or {}
     triggers.patterns = { total = pat.total or 0, active = pat.active or 0 }
+    -- Desktop's report on its parallel regex prescan (TriggerMatchPool). A
+    -- page matches on its one thread, so the pool has no workers and never
+    -- takes a line: the report is there, as desktop's always is, and reads as
+    -- a pool that has had nothing to judge.
+    triggers.matchPool = {
+        threads = 0, pooledLines = 0, sampledLines = 0,
+        pooledMicroseconds = 0, sampledMicroseconds = 0, savedMilliseconds = 0,
+        verdict = "not enough data",
+    }
     local gifs = r.gifs or {}
     return {
         triggers = triggers,
@@ -7605,20 +7643,23 @@ function ttsSetVoiceByIndex(index)
     return __ttsSetVoiceByIndex(index)
 end
 
-function ttsSetRate(rate)
-    rate = __tts_check("ttsSetRate", 1, rate, "number")
-    return __ttsSetRate(rate)
+-- Mudlet ttsSetRate/ttsSetPitch/ttsSetVolume → true. A value out of range is
+-- clamped, but NaN compares false against both bounds and so would slip through
+-- the clamp: desktop refuses it with (nil, message) and leaves the setting, and
+-- the engine, alone.
+local function __tts_set(who, what, low, high, raw, value)
+    value = __tts_check(who, 1, value, "number")
+    if value ~= value then
+        return nil, string.format("%s: bad argument #1 value (%s as a number from %.1f to %.1f expected, got nan)",
+            who, what, low, high)
+    end
+    raw(value)
+    return true
 end
 
-function ttsSetPitch(pitch)
-    pitch = __tts_check("ttsSetPitch", 1, pitch, "number")
-    return __ttsSetPitch(pitch)
-end
-
-function ttsSetVolume(volume)
-    volume = __tts_check("ttsSetVolume", 1, volume, "number")
-    return __ttsSetVolume(volume)
-end
+function ttsSetRate(rate) return __tts_set("ttsSetRate", "rate", -1, 1, __ttsSetRate, rate) end
+function ttsSetPitch(pitch) return __tts_set("ttsSetPitch", "pitch", -1, 1, __ttsSetPitch, pitch) end
+function ttsSetVolume(volume) return __tts_set("ttsSetVolume", "volume", 0, 1, __ttsSetVolume, volume) end
 
 -- Mudlet ttsGetCurrentLine() → the text being spoken, or (nil, reason) when the
 -- engine is idle or errored.
@@ -9563,7 +9604,8 @@ do
     function alert(...)
         if select('#', ...) == 0 then return _raw() end
         local seconds = __mudlet_check_number((...), "alert", 1, "alert duration in seconds", true)
-        if seconds < 0 then
+        -- NaN (0/0) is no duration either: it compares false with everything
+        if seconds ~= seconds or seconds < 0 then
             error("alert: duration, in seconds, is optional but if given must be zero or greater.", 2)
         end
         return _raw(seconds)
@@ -10057,9 +10099,6 @@ do
     end
 end
 
--- Mudlet closeUserWindow(name) — hide a user window without deleting it, so
--- reopening it brings the same dock back. Reports nothing; a name that is not a
--- user window is simply nothing to close.
 -- Mudlet resetBackgroundImage([window] [, fullWindow]) → true, or (nil, errMsg)
 -- for a console nothing answers to and for asking a miniconsole to reset a full
 -- window background it does not have. The JS side hands the message back.
@@ -10076,12 +10115,14 @@ end
 -- lookup is Host::closeWindow's mSubConsoleMap, which holds miniconsoles and
 -- buffers alongside user windows. A label is the one thing it leaves alone,
 -- those living in a map of their own; only hideWindow reaches one.
+-- It answers true, or (nil, why) for a name nothing wears or a window of a
+-- kind it cannot close (Host::closeWindow, windowNotFoundOrUnsupported).
 function closeUserWindow(name)
     name = __mudlet_check_string(name, "closeUserWindow", 1, "name")
-    local kind = __windowType(name)
-    if kind == 'userwindow' or kind == 'miniconsole' or kind == 'buffer' then
-        hideWindow(name)
-    end
+    local err = __mudlet_console_refusal(name, true)
+    if err then return nil, err end
+    hideWindow(name)
+    return true
 end
 
 -- Mudlet setBackgroundImage([window,] path [, mode [, fullWindow]]). GUIUtils'
@@ -10339,11 +10380,14 @@ do
         return _rawSend(...)
     end
 
-    -- Consumed by the next send; reports nothing, so a caller cannot mistake a
-    -- return value for confirmation that something was actually blocked.
-    local _rawDeny = denyCurrentSend
+    -- Denies the command a sysDataSendRequest handler is vetting and returns
+    -- nothing. Outside such a handler there is no command to deny: desktop
+    -- answers nil and a message, and the next send goes out as normal.
+    local _rawDeny = __mudlet_denyCurrentSend
     function denyCurrentSend()
-        _rawDeny()
+        if not _rawDeny() then
+            return nil, "denyCurrentSend: no command to deny, call it from a sysDataSendRequest event handler"
+        end
     end
 
     -- The event name is checked before anything is packed, so a refusal cannot
@@ -11362,6 +11406,25 @@ do
             return guarded(...)
         end
     end
+    -- scrollUp / scrollDown([window,] [lines]) — desktop's are C++
+    -- (TLuaInterpreter::scrollConsoleBy) and go through scrollTo for its range
+    -- check. A first argument that is a string names the window; a count
+    -- lua_isnumber refuses is one line. An unknown window answers
+    -- (nil, "window does not exist"); a scroll answers nothing. A console at
+    -- its end counts from the end it has now: getScroll still answers the end
+    -- as it was before the packet while the triggers on it run.
+    local function scrollConsoleBy(up, ...)
+        local window, lines = "main", (...)
+        if type((...)) == "string" then window, lines = (...), (select(2, ...)) end
+        lines = tonumber(lines) or 1
+        local scroll = getScroll(window)
+        if not scroll then return nil, "window does not exist" end
+        local lastLine = getLastLineNumber(window)
+        local from = __windowFollowsNewLines(window) and lastLine or scroll
+        scrollTo(window, up and math.max(from - lines, 0) or math.min(from + lines, lastLine))
+    end
+    function scrollUp(...) return scrollConsoleBy(true, ...) end
+    function scrollDown(...) return scrollConsoleBy(false, ...) end
     -- The main console always scrolls, and every name for it — "main", an
     -- empty name or none — is refused. So is a buffer, which is never drawn
     -- and so always left scrolling.

@@ -89,6 +89,9 @@ interface TempKey {
     uncompiled?: boolean;
     /** Place in the profile's one key list — see {@link KeyEngine.process}. */
     seq: number;
+    /** Called once when the key is freed, so the callback it runs can be let
+     *  go of (desktop's ~TKey unrefs its function). */
+    onFree?: () => void;
 }
 
 /** A permanent key's getKeyCode answer: the Qt::Key it was made with when
@@ -210,11 +213,14 @@ export class KeyEngine {
         return temp === undefined || this.tempIsActive(temp);
     }
 
-    addTemp(key: string, modifiers: string[], fn: TempFn, qt?: { keyCode: number; modifier: number; uncompiled?: boolean }): number {
+    addTemp(
+        key: string, modifiers: string[], fn: TempFn,
+        qt?: { keyCode: number; modifier: number; uncompiled?: boolean; onFree?: () => void },
+    ): number {
         const id = this.idSeq.next();
         this.temp.set(id, {
             key, modifiers, fn, qtKey: qt?.keyCode, qtModifier: qt?.modifier, enabled: true,
-            uncompiled: qt?.uncompiled === true, seq: this.regCounter++,
+            uncompiled: qt?.uncompiled === true, seq: this.regCounter++, onFree: qt?.onFree,
         });
         return id;
     }
@@ -279,6 +285,7 @@ export class KeyEngine {
         for (const [id, t] of this.temp) {
             if (!t.dead) continue;
             this.temp.delete(id);
+            t.onFree?.();
             const ref = tempParentRef(id);
             if (this.tempParentRefs.has(ref)) {
                 this.orphanedParents.add(ref);

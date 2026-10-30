@@ -291,6 +291,15 @@ const SEND_FLAGS = new Set(["prompt", "hint", "expire"]);
 
 /** Cap on a held partial escape sequence. Beyond this it was never a real one,
  *  so it is dropped rather than swallowing the rest of the stream. */
+/** Whether an `<A>` may open `href`. The game chooses the address, so only
+ *  web and mail schemes reach the opener, as other schemes (`file:`, a
+ *  program's own like `steam:`, `javascript:`) can launch local programs or run
+ *  in this page; a scheme-less address opens nothing
+ *  (TMxpLinkTagHandler::actionFor). */
+export function mxpLinkOpens(href: string): boolean {
+    return /^(https?|ftp|mailto):/i.test(href);
+}
+
 const MAX_PENDING = 256;
 /** How many links that carry an `EXPIRE` name are remembered. A link that
  *  falls off the end can no longer be retired — Mudlet's store recycles its ids
@@ -531,6 +540,35 @@ export class MxpParser {
         return result;
     }
 
+    /**
+     * The styling MXP tags still hold open: the colour of the innermost open
+     * `<COLOR>`/`<FONT>`, and bold, italic, underline and strikeout while a tag
+     * of that kind is open. Desktop keeps these in TMxpMudlet, apart from the
+     * ANSI pen, and TBuffer paints them on every character it writes — whether
+     * or not MXP is still on, so a game that turns MXP off with a tag left open
+     * goes on showing it until MXP is reset. Undefined when nothing is open.
+     */
+    openStyle(): FormatStateSnapshot | undefined {
+        const style: FormatStateSnapshot = {};
+        let any = false;
+        for (const tag of this.stack) {
+            switch (tag.name) {
+                case "b": case "bold": case "strong": case "h": case "high":
+                    style.bold = true; any = true; break;
+                case "i": case "italic": case "em":
+                    style.italic = true; any = true; break;
+                case "u": case "underline":
+                    style.underline = true; any = true; break;
+                case "s": case "strikeout": case "strike": case "del":
+                    style.strikethrough = true; any = true; break;
+            }
+        }
+        const colour = this.mxpColorStack[this.mxpColorStack.length - 1];
+        if (colour?.fg) { style.foreground = { ...colour.fg }; any = true; }
+        if (colour?.bg) { style.background = { ...colour.bg }; any = true; }
+        return any ? style : undefined;
+    }
+
     private effectiveMode(): LineMode {
         // The current line's mode. Lock modes (5/6/7) only change the *default*
         // that `resetTransientMode` restores at the start of each new line — they
@@ -655,10 +693,10 @@ export class MxpParser {
                         this.fmt.applySgr(sgr);
                     }
                 } else if (esc.kind === "csi" && esc.finalByte === "C") {
-                    // Stopping at the main window's right margin, measured
-                    // from the line written so far (cursorForwardSpaces).
+                    // Stopping at the right margin, measured from the line
+                    // written so far (cursorForwardSpaces).
                     const column = (this.destName === null ? this.plain : this.destPlain).length;
-                    const spaces = cursorForwardSpaces(cursorForwardCount(esc.params), column, this.opts.wrapWidth?.());
+                    const spaces = cursorForwardSpaces(cursorForwardCount(esc.params), column);
                     if (spaces > 0) this.appendCursorForward(spaces);
                 } else if (esc.kind === "csi" && esc.finalByte === "z") {
                     // Consumed either way — it is never text — but only obeyed
@@ -1264,7 +1302,7 @@ export class MxpParser {
      *  end the string it is put in (TMxpSendTagHandler::actionFor). */
     private linkActions(link: LinkState, text: string): string[] {
         const target = link.href.replace(/&text;/gi, text);
-        if (link.tag === "a") return [`openUrl(${quoteLuaLiteral(target)})`];
+        if (link.tag === "a") return [mxpLinkOpens(target) ? `openUrl(${quoteLuaLiteral(target)})` : ""];
         const command = link.kind === "prompt" ? "printCmdLine" : "send";
         const cmds = target.split("|").filter(c => c.trim().length > 0);
         return (cmds.length > 0 ? cmds : [text]).map(c => `${command}(${quoteLuaLiteral(c)})`);
@@ -1395,7 +1433,9 @@ export class MxpParser {
                         start: link.start, end,
                         kind,
                         payload: cmds[0] ?? text,
-                        hint: hintParts[0] ?? link.hint,
+                        hint: link.tag === "a" && !mxpLinkOpens(payload)
+                            ? `Mudlet does not open this kind of address: ${payload}`
+                            : hintParts[0] ?? link.hint,
                         id: link.id,
                     });
                 }
