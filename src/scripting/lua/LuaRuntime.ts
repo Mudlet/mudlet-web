@@ -786,8 +786,10 @@ export class LuaRuntime implements IScriptingRuntime {
         for (const span of Object.values(this.currentNamedSpans)) shift(span);
     }
 
-    private _denyCurrentSend = false;
-    private _sendRequestDepth = 0;
+    /** One entry per sysDataSendRequest dispatch on the stack, innermost
+     *  last: whether a handler denied THAT command. A send a handler makes
+     *  dispatches its own, so a deny is never spent by the wrong command. */
+    private _sendRequestDenies: boolean[] = [];
 
     /** The read-only `/lua/` namespace: bundled Mudlet Lua, and in busted builds
      *  the spec corpus and its fixtures. Values are Latin-1 byte-strings. */
@@ -1963,9 +1965,16 @@ export class LuaRuntime implements IScriptingRuntime {
         // the Bridge.lua wrapper, matching Mudlet's contract.
         this.lua.global.set('__mudlet_connectToServer', (host: unknown, port?: unknown, save?: unknown) =>
             this.api.connectToServer(String(host ?? ''), port === undefined ? 23 : Number(port), !!save));
-        // Cancels the in-flight sysDataSendRequest dispatch. Only meaningful while
-        // a sysDataSendRequest handler is on the stack — flag is reset before each send.
-        this.lua.global.set('denyCurrentSend', () => { this._denyCurrentSend = true; });
+        // Cancels the command the innermost sysDataSendRequest dispatch is
+        // vetting. Outside one there is no such command: desktop answers nil and
+        // a message and stops nothing, so a stray deny cannot swallow whatever
+        // command happens to come next.
+        this.lua.global.set('__mudlet_denyCurrentSend', () => {
+            const top = this._sendRequestDenies.length - 1;
+            if (top < 0) return false;
+            this._sendRequestDenies[top] = true;
+            return true;
+        });
 
         // -- Command bar, command lines, and their context menu --
         installCommandLineBindings(bindings);
@@ -5490,36 +5499,18 @@ end`);
     }
 
     dispatchSendRequest(text: string): boolean {
-        // cTelnet::mSendRequestDispatchDepth: an alias pass run from inside a
-        // handler (one that denies the command and expands a replacement) must
-        // leave the deny for the command the handler is vetting.
-        this._sendRequestDepth++;
+        // cTelnet::sendData: a deny belongs to the command whose handlers raised
+        // it — including from an alias pass a handler runs — and to nothing
+        // else. A send made inside a handler (an alias's replacement) gets a
+        // frame of its own, so neither command's deny reaches the other.
+        this._sendRequestDenies.push(false);
+        let denied = false;
         try {
             this.emitEvent('sysDataSendRequest', [text]);
         } finally {
-            this._sendRequestDepth--;
+            denied = this._sendRequestDenies.pop() === true;
         }
-        if (!this._denyCurrentSend) return false;
-        // Mudlet's Host::mAllowToSendCommand is consumed by the send it blocks,
-        // never cleared ahead of the event (cTelnet::sendData puts it back only
-        // on the branch that refused). Clearing it first — as this used to —
-        // silently threw away every denyCurrentSend() issued from anywhere but
-        // inside a sysDataSendRequest handler: a key binding or timer that
-        // denied the command about to go out had no effect at all.
-        this._denyCurrentSend = false;
-        return true;
-    }
-
-    /**
-     * The end of one command's alias pass that an alias consumed (Host::send).
-     * A deny raised there and never spent by a send of the alias's own would
-     * otherwise swallow whatever command comes next, so desktop puts
-     * mAllowToSendCommand back - unless the pass ran under a
-     * sysDataSendRequest handler, where the deny is meant for the command
-     * being handled.
-     */
-    endAliasPass(): void {
-        if (this._sendRequestDepth === 0) this._denyCurrentSend = false;
+        return denied;
     }
 
     syncScriptHandlers(entries: ScriptHandlerEntry[]): void {

@@ -231,7 +231,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('closeMudlet',  '()',               'Close the active profile: disconnect and return to the connection screen (mudlet maps Mudlet\'s closeMudlet to closing the open profile).'),
     fn('resetProfile', '() → boolean',    'Reload the entire profile as if just reopened: clears all UI (windows, labels, gauges, command lines, scroll boxes), recreates the Lua runtime, and re-runs every script/alias/trigger/timer/key. Deferred internally, so call it from an alias or the command line — not from a script-item being reloaded.'),
     fn('connectToServer', '(host, port [, save]) → bool', 'Connect the session to host:port through the proxy. With save=true the host/port are persisted onto the active connection (mud mode).'),
-    fn('denyCurrentSend', '()',            'Inside a sysDataSendRequest handler, cancels the in-flight command'),
+    fn('denyCurrentSend', '()',            'Inside a sysDataSendRequest handler, cancels the command it is handling; elsewhere returns nil and a message'),
     fn('echo',         '([window,] text)', 'Print plain text (optional window name as 1st arg)'),
     fn('cecho',        '([window,] text)', 'Print with Mudlet color tags'),
     fn('decho',        '([window,] text)', 'Print with decimal RGB colors'),

@@ -4,14 +4,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTestRuntime, type TestRuntime } from '../createTestRuntime';
 
 /**
- * denyCurrentSend() blocks the NEXT send, from wherever it was called.
+ * denyCurrentSend() denies the command a sysDataSendRequest handler is vetting,
+ * and only that one (cTelnet::sendData).
  *
- * Mudlet keeps that as Host::mAllowToSendCommand, and cTelnet::sendData puts the
- * flag back only on the branch that refused a command — so a deny issued from a
- * key binding, a timer, or the command line survives until a send consumes it.
- * Mudlet Web used to clear the flag at the top of its sysDataSendRequest dispatch,
- * which meant only a deny raised from inside a handler ever counted; every other
- * one was thrown away before the send it was meant to stop.
+ * Outside a handler there is no such command: desktop answers nil and a message
+ * and stops nothing, so a deny raised from a key binding, a timer or an alias
+ * that sent nothing can no longer lie in wait and swallow whatever command comes
+ * next. A send a handler makes is vetted on its own, so its deny stays with it.
  */
 describe('denyCurrentSend', () => {
     let t: TestRuntime;
@@ -35,17 +34,33 @@ describe('denyCurrentSend', () => {
     });
     afterEach(() => t.dispose());
 
-    it('blocks the next send when called outside a handler', () => {
-        t.run('denyCurrentSend()');
-        t.run('send("blocked", false)');
+    it('answers nil and a message outside a handler, and stops nothing', () => {
+        expect(t.run('local ok, err = denyCurrentSend(); return ok == nil and err:find("sysDataSendRequest") ~= nil'))
+            .toBe(true);
+        t.run('send("allowed", false)');
+        expect(sent).toEqual(['allowed']);
+    });
+
+    it('returns nothing inside a handler', () => {
+        t.run(`__n = -1; __h = registerAnonymousEventHandler("sysDataSendRequest", function()
+            __n = select('#', denyCurrentSend())
+        end)`);
+        t.run('send("x", false)');
+        t.run('killAnonymousEventHandler(__h)');
+        expect(t.run('return __n')).toBe(0);
         expect(sent).toEqual([]);
     });
 
-    it('is consumed by the send it blocks, and only that one', () => {
-        t.run('denyCurrentSend()');
-        t.run('send("blocked", false)');
-        t.run('send("allowed", false)');
-        expect(sent).toEqual(['allowed']);
+    it('keeps a deny with the send it was raised for when a handler sends another', () => {
+        t.run(`__h = registerAnonymousEventHandler("sysDataSendRequest", function(_, text)
+            if text == "outer" then
+                denyCurrentSend()
+                send("inner", false)
+            end
+        end)`);
+        t.run('send("outer", false)');
+        t.run('killAnonymousEventHandler(__h)');
+        expect(sent).toEqual(['inner']);
     });
 
     it('still works from inside a sysDataSendRequest handler', () => {
@@ -100,8 +115,9 @@ describe('unencodable command warning', () => {
 
     it('says nothing about a command that was denied — it never went anywhere', () => {
         t.run('setServerEncoding("ISO 8859-1")');
-        t.run('denyCurrentSend()');
+        t.run('__h = registerAnonymousEventHandler("sysDataSendRequest", function() denyCurrentSend() end)');
         t.run('send("wake ląka", false)');
+        t.run('killAnonymousEventHandler(__h)');
         expect(warnings()).toHaveLength(0);
     });
 });

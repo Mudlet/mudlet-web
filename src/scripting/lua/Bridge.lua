@@ -10339,11 +10339,14 @@ do
         return _rawSend(...)
     end
 
-    -- Consumed by the next send; reports nothing, so a caller cannot mistake a
-    -- return value for confirmation that something was actually blocked.
-    local _rawDeny = denyCurrentSend
+    -- Denies the command a sysDataSendRequest handler is vetting and returns
+    -- nothing. Outside such a handler there is no command to deny: desktop
+    -- answers nil and a message, and the next send goes out as normal.
+    local _rawDeny = __mudlet_denyCurrentSend
     function denyCurrentSend()
-        _rawDeny()
+        if not _rawDeny() then
+            return nil, "denyCurrentSend: no command to deny, call it from a sysDataSendRequest event handler"
+        end
     end
 
     -- The event name is checked before anything is packed, so a refusal cannot
