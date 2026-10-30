@@ -18,7 +18,7 @@ import { styleSheetWithoutBackgroundImage } from '../ui/labels/labelModel';
 import { AddonCommandRegistry } from '../ui/commands/addonCommands';
 import { decodeGif, decodeAnimatedImage, sniffDecodableImage, supportsImageDecoder, MoviePlayer } from '../ui/labels/gifMovie';
 import { isSvgCandidate, isSvgUrl, resolveSvgIntrinsicSize, svgIntrinsicSizeFromBytes } from '../ui/labels/backgroundImageSize';
-import { looksLikeImage } from './lua/imageSize';
+import { looksLikeImage, parseImageSize } from './lua/imageSize';
 import type { CommandLineManager } from '../ui/cmdline/CommandLineManager';
 import type { ScrollBoxManager } from '../ui/scrollbox/ScrollBoxManager';
 import { TextEditManager } from '../ui/textedit/TextEditManager';
@@ -55,7 +55,7 @@ import {
     getFontGeneration,
     DEFAULT_OUTPUT_FONT_FAMILY,
 } from '../utils/fontLoader';
-import { isQtResourcePath, qtResourceUrl } from '../assets/qt-resources';
+import { isQtResourcePath, qtResourceBytes, qtResourceUrl } from '../assets/qt-resources';
 import { ProfilesPresence } from './profilesPresence';
 import { MapStore } from '../map/MapStore';
 import { MAP_STYLES, DEFAULT_MAP_STYLE } from '../map/mapStyle';
@@ -7854,6 +7854,10 @@ export class ScriptingAPI {
         if (a === 'main') return this.applyBackgroundImage(undefined, b, mode);
         const refused = `console or label '${a}' not found, or '${b}' could not be loaded as an image`;
         if (this.session.labels.has(a)) {
+            // An empty path is how scripts cleared the image before
+            // resetBackgroundImage() existed: TLabel::setBackgroundImage sets an
+            // empty pixmap, which takes the picture, a movie and the text away.
+            if (b === '') return this.session.labels.clearPixmap(a) ? true : refused;
             // TLabel::setBackgroundImage keeps what the label shows when the
             // file is not an image at all, and the caller is told.
             if (!this.labelImageLoads(b)) return refused;
@@ -8038,11 +8042,18 @@ export class ScriptingAPI {
         // setting it. A remote URL can only be judged by its name, and sized
         // once it has been fetched.
         let bytes: Uint8Array | null = null;
-        if (!isQtResourcePath(path)) {
+        if (isQtResourcePath(path)) {
+            bytes = qtResourceBytes(path);
+        } else {
             try { bytes = this.host.readFileBytes(path); } catch { bytes = null; }
         }
         const svg = bytes ? isSvgCandidate(bytes) : isSvgUrl(url);
-        const size = bytes && svg ? svgIntrinsicSizeFromBytes(bytes) ?? undefined : undefined;
+        // A raster image is a QLabel pixmap, whose size is the label's size
+        // hint (getLabelSizeHint) — read from the file's header, so a script
+        // that sizes the label to it can ask straight after setting it.
+        const size = !bytes ? undefined
+            : svg ? svgIntrinsicSizeFromBytes(bytes) ?? undefined
+            : parseImageSize(bytes) ?? undefined;
         const ok = this.session.labels.setBackgroundImage(name, url, svg, size);
         if (ok && svg && !size) {
             resolveSvgIntrinsicSize(url).then(size => {

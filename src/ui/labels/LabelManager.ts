@@ -539,6 +539,11 @@ export class LabelManager {
         const svgHint = this.svgSizeHint(lbl);
         if (svgHint) return svgHint;
         const chrome = stylesheetChrome(lbl.styleSheet);
+        // A raster image is QLabel's pixmap, and the pixmap is what it measures.
+        const img = lbl.backgroundImage;
+        if (!lbl.movie && img && !img.svg && img.width != null && img.height != null) {
+            return { width: img.width + chrome.width, height: img.height + chrome.height };
+        }
         if (lbl.movie) {
             const { width, height } = lbl.movie.gif;
             return { width: width + chrome.width, height: height + chrome.height };
@@ -728,6 +733,19 @@ export class LabelManager {
         const lbl = this.labels.get(name);
         if (!lbl?.backgroundImage || lbl.backgroundImage.url !== url) return false;
         lbl.backgroundImage = { ...lbl.backgroundImage, url, width, height };
+        this.notify(lbl.parent);
+        return true;
+    }
+
+    /** TLabel::setBackgroundImage with an empty path: an empty pixmap, which
+     *  takes away the picture (raster or SVG), a movie and — as setPixmap()
+     *  does — the text. */
+    clearPixmap(name: string): boolean {
+        const lbl = this.labels.get(name);
+        if (!lbl) return false;
+        lbl.backgroundImage = undefined;
+        if (lbl.movie) { lbl.movie.stop(); lbl.hiddenMovie = lbl.movie; lbl.movie = undefined; }
+        lbl.html = '';
         this.notify(lbl.parent);
         return true;
     }
