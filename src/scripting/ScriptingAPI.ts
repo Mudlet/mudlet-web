@@ -4150,7 +4150,7 @@ export class ScriptingAPI {
         if (!buf) return null;
         const start = selected ? selected.start : 0;
         if (start < 0 || start >= buf.length) return null;
-        return this.readColorAt(buf, start, channel);
+        return this.readColorAt(buf, start, channel, selected ? selected.windowName : windowName);
     }
 
     /**
@@ -4163,13 +4163,39 @@ export class ScriptingAPI {
         buf: AnsiAwareBuffer,
         pos: number,
         channel: 'foreground' | 'background',
+        windowName?: string,
     ): [number, number, number] {
+        const own = formatColorToRgb(this.cellColorAt(buf, pos, channel));
+        if (own) return own;
+        const consoleBg = channel === 'background' ? this.consoleOwnBackground(windowName) : null;
+        return consoleBg ? [consoleBg.r, consoleBg.g, consoleBg.b] : this.defaultColorRgb(channel);
+    }
+
+    /** The colour the character at `pos` carries on `channel` itself (a
+     *  link's own style first), or undefined for the console's default. */
+    private cellColorAt(buf: AnsiAwareBuffer, pos: number, channel: 'foreground' | 'background'): FormatColor | undefined {
         const state = buf.getStateAt(pos);
         const link = linkStyleOf(state);
-        const color = channel === 'foreground'
+        return channel === 'foreground'
             ? link?.style.foreground ?? (link?.replaces ? undefined : state?.foreground)
             : link?.style.background ?? (link?.replaces ? undefined : state?.background);
-        return formatColorToRgb(color) ?? this.defaultColorRgb(channel);
+    }
+
+    /** The background setBackgroundColor gave a miniconsole or user window,
+     *  which its characters with no background of their own are drawn in —
+     *  desktop's TBuffer::updateColors() makes it their format's. */
+    private consoleOwnBackground(windowName: string | undefined): { r: number; g: number; b: number; a: number } | null {
+        if (!windowName || windowName === 'main') return null;
+        return this.getBackgroundColor(windowName);
+    }
+
+    /** The alpha of the background the character at `pos` is drawn on, as
+     *  getTextFormat's `backgroundAlpha` reports it: a decho alpha the
+     *  character carries, else its console's own translucent background. */
+    private readBackgroundAlphaAt(buf: AnsiAwareBuffer, pos: number, windowName?: string): number {
+        const color = this.cellColorAt(buf, pos, 'background');
+        if (color && formatColorToRgb(color)) return color.space === 'rgb' && color.a !== undefined ? color.a : 255;
+        return this.consoleOwnBackground(windowName)?.a ?? 255;
     }
 
     /** The blue a link gets in `windowName` when the caller did not pass a
@@ -4225,6 +4251,7 @@ export class ScriptingAPI {
         blinking: 'none' | 'slow' | 'fast';
         foreground: [number, number, number];
         background: [number, number, number];
+        backgroundAlpha: number;
     } | null {
         // Mudlet reads the char "under the cursor or selection": prefer an active
         // selection, otherwise fall back to the cursor position on the current
@@ -4232,6 +4259,7 @@ export class ScriptingAPI {
         let buf: AnsiAwareBuffer | null;
         let pos: number;
         const sel = this.selectionOf(windowName);
+        const console = sel ? sel.windowName : windowName;
         if (sel) {
             buf = this.selectionBuffer(sel);
             pos = sel.start;
@@ -4247,8 +4275,9 @@ export class ScriptingAPI {
         // one past the end answer for the one before it, which looks the same as
         // a container running one entry long.
         if (!buf || buf.length === 0 || pos < 0 || pos >= buf.length) return null;
-        const foreground = this.readColorAt(buf, pos, 'foreground');
-        const background = this.readColorAt(buf, pos, 'background');
+        const foreground = this.readColorAt(buf, pos, 'foreground', console);
+        const background = this.readColorAt(buf, pos, 'background', console);
+        const backgroundAlpha = this.readBackgroundAlphaAt(buf, pos, console);
         const state = buf.getStateAt(pos);
         // A link's own style wins over the run's; a link drawn in its selected
         // style has that in place of the formatting the game wrapped it in.
@@ -4280,6 +4309,7 @@ export class ScriptingAPI {
             blinking: state?.rapidBlink ? 'fast' : state?.slowBlink ? 'slow' : 'none',
             foreground,
             background,
+            backgroundAlpha,
         };
     }
 

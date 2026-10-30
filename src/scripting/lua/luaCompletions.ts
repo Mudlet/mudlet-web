@@ -542,7 +542,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('getBgColor',      '([window]) → r, g, b',
         'Background RGB (0..255) at the current selection start. Returns no values when there is no selection; falls back to the profile default background when the segment carries no explicit color.'),
     fn('getTextFormat',   '([window]) → table',
-        'Display attributes of the character at the current selection start: bold, italic, underline, strikeout, reverse, overline, concealed (booleans), alternateFont (number), blinking ("none"/"slow"/"fast"), and foreground/background as {r, g, b}. overline/concealed/alternateFont report Mudlet "off" values (no equivalent channel). Returns nil, errMsg when there is no selection.'),
+        'Display attributes of the character at the current selection start: bold, italic, underline, strikeout, reverse, overline, concealed (booleans), alternateFont (number), blinking ("none"/"slow"/"fast"), foreground/background as {r, g, b}, and backgroundAlpha (0-255). overline/concealed/alternateFont report Mudlet "off" values (no equivalent channel). Returns nil, errMsg when there is no selection.'),
     // Timers
     fn('tempTimer',      '(seconds, fn, repeat?)', 'Create a timer (one-shot or repeating)'),
     fn('killTimer',      '(id)',           'Cancel a timer'),

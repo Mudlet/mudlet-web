@@ -2013,6 +2013,9 @@ function getTextFormat(windowName)
         -- "dotted" or "dashed". Appended after the colours rather than beside
         -- `underline` so the flat array's existing indices do not shift.
         underlineStyle = t[15],
+        -- A key of its own, as desktop's: scripts compare background with
+        -- {r, g, b}, so it stays three long.
+        backgroundAlpha = t[16],
     }
 end
 
