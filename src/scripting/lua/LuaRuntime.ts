@@ -1741,11 +1741,29 @@ export class LuaRuntime implements IScriptingRuntime {
                 // TTrigger::match_color_pattern collects them all: `matches` is
                 // {run1, run2, …}.
                 const runs = matches.length === 0 ? [] : this.api.currentLineColorRuns(wantFg, wantBg);
-                this.setMatches(runs.map(r => r.text));
+                const texts = runs.map(r => r.text);
+                // Each run's position goes with it, so selectCaptureGroup(1)
+                // selects the run it names rather than finding nothing. They
+                // are read off the line as it is now, as the colours are.
+                const prevSpans = this.currentCaptureSpans;
+                const prevNamed = this.currentNamedSpans;
+                const prevMatches = this.currentMatches;
+                const prevFullMatchSpan = this.currentFullMatchSpan;
+                if (runs.length > 0) {
+                    this.currentMatches = texts;
+                    this.currentFullMatchSpan = { start: runs[0].start, length: runs[0].text.length };
+                    this.currentCaptureSpans = runs.slice(1).map(r => ({ start: r.start, length: r.text.length }));
+                    this.currentNamedSpans = {};
+                }
+                this.setMatches(texts);
                 try {
                     dispatchCb(cbId, 'tempColorTrigger');
                 } finally {
                     if (runs.length > 0) this.clearCaptureGlobals();
+                    this.currentMatches = prevMatches;
+                    this.currentCaptureSpans = prevSpans;
+                    this.currentNamedSpans = prevNamed;
+                    this.currentFullMatchSpan = prevFullMatchSpan;
                 }
                 fires++;
                 if (max > 0 && fires >= max) triggers.killTemp(id);
