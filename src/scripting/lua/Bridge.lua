@@ -1552,10 +1552,25 @@ do
         end
         -- a name that finds no console is refused, as the console functions'
         -- lookup refuses one, and a wrap that could go ahead answers true
+        local window, line = 'main', first
         if type(first) == 'string' then
             local err = __mudlet_console_missing(first)
             if err then return nil, err end
-            _rawWrapLine(__mudlet_console_key(first), select(2, ...))
+            window, line = __mudlet_console_key(first), (select(2, ...))
+        end
+        -- So is a line the console does not have. One past the last line is
+        -- where deleteLine() leaves a trigger's getLineNumber(), so the
+        -- documented deleteLine(), echo(), wrapLine(getLineNumber()) sequence
+        -- is not refused (TLuaInterpreter::wrapLine).
+        local n = __mudlet_num(line)
+        if n ~= nil then
+            local isMain = window == nil or window == '' or window == 'main'
+            if n < 0 or n > getLastLineNumber(isMain and 'main' or window) + 1 then
+                return nil, ('line %d does not exist in window "%s"'):format(n, isMain and 'main' or window)
+            end
+        end
+        if type(first) == 'string' then
+            _rawWrapLine(window, select(2, ...))
         else
             _rawWrapLine(...)
         end

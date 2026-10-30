@@ -1036,6 +1036,13 @@ export class AnsiAwareBuffer {
      *  wrapLine() knows to give them the hanging indent rather than the first. */
     continuation = false;
 
+    /** Columns of indent a wrap put in front of this line, when it starts a
+     *  paragraph — desktop's wrapGapBuffer entry for such a line. Leading
+     *  spaces alone can't tell the indent from text, so a later wrapLine()
+     *  reads this (and that the spaces are still there) to know the line
+     *  already carries its indent and must not be given it again. */
+    wrapIndent = 0;
+
     removeFromDom(): void {
         // The row, when the renderer registered one; otherwise whatever single
         // element it did register (mini-console/user-window renderers hand us

@@ -188,6 +188,14 @@ export class Console {
             }
         }
         this.reopenLastLine();
+        // A line the wrap left waiting, empty, carries on from a break that
+        // already ate the spaces there, so the ones the echo starts with are
+        // dropped the same way (TBuffer::dropSpaceAtWrap) — up to its first
+        // other character, or the line feed that starts a line of its own.
+        if (this.partial.continuation && this.partial.length === 0 && text.startsWith(' ')) {
+            text = text.replace(/^ +/, '');
+            if (text.length === 0) return;
+        }
         // The first character on a line stamps it, as TBuffer::append does — an
         // empty open line may have been waiting since long before.
         if (this.partial.length === 0) {
@@ -712,6 +720,9 @@ export class Console {
         // The current line now carries embedded newlines — split it into separate
         // history entries so getLineCount/getCurrentLine reflect the new lines.
         const lines = cur.splitLines();
+        // The part before the newline keeps the indent a wrap gave the line;
+        // the line the newline starts has none yet (TBuffer::wrapLine).
+        if (lines.length > 0) lines[0].wrapIndent = cur.wrapIndent;
         cur.removeFromDom();
         this.history.splice(idx, 1, ...lines);
         // The cursor stays where the text went in: the first of the new lines,
@@ -1131,7 +1142,12 @@ function wrapBuffer(buf: AnsiAwareBuffer, width: number, indent: number, hanging
     const half = Math.trunc(width / 2);
     const firstIndent = indent > 0 && indent < width ? Math.min(Math.trunc(indent), half) : 0;
     const hang = hangingIndent > 0 && hangingIndent < width ? Math.min(Math.trunc(hangingIndent), half) : 0;
-    const pieces = wrapInfo(buf.text, !buf.continuation, width, firstIndent, hang);
+    // A line an earlier wrap already indented keeps that indent rather than
+    // being given another: desktop knows it from the gap the wrap recorded,
+    // checked against the spaces still being there in case an edit took them.
+    const startsIndented = !buf.continuation && firstIndent > 0
+        && buf.wrapIndent >= firstIndent && leadingSpaces(buf.text) >= firstIndent;
+    const pieces = wrapInfo(buf.text, !buf.continuation, startsIndented, width, firstIndent, hang);
     if (pieces.length === 0) return null;
 
     // The indent takes the format of the character it precedes, so it reads as
@@ -1162,8 +1178,20 @@ function wrapBuffer(buf: AnsiAwareBuffer, width: number, indent: number, hanging
         line.timestamp = buf.timestamp;
         line.isPrompt = buf.isPrompt;
         line.continuation = !pieces[i].isNewline;
+        // The first piece keeps the source line's own record unless this wrap
+        // indented it; a line an embedded newline starts gets no indent.
+        line.wrapIndent = !pieces[i].isNewline ? 0
+            : indentFor(pieces[i]) ? firstIndent
+            : i === 0 ? buf.wrapIndent : 0;
     });
     return lines;
+}
+
+/** How many spaces `text` starts with (TBuffer::wrapIndentWidth). */
+function leadingSpaces(text: string): number {
+    let width = 0;
+    while (width < text.length && text[width] === ' ') width++;
+    return width;
 }
 
 /** The format of the character at `index` in `buf` ({} for the default). */
@@ -1196,12 +1224,15 @@ interface WrapPiece {
  * width is broken hard. An empty answer means the line stays as it is —
  * including a line that would only have been broken by its indent.
  */
-function wrapInfo(text: string, isNewline: boolean, maxWidth: number, indent: number, hangingIndent: number): WrapPiece[] {
+function wrapInfo(text: string, isNewline: boolean, startsIndented: boolean, maxWidth: number, indent: number, hangingIndent: number): WrapPiece[] {
     const output: WrapPiece[] = [];
     if (text.length === 0) return output;
+    // A line that already carries its indent (startsIndented, only read for a
+    // line starting a paragraph) is measured as it stands.
+    const indentToCome = isNewline && !startsIndented;
     // Printable ASCII is one column a character, so such a line no wider than
     // the wrap column has no break to find.
-    const widthAvailable = Math.min(isNewline ? maxWidth - indent : maxWidth, maxWidth);
+    const widthAvailable = Math.min(indentToCome ? maxWidth - indent : maxWidth, maxWidth);
     const plainAscii = isPlainAscii(text);
     if (plainAscii && text.length <= widthAvailable) return output;
     // No grapheme is wider than two columns or shorter than one code unit, so
@@ -1224,7 +1255,7 @@ function wrapInfo(text: string, isNewline: boolean, maxWidth: number, indent: nu
     let xPos = 0;
     let totalWidth = 0;
     let firstChar = 0;
-    let needsIndent = isNewline;
+    let needsIndent = indentToCome;
     let hasNewline = false;
     for (let index = 0; index < text.length;) {
         const c = text[index];
@@ -1238,6 +1269,7 @@ function wrapInfo(text: string, isNewline: boolean, maxWidth: number, indent: nu
             output.push({ isNewline, needsIndent, first: firstChar, last: index });
             firstChar = ++index;
             isNewline = true;
+            startsIndented = false;
             needsIndent = false;
             xPos = 0;
             continue;
@@ -1257,7 +1289,7 @@ function wrapInfo(text: string, isNewline: boolean, maxWidth: number, indent: nu
         }
         const indentationHere = isNewline ? indent : hangingIndent;
         if (xPos + charWidth > maxWidth - (needsIndent ? indentationHere : 0)) {
-            if (isNewline) needsIndent = true;
+            if (isNewline && !startsIndented) needsIndent = true;
             // Any space will do as a break, unlike the indirect break UAX #14
             // only allows after the last of a run of them.
             const firstNonIndentChar = firstChar + (needsIndent ? 0 : indentationHere);
