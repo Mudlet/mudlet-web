@@ -6080,7 +6080,7 @@ end
 -- insertText / replace([window,] ...). A command may be Lua code or a Lua
 -- function: a function is stored here and the link carries the code that calls
 -- it, so it survives the trip to JS as a string. Every argument is checked, and
--- then the console is looked for (__mudlet_console_missing), BEFORE any
+-- then the console is looked for (__mudlet_console_refusal), BEFORE any
 -- function is stored — a call that is refused or raises keeps no function.
 do
     -- Each function is held straight in the registry, as desktop holds a link's
@@ -6209,7 +6209,7 @@ do
             end
             hint = __mudlet_check_string(hint, who, 3 + o, "hint", n >= 3 + o)
             checkFormat(who, fmt, 4 + o, hasFmt)
-            local err = __mudlet_console_missing(win)
+            local err = __mudlet_console_refusal(win)
                 or (inserts and insertRefusal(__mudlet_console_key(win), text, "link"))
             if err then return nil, err end
             if hasWin then
@@ -6236,7 +6236,7 @@ do
                 .. __mudlet_typename(cmd, n >= 1 + o) .. "!)", 2)
         end
         hint = __mudlet_check_string(hint, "setLink", 2 + o, "tooltip", n >= 2 + o)
-        local err = __mudlet_console_missing(win) or selectionRefusal(__mudlet_console_key(win), "link")
+        local err = __mudlet_console_refusal(win) or selectionRefusal(__mudlet_console_key(win), "link")
         if err then return nil, err end
         if o == 1 then
             _rawSetLink(__mudlet_console_key(win), __mudlet_popup_cmd(cmd), hint)
@@ -6310,7 +6310,7 @@ do
             text = __mudlet_check_string(text, who, 1 + o, "text", n >= 1 + o)
             local nc, nh = checkPopupTables(who, cmds, hints, 2 + o, n)
             checkFormat(who, fmt, 4 + o, hasFmt)
-            local err = __mudlet_console_missing(win) or sizeError(nc, nh)
+            local err = __mudlet_console_refusal(win) or sizeError(nc, nh)
                 or (inserts and insertRefusal(__mudlet_console_key(win), text, "popup"))
             if err then return nil, err end
             local cs, hs = flatten(cmds, hints)
@@ -6331,7 +6331,7 @@ do
         if o == 1 then win = __mudlet_check_string((...), "setPopup", 1, "window name") end
         local cmds, hints = select(o + 1, ...)
         local nc, nh = checkPopupTables("setPopup", cmds, hints, 1 + o, n)
-        local err = __mudlet_console_missing(win) or sizeError(nc, nh)
+        local err = __mudlet_console_refusal(win) or sizeError(nc, nh)
             or selectionRefusal(__mudlet_console_key(win), "popup")
         if err then return nil, err end
         local cs, hs = flatten(cmds, hints)
@@ -6346,7 +6346,7 @@ do
         if n >= 2 then
             local win = __mudlet_check_string((...), "insertText", 1, "window name")
             local text = __mudlet_check_string((select(2, ...)), "insertText", 2, "text")
-            local err = __mudlet_console_missing(win)
+            local err = __mudlet_console_refusal(win)
             if err then return nil, err end
             _rawInsertText(__mudlet_console_key(win), text)
             return true
@@ -6363,7 +6363,7 @@ do
         if n >= 2 then
             local win = __mudlet_check_string((...), "replace", 1, "window name")
             local text = __mudlet_check_string((select(2, ...)), "replace", 2, "with")
-            local err = __mudlet_console_missing(win)
+            local err = __mudlet_console_refusal(win)
             if err then return nil, err end
             _rawReplace(__mudlet_console_key(win), text)
             return true
