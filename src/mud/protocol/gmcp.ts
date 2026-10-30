@@ -154,7 +154,19 @@ const parseGmcpPayload = (
     // encoding, and only we can notice: a bad sequence never breaks the JSON
     // (every structural character is ASCII, continuation bytes are all >= 0x80),
     // so `JSON.parse` succeeds and the corruption stays inside string values.
-    const rawBody = data.substring(1);
+    // As cTelnet keeps a subnegotiation: a doubled IAC is one data byte 0xFF
+    // (which is not UTF-8, so it decodes to one U+FFFD below, not two).
+    let rawBody = data.substring(1);
+    if (rawBody.includes("\xFF\xFF")) rawBody = rawBody.replace(/\xFF\xFF/g, "\xFF");
+    // A NUL ends the message: desktop measures the command from its c_str()
+    // and then strips the two bytes of IAC SE it expects at the end, so the
+    // two bytes ahead of the NUL go as well, and a NUL within the first three
+    // leaves nothing at all (processTelnetCommand's OPT_GMCP case).
+    const nul = rawBody.indexOf("\0");
+    if (nul !== -1) {
+        if (nul < 3) return;
+        rawBody = rawBody.substring(0, nul - 2);
+    }
     const { text: gmcpData, malformed } = fromByteString(rawBody);
     if (!gmcpData.length) return;
 

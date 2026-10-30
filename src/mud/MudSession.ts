@@ -653,6 +653,13 @@ export class MudSession {
         this.ensureParsingClient().feedTelnet(data);
     }
 
+    /** A feedTriggers() is text the buffer reads, so an encoding a trigger
+     *  switched to part way through a read takes effect there, and for the
+     *  rest of that read (see MudClient.setServerEncoding). */
+    adoptPendingEncoding(): void {
+        this.client?.adoptPendingEncoding();
+    }
+
     sendATCP(message: string): boolean {
         return this.client?.sendATCP(message) ?? false;
     }

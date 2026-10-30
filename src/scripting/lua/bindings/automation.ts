@@ -11,7 +11,7 @@ import type { BindingContext } from './context';
  * Every one of these is a thin forward into ScriptingAPI, which in turn routes
  * through the engine callbacks so mutations land in the appStore tree.
  */
-export function installAutomationBindings({ lua, api }: BindingContext): void {
+export function installAutomationBindings({ lua, api, releaseCb }: BindingContext): void {
     // ── Script enable/disable ─────────────────────────────────────────────
     // Mudlet looks scripts up by name; toggling the flag cascades the
     // store subscription which loads/unloads Lua handlers synchronously.
@@ -63,6 +63,7 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
         name: unknown, patternsStr: unknown, code: unknown,
         multiline: unknown, isFilter: unknown, multipleMatches: unknown,
         fireLength: unknown, delta: unknown, hlFg: unknown, hlBg: unknown, uncompiled?: unknown,
+        cbId?: unknown,
     ) => {
         const raw = String(patternsStr ?? '');
         const patterns = (raw.length === 0 ? [] : raw.split('\x01')).map(entry => {
@@ -97,6 +98,9 @@ export function installAutomationBindings({ lua, api }: BindingContext): void {
             delta: Math.max(0, Math.trunc(Number(delta)) || 0),
             highlight,
             uncompiled: uncompiled === true,
+            // The callback is let go of when the trigger is freed, as a plain
+            // temp trigger's is: desktop's ~TTrigger unrefs its function.
+            onFree: typeof cbId === 'number' ? () => releaseCb(cbId) : undefined,
         });
     });
     // Mudlet permSubstringTrigger(name, parent, patterns, luaCode). Same

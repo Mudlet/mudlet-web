@@ -2294,7 +2294,7 @@ export class LuaRuntime implements IScriptingRuntime {
             this.api.warnReservedTempKey(keyCode, mods, typeof source === 'string' && source ? source : undefined);
             return this.api.keys.addTemp(keyCode, mods, () => {
                 dispatchCb(cbId, 'tempKey');
-            }, { keyCode: qtKey, modifier, uncompiled: uncompiled === true });
+            }, { keyCode: qtKey, modifier, uncompiled: uncompiled === true, onFree: () => releaseCb(cbId) });
         });
         this.lua.global.set('killKey', (idOrName: number | string) =>
             typeof idOrName === 'string'
@@ -5356,9 +5356,11 @@ end`);
         this.lua.global.set('__mudlet_mxp_attrs', flat);
         // Flattened for the same reason as the attributes: a Lua-side split is
         // cheaper and steadier than walking a proxy. Both are server text, so
-        // both use the separators no MXP attribute can contain.
+        // both use the separators no MXP attribute can contain. Each action is
+        // terminated rather than separated, so an empty one — the action of an
+        // <A> whose address Mudlet will not open — is still an entry.
         this.lua.global.set('__mudlet_mxp_text', body?.text ?? '');
-        this.lua.global.set('__mudlet_mxp_actions', (body?.actions ?? []).join('\x01'));
+        this.lua.global.set('__mudlet_mxp_actions', (body?.actions ?? []).map(a => a + '\x01').join(''));
         this.runChunk('__mudlet_set_mxp(__mudlet_mxp_name, __mudlet_mxp_attrs,'
             + ' __mudlet_mxp_text, __mudlet_mxp_actions)', `set-mxp "${name}"`);
     }

@@ -43,6 +43,9 @@ export interface TempComplexTriggerSpec {
     /** Its code string did not compile. Mudlet still makes the trigger, but it
      *  is inactive however it is switched — it never matches or highlights. */
     uncompiled?: boolean;
+    /** Called once when the trigger is killed or expires, so the callback it
+     *  dispatches to can be let go of. */
+    onFree?: () => void;
 }
 
 export interface EngineHost {

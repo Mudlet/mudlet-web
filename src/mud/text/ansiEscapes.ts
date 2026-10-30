@@ -187,29 +187,22 @@ export function cursorForwardCount(params: string | undefined): number {
     return Math.min(n, MAX_CURSOR_FORWARD);
 }
 
-/** TBuffer::translateToPlainText's `maxLineWidth`: the widest margin a
- *  cursor-forward stops at, however wide the window wraps. See
- *  {@link cursorForwardSpaces}. */
+/** TBuffer::translateToPlainText's `rightMargin`: the column a cursor-forward
+ *  stops at. See {@link cursorForwardSpaces}. */
 export const MAX_CURSOR_FORWARD = 1000;
 
 /**
  * How many spaces a cursor-forward of `count` (from {@link cursorForwardCount})
- * actually writes at `column` — TBuffer::translateToPlainText's 'C' case. Like
- * a terminal's, the cursor stops at the right margin: the count comes from the
- * game, and unbounded, one sequence (or a run of them) could ask for gigabytes
- * of spaces. The margin is the buffer's wrap, capped at
- * {@link MAX_CURSOR_FORWARD}, and the column is the line's length so far
- * modulo the margin (`mMudLine.size() % margin`), so a run of moves stops at
- * the margin rather than each taking its own thousand. `wrapAt` undefined is
- * a parse with no window behind it, and 0 is a main window with wrapping
- * turned off (which desktop's settings never allow); both take the cap as
- * their margin.
+ * actually writes at `column` (the line's length so far) —
+ * TBuffer::translateToPlainText's 'C' case. Like a terminal's, the cursor stops
+ * at the right margin: the count comes from the game, and unbounded, one
+ * sequence (or a run of them) could ask for gigabytes of spaces. The margin is
+ * {@link MAX_CURSOR_FORWARD}, not the window's wrap: games send lines longer
+ * than that, and the spaces have to survive the wrap that splits them.
  */
-export function cursorForwardSpaces(count: number, column: number, wrapAt?: number): number {
+export function cursorForwardSpaces(count: number, column: number): number {
     if (count <= 0) return 0;
-    const width = wrapAt !== undefined && wrapAt > 0 ? wrapAt : MAX_CURSOR_FORWARD;
-    const margin = Math.max(1, Math.min(width, MAX_CURSOR_FORWARD));
-    return Math.max(0, Math.min(count, margin - 1 - (column % margin)));
+    return Math.max(0, Math.min(count, MAX_CURSOR_FORWARD - 1 - column));
 }
 
 // ── OSC 8 hyperlink protocol ──────────────────────────────────────────────

@@ -4699,7 +4699,7 @@ export class ScriptingEngine implements EngineHost {
             delta: spec.delta,
             isFilter: spec.isFilter,
             highlight: spec.highlight,
-        }, { id: this.allocateItemId(), uncompiled: spec.uncompiled });
+        }, { id: this.allocateItemId(), uncompiled: spec.uncompiled, onFree: spec.onFree });
     }
 
     /**
@@ -6466,9 +6466,11 @@ export class ScriptingEngine implements EngineHost {
                             // mute gate).
                             if (r.sounds) for (const s of r.sounds) void this.handleMspCommand(s);
                         } else {
-                            // Main's wrap is where a cursor forward in the
-                            // line stops (TBuffer's mWrapAt margin).
-                            const buffer = new AnsiAwareBuffer(line, carryState, this.osc8Presets, this.api.getWindowWrap('main'));
+                            const buffer = new AnsiAwareBuffer(line, carryState, this.osc8Presets);
+                            // Styling MXP left open when it was turned off is
+                            // still painted, over the ANSI pen (see openStyle).
+                            const mxpStyle = this.mxp.openStyle();
+                            if (mxpStyle && buffer.length > 0) buffer.applyFormat([0, buffer.length], mxpStyle);
                             this.wireOsc8Links(buffer);
                             // The buffer's text is the line with every escape
                             // sequence (SGR, OSC 8 links, cursor moves, …) already
@@ -6479,7 +6481,7 @@ export class ScriptingEngine implements EngineHost {
                             // SGR — including trailing resets, and unchanged across
                             // blank lines — unlike buffer.trailingState() which only
                             // sees the last text segment's state.
-                            carryState = computeTrailingState(line, carryState);
+                            carryState = computeTrailingState(line, carryState, buffer.openHyperlink);
                             units.push({ plain, buffer, blankRenders: line === '' });
                         }
 

@@ -25,6 +25,7 @@ import {
     MSSP_COMMAND_CODE,
     MXP_COMMAND_CODE,
     NEW_ENVIRON_COMMAND_CODE,
+    normalizeCharsetName,
     ATCP_COMMAND_CODE,
     OPT_ATCP,
     OPT_TELNET_102,
@@ -714,6 +715,7 @@ export class MudClient {
         this.mccpHandler.reset();
         this.echoHandler.reset();
         this.codec.reset();
+        this.pendingEncoding = null;
         this.assembler.reset();
         this.negotiator.reset();
         this.subnegRepair.reset();
@@ -1391,10 +1393,38 @@ export class MudClient {
 
     /** Mudlet `setServerEncoding(name)`. Switch the inbound decoder to `name`
      *  (any value from getServerEncodingsList()). Returns false — leaving the
-     *  current encoding untouched — when the name isn't one we can decode. */
+     *  current encoding untouched — when the name isn't one we can decode.
+     *
+     *  Asked for while a read's text is being decoded — by one of its
+     *  triggers — the switch waits for the next text to be decoded: TBuffer
+     *  reads cTelnet's encoding once, at the start of each translateToPlainText,
+     *  so the rest of the read keeps the encoding it arrived in. That next text
+     *  is the next read, or a feed the trigger makes of its own
+     *  ({@link adoptPendingEncoding}), which then applies to the rest of the
+     *  read as well. */
     setServerEncoding(name: string): boolean {
+        if (this.decodingRead) {
+            if (!normalizeCharsetName(String(name ?? ''))) return false;
+            this.pendingEncoding = String(name);
+            return true;
+        }
+        this.pendingEncoding = null;
         return this.charsetHandler.setServerEncoding(name);
     }
+
+    /** Apply a setServerEncoding() a trigger made part way through a read —
+     *  where TBuffer::translateToPlainText would next read the encoding. */
+    adoptPendingEncoding(): void {
+        const name = this.pendingEncoding;
+        if (name === null) return;
+        this.pendingEncoding = null;
+        this.charsetHandler.setServerEncoding(name);
+    }
+
+    /** True while a read's text is decoded and handed to its triggers. */
+    private decodingRead = false;
+    /** An encoding a trigger switched to while {@link decodingRead}. */
+    private pendingEncoding: string | null = null;
 
     /** Route an `IAC SB MSP ... IAC SE` body to the MSP parser and dispatch
      *  any parsed commands as `msp` events. Always runs when an MSP subneg
@@ -1674,6 +1704,7 @@ export class MudClient {
     /** Negotiate, strip, decode and assemble one run of a frame. `hasPrompt`
      *  means the run ends in an IAC GA/EOR. */
     private processSegment(processable: string, hasPrompt: boolean, ts: number): void {
+        this.adoptPendingEncoding();
         // Option negotiation is applied run by run, not for the whole frame up
         // front: desktop handles the text up to each GA before the commands
         // that follow it, so a WILL GMCP or WILL ECHO after a prompt must not
@@ -1726,8 +1757,9 @@ export class MudClient {
         }
 
         // A trigger fires while its packet is still being decoded, and one that
-        // calls setServerEncoding() has to change how the REST of that packet
-        // reads, as it does in Mudlet (TBuffer settles the decoder per line).
+        // calls setServerEncoding() and then feeds a line of its own changes how
+        // the REST of that packet reads, as it does in Mudlet (the feed's
+        // translateToPlainText settles the decoder the outer read goes on with).
         // Triggers only run when the message buffer is flushed, so the packet is
         // decoded and flushed a line at a time up to the last byte an encoding
         // could read differently. Everything past that is ASCII, which every
@@ -1737,16 +1769,22 @@ export class MudClient {
         while (lastHighByte >= 0 && sanitized.charCodeAt(lastHighByte) < 0x80) lastHighByte--;
         // What a trigger feeds in while this run is shown is a read of its own,
         // not the continuation of this one's MXP mode switch.
-        this.negotiator.keepingMxpDetectionTail(() => {
-            let start = 0;
-            for (let nl = sanitized.indexOf('\n'); nl !== -1 && nl < lastHighByte; nl = sanitized.indexOf('\n', start)) {
-                this.decodeAndAssemble(sanitized.substring(start, nl + 1), false, ts);
+        const outerDecoding = this.decodingRead;
+        this.decodingRead = true;
+        try {
+            this.negotiator.keepingMxpDetectionTail(() => {
+                let start = 0;
+                for (let nl = sanitized.indexOf('\n'); nl !== -1 && nl < lastHighByte; nl = sanitized.indexOf('\n', start)) {
+                    this.decodeAndAssemble(sanitized.substring(start, nl + 1), false, ts);
+                    this.flushMessageBuffer();
+                    start = nl + 1;
+                }
+                this.decodeAndAssemble(start === 0 ? sanitized : sanitized.substring(start), hasPrompt, ts);
                 this.flushMessageBuffer();
-                start = nl + 1;
-            }
-            this.decodeAndAssemble(start === 0 ? sanitized : sanitized.substring(start), hasPrompt, ts);
-            this.flushMessageBuffer();
-        });
+            });
+        } finally {
+            this.decodingRead = outerDecoding;
+        }
     }
 
     private decodeAndAssemble(sanitized: string, hasPrompt: boolean, ts: number): void {

@@ -1,6 +1,7 @@
 import type { MudSession, ScriptLogSource, ShowSentTextMode, BlankLinesBehaviour } from '../mud/MudSession';
 import type { TelnetNegotiatorFlags } from '../mud/connection/TelnetNegotiator';
 import { splitSentCommands } from '../mud/commandSplit';
+import { mxpLinkOpens } from '../mud/protocol/mxp';
 import type { AliasEngine } from '../mud/aliases/AliasEngine';
 import type { TriggerEngine } from '../mud/triggers/TriggerEngine';
 import type { TimerEngine } from '../mud/timers/TimerEngine';
@@ -640,9 +641,6 @@ if (typeof document !== 'undefined') {
 // generation moves (see fontLoader.getFontGeneration) rather than keyed by it,
 // so the entries measured against the fallback don't linger.
 let measureCtx: CanvasRenderingContext2D | null | undefined;
-/** The addresses an MXP `<A>` click opens in a browser tab — see
- *  {@link ScriptingAPI.createMxpHyperlink}. */
-const MXP_OPENABLE_URL = /^(https?|ftp|mailto):/i;
 
 const measureCache = new Map<string, [number, number]>();
 let measureCacheGeneration = -1;
@@ -3577,7 +3575,7 @@ export class ScriptingAPI {
             // a page of this app, and `javascript:` would run in it — those do
             // nothing, as an address the desktop cannot open does nothing.
             return {
-                onClick: () => { if (isLive() && MXP_OPENABLE_URL.test(payload)) this.openUrl(payload); },
+                onClick: () => { if (isLive() && mxpLinkOpens(payload)) this.openUrl(payload); },
                 title: hint || undefined,
                 autoUnderline: true,
             };
@@ -4830,6 +4828,7 @@ export class ScriptingAPI {
             data = data.replace(/\r/g, '');
             if (flushesLine) data += '\r';
         }
+        this.session.adoptPendingEncoding();
         const encoding = this.session.getServerEncoding();
         let text: string;
         if (utf8Encoded && encoding === 'UTF-8') {

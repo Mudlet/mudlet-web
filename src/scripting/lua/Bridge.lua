@@ -4855,7 +4855,8 @@ function __mudlet_set_mxp(element, flatAttrs, text, flatActions)
         local k, v = entry:match("^([^\2]*)\2(.*)$")
         if k and k ~= "" then t[k] = v end
     end
-    for action in tostring(flatActions or ""):gmatch("[^\1]+") do
+    -- each action ends in \1, and may be empty
+    for action in tostring(flatActions or ""):gmatch("([^\1]*)\1") do
         t.actions[#t.actions + 1] = action
     end
     mxp[element] = t
@@ -5760,7 +5761,7 @@ do
             matchAllOn,
             tonumber(fireLength) or 0,
             tonumber(lineDelta) or 0,
-            hlFgColor, hlBgColor, uncompiled)
+            hlFgColor, hlBgColor, uncompiled, cbId)
         return id
     end
 end
@@ -7238,6 +7239,15 @@ function getProfileStats()
     local triggers = fam(r.triggers)
     local pat = (r.triggers and r.triggers.patterns) or {}
     triggers.patterns = { total = pat.total or 0, active = pat.active or 0 }
+    -- Desktop's report on its parallel regex prescan (TriggerMatchPool). A
+    -- page matches on its one thread, so the pool has no workers and never
+    -- takes a line: the report is there, as desktop's always is, and reads as
+    -- a pool that has had nothing to judge.
+    triggers.matchPool = {
+        threads = 0, pooledLines = 0, sampledLines = 0,
+        pooledMicroseconds = 0, sampledMicroseconds = 0, savedMilliseconds = 0,
+        verdict = "not enough data",
+    }
     local gifs = r.gifs or {}
     return {
         triggers = triggers,
