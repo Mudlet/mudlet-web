@@ -204,6 +204,15 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             reason: TORN_DOWN_REASON,
         },
         {
+            name: 'Tests C++ functions in the Miscallaneous category / Tests a profile torn down while its script spins the event loop / never runs another function for a timer made while its state closed',
+            reason:
+                TORN_DOWN_REASON
+                + ' The hazard this one adds — a __gc finaliser making a timer while lua_close() runs, which then '
+                + 'outlives the state it was made in — is guarded here too, within one profile: once LuaRuntime.destroy() '
+                + 'has begun, tempTimer() from a finaliser makes no timer, so the timer engine a reset reuses is '
+                + 'never handed a callback into the closed state.',
+        },
+        {
             name: 'Tests C++ functions in the Miscallaneous category / Tests a profile torn down while its script spins the event loop / closes another profile after closeProfile(), then closes',
             reason: TORN_DOWN_REASON,
         },
@@ -246,6 +255,7 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             'Tests opening a profile whose script fails as it loads / names the scripts that failed on that profile\'s console, once',
             'Tests opening a profile whose script fails as it loads / names them again after a reset, leaving out those fixed or disabled since',
             'Tests opening a profile whose script fails as it loads / names a package\'s script when a module has the package\'s name too',
+            'Tests opening a profile whose script fails as it loads / runs a failing body of a module loaded before the profile\'s scripts only once',
         ].map(name => ({
             name,
             reason:

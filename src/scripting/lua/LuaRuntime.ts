@@ -937,6 +937,7 @@ export class LuaRuntime implements IScriptingRuntime {
         // below take them through `bindings`.
         const dispatchCb = (cbId: number, label: string): void => this.dispatchCb(cbId, label);
         const releaseCb = (cbId: number): void => {
+            if (this.destroyed) return;
             try { this.lua.doStringSync(`__mudlet_unregister_cb(${cbId})`); } catch {}
         };
 
@@ -2103,6 +2104,10 @@ export class LuaRuntime implements IScriptingRuntime {
 
         // ── Timers ────────────────────────────────────────────────────────────
         this.lua.global.set('__mudlet_tempTimer', (seconds: number, cbId: number, repeating?: boolean) => {
+            // A __gc finaliser run by lua_close() can still call tempTimer.
+            // The timer engine outlives this state (a reset reuses it), so a
+            // timer made now would fire into a state that is gone.
+            if (this.destroyed) return null;
             const isRepeat = repeating ?? false;
             return this.api.timers.addTemp(seconds, () => {
                 dispatchCb(cbId, 'tempTimer');
