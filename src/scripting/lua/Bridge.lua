@@ -7605,20 +7605,23 @@ function ttsSetVoiceByIndex(index)
     return __ttsSetVoiceByIndex(index)
 end
 
-function ttsSetRate(rate)
-    rate = __tts_check("ttsSetRate", 1, rate, "number")
-    return __ttsSetRate(rate)
+-- Mudlet ttsSetRate/ttsSetPitch/ttsSetVolume → true. A value out of range is
+-- clamped, but NaN compares false against both bounds and so would slip through
+-- the clamp: desktop refuses it with (nil, message) and leaves the setting, and
+-- the engine, alone.
+local function __tts_set(who, what, low, high, raw, value)
+    value = __tts_check(who, 1, value, "number")
+    if value ~= value then
+        return nil, string.format("%s: bad argument #1 value (%s as a number from %.1f to %.1f expected, got nan)",
+            who, what, low, high)
+    end
+    raw(value)
+    return true
 end
 
-function ttsSetPitch(pitch)
-    pitch = __tts_check("ttsSetPitch", 1, pitch, "number")
-    return __ttsSetPitch(pitch)
-end
-
-function ttsSetVolume(volume)
-    volume = __tts_check("ttsSetVolume", 1, volume, "number")
-    return __ttsSetVolume(volume)
-end
+function ttsSetRate(rate) return __tts_set("ttsSetRate", "rate", -1, 1, __ttsSetRate, rate) end
+function ttsSetPitch(pitch) return __tts_set("ttsSetPitch", "pitch", -1, 1, __ttsSetPitch, pitch) end
+function ttsSetVolume(volume) return __tts_set("ttsSetVolume", "volume", 0, 1, __ttsSetVolume, volume) end
 
 -- Mudlet ttsGetCurrentLine() → the text being spoken, or (nil, reason) when the
 -- engine is idle or errored.
