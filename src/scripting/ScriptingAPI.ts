@@ -2206,6 +2206,18 @@ export class ScriptingAPI {
         const ctx = canvas?.getContext('2d');
         if (!ctx) return null;
         ctx.font = `32px "${family}"`;
+        // A face the page declares but has not fetched yet (the bundled
+        // Ubuntu Mono, until something draws with it) measures as the
+        // fallback font, which has none of the font's own Private Use Area
+        // glyphs — so every icon would be reported missing from a font that
+        // has it. A font still loading cannot be judged: start the load so the
+        // map draws with it, and complain about nothing rather than wrongly.
+        const faces = typeof document !== 'undefined' ? document.fonts : undefined;
+        const sample = symbols.join('');
+        if (faces && !faces.check(ctx.font, sample)) {
+            void faces.load(ctx.font, sample).catch(() => undefined);
+            return null;
+        }
         // U+10FFFD: unassigned, and unassignable — nothing can have a glyph for
         // it, so its width IS the notdef width for this font.
         const notdef = ctx.measureText('\u{10FFFD}').width;
