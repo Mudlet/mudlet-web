@@ -4346,6 +4346,19 @@ export class MapStore {
     }
 
     /**
+     * Every room's id and name in the order the room map is walked — the order
+     * {@link getHiddenRooms} lists them in too. `getRooms()` builds its Lua
+     * table in this order rather than from an object, whose integer keys come
+     * back sorted: what `#` makes of a table with holes depends on the order
+     * its keys went in.
+     */
+    getRoomNamesInOrder(): Array<[number, string]> {
+        const out: Array<[number, string]> = [];
+        for (const [id, r] of this.rooms) out.push([id, r.name]);
+        return out;
+    }
+
+    /**
      * Mudlet `getMapLabels(areaID)` — returns `{ [labelID] = labelText }` for
      * every label in the area, or an empty object if the area has none / is
      * unknown. Each `MudletLabel.id` is the QMap key Mudlet uses internally,
@@ -5200,7 +5213,16 @@ export class MapStore {
      * hidden rooms here".
      */
     getHiddenRooms(areaId?: number): number[] | undefined {
-        if (areaId === undefined) return [...this.hiddenRooms];
+        // The whole map is listed in the order the room map is walked, as
+        // desktop does and as getRooms() builds its table.
+        if (areaId === undefined) {
+            if (this.hiddenRooms.size === 0) return [];
+            const out: number[] = [];
+            for (const id of this.rooms.keys()) {
+                if (this.hiddenRooms.has(id)) out.push(id);
+            }
+            return out;
+        }
         const area = this.areas.get(areaId);
         if (!area) return undefined;
         const out: number[] = [];

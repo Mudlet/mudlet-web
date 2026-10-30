@@ -39,6 +39,27 @@ describe('getRoomsByPosition order', () => {
     });
 });
 
+describe('the length of getRooms()', () => {
+    // `#` on a table with holes depends on how Lua split it between its array
+    // and hash parts; desktop's table takes its rooms one at a time, and
+    // scripts test a map for rooms with `#getRooms() > 0`.
+    it('counts a run of rooms from room 2', () => {
+        env.run('for id = 2, 40 do addRoom(id) end');
+        expect(env.run('return #getRooms()')).toBe(40);
+    });
+
+    it('matches a table assigned one room at a time, in the order getHiddenRooms lists them', () => {
+        for (const id of [1, 2, 3, 6, 8, 100001, 100002, 100003, 100004, 100005]) {
+            env.run(`addRoom(${id}); setRoomName(${id}, "Room ${id}"); setRoomHidden(${id}, true)`);
+        }
+        expect(env.run(`
+            local expected = {}
+            for _, id in ipairs(getHiddenRooms()) do expected[id] = getRoomName(id) end
+            return #expected .. "/" .. #getRooms()
+        `)).toBe('8/8');
+    });
+});
+
 describe('getAllRoomEntrances with an exit back into the room', () => {
     it('lists the room itself for a stock self-loop', () => {
         env.run('addRoom(6); addRoom(7); setExit(6, 6, "up"); setExit(7, 6, "e")');
