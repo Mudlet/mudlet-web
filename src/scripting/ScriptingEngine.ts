@@ -734,7 +734,10 @@ export class ScriptingEngine implements EngineHost {
         // the engine's walk, as each pattern matches its line.
         triggerEngine.setHighlighter((m) => this.paintHighlight(
             m.trigger, m.captureless ? [] : [m.matchedText, ...m.captures],
-            m.matchStart, m.captureSpans, m.groupCount));
+            m.matchStart, m.captureSpans, m.groupCount, m.wholeMatchSkipped, m.positionsInCurrentColumns));
+        // Text patterns match the line as it arrived; what earlier triggers
+        // edited in it is followed by the API, which saw the edits made
+        triggerEngine.setSpanMapper(span => this.api.passSpanNow(span));
         this.bridgeEvents(session);
         // Let WindowManager raise system events (e.g. sysUserWindowResizeEvent)
         // through the same path as everything else.
@@ -6194,7 +6197,30 @@ export class ScriptingEngine implements EngineHost {
         matchStart?: number,
         groupCount?: number,
         multiNamedGroups?: (Record<string, string> | undefined)[],
+        wholeMatchSkipped?: boolean[],
+        positionsInCurrentColumns?: boolean,
     ): void {
+        // The highlight finds each capture where it is now for itself (it
+        // leaves out a trailing "\n" first), so it is handed them as matched
+        const arrivedSpans = captureSpans;
+        const arrivedStart = matchStart;
+        let fullMatchLength: number | undefined;
+        // Every trigger matches the line as it arrived, so the positions of a
+        // text match are moved past what triggers earlier in the pass edited
+        // before the fire's script or command gets them
+        // (TTrigger::executeWithCaptures)
+        if (!positionsInCurrentColumns && this.api.passLineEdited()) {
+            const now = (span: { start: number; length: number }) => this.api.passSpanNow(span);
+            captureSpans = captureSpans?.map(now);
+            if (namedSpans) {
+                namedSpans = Object.fromEntries(Object.entries(namedSpans).map(([k, v]) => [k, now(v)]));
+            }
+            if (matchStart !== undefined && matchedText) {
+                const whole = now({ start: matchStart, length: matchedText.length });
+                matchStart = whole.start;
+                fullMatchLength = whole.length;
+            }
+        }
         // Built-in sound, first: TTrigger::execute plays it ahead of the command
         // and the script (TTrigger.cpp:1320-1330), at full volume — desktop has
         // no GUI for the level either — and through the API media origin, so
@@ -6212,7 +6238,7 @@ export class ScriptingEngine implements EngineHost {
             // TTrigger::match sets them before execute(), so what the command
             // sets off (a sysDataSendRequest handler) can select them.
             const fullMatchSpan = matchStart !== undefined && matchedText
-                ? { start: matchStart, length: matchedText.length }
+                ? { start: matchStart, length: fullMatchLength ?? matchedText.length }
                 : undefined;
             const send = () => this.hostSend(trigger.command!);
             const lua = this.runtimes.lua;
@@ -6233,13 +6259,16 @@ export class ScriptingEngine implements EngineHost {
         // A multiline trigger's fire has no match of its own (matchedText is
         // empty): its highlight was painted per condition, as each pattern
         // matched — see TriggerEngine.setHighlighter.
-        if (matchedText) this.paintHighlight(trigger, matches, matchStart, captureSpans, groupCount);
+        if (matchedText) {
+            this.paintHighlight(trigger, matches, arrivedStart, arrivedSpans, groupCount,
+                wholeMatchSkipped, positionsInCurrentColumns);
+        }
 
         // User code
         if (trigger.code && trigger.language === 'lua') {
             try {
                 const fullMatchSpan = matchStart !== undefined && matchedText
-                    ? { start: matchStart, length: matchedText.length }
+                    ? { start: matchStart, length: fullMatchLength ?? matchedText.length }
                     : undefined;
                 this.runtimes.lua?.runWithMatches(
                     trigger.code, trigger.name, matches, multimatches, namedGroups,
@@ -6260,6 +6289,8 @@ export class ScriptingEngine implements EngineHost {
         matchStart: number | undefined,
         captureSpans: readonly { start: number; length: number }[] | undefined,
         groupCount: number | undefined,
+        wholeMatchSkipped?: readonly boolean[],
+        positionsInCurrentColumns?: boolean,
     ): void {
         if (!isColorizing(trigger) || !trigger.highlight) return;
         const { fg, bg } = trigger.highlight;
@@ -6273,9 +6304,17 @@ export class ScriptingEngine implements EngineHost {
         // On the line being processed, wherever an earlier trigger's script
         // left the cursor.
         this.api.onPassLine(() => {
-            for (const { text, span } of highlightTargets(matches, matchStart, captureSpans, groupCount)) {
-                const ok = span
-                    ? this.api.selectSection(span.start, span.length)
+            for (const { text, span } of highlightTargets(matches, matchStart, captureSpans, groupCount, wholeMatchSkipped)) {
+                let target = span;
+                if (target) {
+                    // Patterns match the line with a "\n" after it, which is not in
+                    // the line itself, and are found where earlier triggers'
+                    // edits moved them (TTrigger::selectTextMatch)
+                    if (text.endsWith('\n')) target = { start: target.start, length: target.length - 1 };
+                    if (!positionsInCurrentColumns) target = this.api.passSpanNow(target);
+                }
+                const ok = target
+                    ? this.api.selectSection(target.start, target.length)
                     : this.api.selectString(text, 1) >= 0;
                 if (!ok) continue;
                 this.api.applyFormatToSelection(format);
@@ -6644,6 +6683,8 @@ export class ScriptingEngine implements EngineHost {
                     m.matchStart,
                     m.groupCount,
                     m.multiNamedGroups,
+                    m.wholeMatchSkipped,
+                    m.positionsInCurrentColumns,
                 );
             });
         } finally {

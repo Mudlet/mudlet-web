@@ -3760,6 +3760,7 @@ export class ScriptingAPI {
             // As for insertText: TConsole::insertLink moves the capture
             // positions past the link, and the colours go with the text.
             this.captureShiftHook?.(at, padding.length + text.length);
+            this.noteTriggerPassLineEdit(buf, at, 0, padding.length + text.length);
             this.spliceLineColorSnapshot(at, 0, { ...this.stateColorKeys(state), text: padding + text });
         } else {
             con.setCursorColumn(col + text.length);
@@ -4331,6 +4332,7 @@ export class ScriptingAPI {
         this.triggerLinePrompts.push(isPrompt);
         this.lineColorSnapshots.push(this.colorKeySegments(buffer, 0));
         this.lineColorLive.push(buffer);
+        this.passLineEdits.push([]);
         // Which line the cursor was on before this one was appended, so a line
         // fed from inside a trigger can hand the outer pass its own line back.
         this.outerTriggerLines.push(this.triggerLineDepth > 0 ? this.mainConsole.getLineNumber() : -1);
@@ -4357,6 +4359,7 @@ export class ScriptingAPI {
     endLine(): void {
         this.lineColorSnapshots.pop();
         this.lineColorLive.pop();
+        this.passLineEdits.pop();
         this.triggerLinePrompts.pop();
         // A trigger can call feedTriggers, which processes a line of its own
         // inside this one. Only the OUTERMOST line leaves trigger context —
@@ -4661,6 +4664,63 @@ export class ScriptingAPI {
 
     setCaptureShiftHook(fn: ((at: number, delta: number, replaced?: number) => void) | null): void {
         this.captureShiftHook = fn;
+    }
+
+    /**
+     * What triggers have done to the text of each line being processed, in
+     * the order they did it and each in the columns the line had at the time
+     * (TBuffer::mTriggerPassLineEdits). A stack parallel to
+     * {@link lineColorLive}, as a trigger may feed a line of its own.
+     *
+     * Every trigger matches the line as it ARRIVED, so a later trigger's capture
+     * positions are in the arrived columns; {@link passSpanNow} moves them past
+     * what earlier triggers inserted, deleted or replaced before they are
+     * highlighted, selected or replaced.
+     */
+    private passLineEdits: { x: number; removed: number; inserted: number }[][] = [];
+
+    /**
+     * Record an edit to `buf`'s text against every pass running on that line
+     * (TBuffer::noteTriggerPassLineEdit). A removal followed by an insertion at
+     * the same column is one replacement, so a column inside the removed text
+     * is not pushed past what went in its place (appendTriggerPassLineEdit).
+     */
+    private noteTriggerPassLineEdit(buf: AnsiAwareBuffer | null | undefined, x: number, removed: number, inserted: number): void {
+        if (!buf || (removed === 0 && inserted === 0)) return;
+        for (let i = 0; i < this.lineColorLive.length; i++) {
+            if (this.lineColorLive[i] !== buf) continue;
+            const edits = this.passLineEdits[i];
+            if (!edits) continue;
+            const last = edits[edits.length - 1];
+            if (removed === 0 && last && last.x === x && last.inserted === 0) last.inserted = inserted;
+            else edits.push({ x, removed, inserted });
+        }
+    }
+
+    /**
+     * Where a stretch of the innermost pass line, given in the columns the line
+     * arrived with, is now (TBuffer::triggerPassSpanNow). Text replacing part of
+     * the stretch counts as part of it; text put in at either end does not.
+     */
+    passSpanNow(span: { start: number; length: number }): { start: number; length: number } {
+        const edits = this.passLineEdits[this.passLineEdits.length - 1];
+        if (!edits || edits.length === 0) return { start: span.start, length: span.length };
+        let start = span.start;
+        let end = span.start + span.length;
+        for (const edit of edits) {
+            const delta = edit.inserted - edit.removed;
+            if (start >= edit.x + edit.removed) start += delta;
+            else if (start > edit.x) start = edit.x;
+            if (end > edit.x + edit.removed) end += delta;
+            else if (end > edit.x) end = edit.x + edit.inserted;
+        }
+        return { start, length: Math.max(0, end - start) };
+    }
+
+    /** Whether text triggers earlier in the innermost pass edited its line. */
+    passLineEdited(): boolean {
+        const edits = this.passLineEdits[this.passLineEdits.length - 1];
+        return !!edits && edits.length > 0;
     }
 
     /**
@@ -5433,6 +5493,7 @@ export class ScriptingAPI {
             if (!literal && text.includes('\n')) this.rewrapInserted(con, windowName, line);
             if (literal) {
                 this.captureShiftHook?.(at, inserted.length);
+                this.noteTriggerPassLineEdit(buf, at, 0, inserted.length);
                 // The colours have to move with the text for the same reason
                 // the captures do — the inserted characters are not the ones
                 // the server coloured, and a later colour trigger must not
@@ -6257,6 +6318,7 @@ export class ScriptingAPI {
             // found where its text now is; the one that was the replaced text
             // keeps its start and spans the replacement
             this.captureShiftHook?.(sel.start, newText.length - sel.length, sel.length);
+            this.noteTriggerPassLineEdit(buf, sel.start, sel.length, newText.length);
             // Same alignment the insert path needs: a replace that changes the
             // line's LENGTH moves every colour run after it. With keepColor the
             // replacement wears whatever the snapshot already had at that
