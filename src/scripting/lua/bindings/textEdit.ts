@@ -65,9 +65,11 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
     lua.global.set('copy', (name?: unknown) => {
         api.copy(typeof name === 'string' ? name : undefined);
     });
-    // Mudlet `cut()`. copy() plus the deletion of what was copied. No window
-    // argument in Mudlet — it only ever acts on the main console.
-    lua.global.set('cut', () => api.cut());
+    // Mudlet `cut([window])`. copy() plus the deletion of what was copied.
+    // Anything but a string still means the main console, as cut() long
+    // ignored its arguments; Bridge.lua answers the refusal for a name that
+    // finds no console.
+    lua.global.set('cut', (name?: unknown) => api.cut(typeof name === 'string' ? name : undefined));
     // One string, as Bridge.lua only searches the code for the functions it calls.
     lua.global.set('__clipboardLinkCommands', () => api.clipboardLinkCommands().join('\n'));
     // The link commands a console's lines hold, and which of a list of them

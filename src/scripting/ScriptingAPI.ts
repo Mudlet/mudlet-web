@@ -6061,17 +6061,20 @@ export class ScriptingAPI {
      * no window argument in Mudlet — it always acts on the main console — and is
      * a no-op without a selection there.
      */
-    cut(): void {
-        const sel = this.selectionOf('main');
-        if (!sel) return;
-        this.copy('main');
+    cut(windowName?: string): boolean {
+        if (windowName !== undefined && !this.consoleExists(windowName)) return false;
+        const target = !windowName ? 'main' : windowName;
+        const sel = this.selectionOf(target);
+        this.copy(target);
+        if (!sel) return true;
         const buf = this.selectionBuffer(sel);
-        if (!buf) return;
+        if (!buf) return true;
         const start = Math.max(0, Math.min(sel.start, buf.length));
         const end = Math.max(start, Math.min(sel.start + sel.length, buf.length));
         buf.remove([start, end]);
-        this.clearSelection('main');
-        if (!this.inTriggerProcessing) buf.rerender();
+        this.clearSelection(target);
+        if (target !== 'main' || !this.inTriggerProcessing) buf.rerender();
+        return true;
     }
 
     /**

@@ -6118,10 +6118,20 @@ do
         holdClipboardLinks()
         return result
     end
+    -- cut([window]) answers true, or (nil, why) for a name that finds no
+    -- console; anything but a string is the main console (TLuaInterpreter::cut).
     function cut(...)
-        local result = _rawCut(...)
+        local name = (...)
+        if type(name) == 'string' then
+            local err = __mudlet_console_missing(name)
+            if err then return nil, err end
+            name = __mudlet_console_key(name)
+        else
+            name = nil
+        end
+        _rawCut(name)
         holdClipboardLinks()
-        return result
+        return true
     end
 
     -- A link holds its function only while its text is shown, as desktop's
@@ -9591,7 +9601,8 @@ do
     function alert(...)
         if select('#', ...) == 0 then return _raw() end
         local seconds = __mudlet_check_number((...), "alert", 1, "alert duration in seconds", true)
-        if seconds < 0 then
+        -- NaN (0/0) is no duration either: it compares false with everything
+        if seconds ~= seconds or seconds < 0 then
             error("alert: duration, in seconds, is optional but if given must be zero or greater.", 2)
         end
         return _raw(seconds)
@@ -10085,9 +10096,6 @@ do
     end
 end
 
--- Mudlet closeUserWindow(name) — hide a user window without deleting it, so
--- reopening it brings the same dock back. Reports nothing; a name that is not a
--- user window is simply nothing to close.
 -- Mudlet resetBackgroundImage([window] [, fullWindow]) → true, or (nil, errMsg)
 -- for a console nothing answers to and for asking a miniconsole to reset a full
 -- window background it does not have. The JS side hands the message back.
@@ -10104,12 +10112,14 @@ end
 -- lookup is Host::closeWindow's mSubConsoleMap, which holds miniconsoles and
 -- buffers alongside user windows. A label is the one thing it leaves alone,
 -- those living in a map of their own; only hideWindow reaches one.
+-- It answers true, or (nil, why) for a name nothing wears or a window of a
+-- kind it cannot close (Host::closeWindow, windowNotFoundOrUnsupported).
 function closeUserWindow(name)
     name = __mudlet_check_string(name, "closeUserWindow", 1, "name")
-    local kind = __windowType(name)
-    if kind == 'userwindow' or kind == 'miniconsole' or kind == 'buffer' then
-        hideWindow(name)
-    end
+    local err = __mudlet_console_refusal(name, true)
+    if err then return nil, err end
+    hideWindow(name)
+    return true
 end
 
 -- Mudlet setBackgroundImage([window,] path [, mode [, fullWindow]]). GUIUtils'
