@@ -98,6 +98,11 @@ that file as the source of truth.
   them. Leave it unset to get the stock defaults (`run-lua-code` plus one
   mapper); set `[]` to preinstall nothing; list packages to get exactly those.
   See [Bundling Lua packages](#bundling-lua-packages) below.
+- **`requestPersistentStorage`** — `false` stops the client from calling
+  `navigator.storage.persist()` when a profile is opened or imported (default
+  `true`). Firefox turns that call into a permission prompt; opt out if your
+  players' data lives server-side or you'd rather not show it. Profiles then
+  stay in best-effort storage, which the browser may evict under pressure.
 - **`themes`** / **`availableThemes`** / **`defaultTheme`** — brand color
   themes and picker configuration (see [Theming](#theming) below).
 - **`toolbar`** — hide stock buttons, place your own commands, rebuild or remove
