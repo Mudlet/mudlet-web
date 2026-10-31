@@ -271,6 +271,12 @@ export interface BrandConfig {
      *  `config` is the `setConfig` option bag (e.g. `versionInTTYPE`,
      *  `enableBlinkText`). */
     profileDefaults?: Partial<ProfileSettings>;
+    /** Whether to ask the browser to exempt this origin's storage from
+     *  eviction (`navigator.storage.persist()`) when a profile is opened or
+     *  imported. Default `true`. Firefox shows that request as a permission
+     *  prompt; set `false` to never make it — a brand that keeps its players'
+     *  data server-side, or that doesn't want the prompt, opts out here. */
+    requestPersistentStorage?: boolean;
 }
 
 export const DEFAULT_BRAND: BrandConfig = {
