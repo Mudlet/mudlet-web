@@ -5,3 +5,4 @@
  * Vite inlines the @imports at build time. */
 @import './App.css';
 @import './ui/components/components.css';
+@import './ui/design/design.css';

@@ -1,24 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import {
-    Accessibility,
-    ChevronLeft,
-    ChevronRight,
-    CircleHelp,
-    Code2,
-    Globe,
-    Info,
-    Keyboard,
-    Map as MapIcon,
-    Monitor,
-    Palette,
-    Search,
-    ShieldCheck,
-    SlidersHorizontal,
-    Terminal,
-    Volume2,
-    Wrench,
-    type LucideIcon,
-} from 'lucide-react';
+import { ChevronLeft, ChevronRight, type LucideIcon } from 'lucide-react';
+import { Glyph, GLYPHS, GLYPH_STROKE_WIDTH } from '../design/glyphs';
 
 /**
  * The sidebar-and-cards settings shell, ported from Mudlet's settings redesign
@@ -62,18 +44,18 @@ export interface CategoryDefinition {
  *  has nothing to put on (Chat and sharing) and plus the one it does that
  *  Mudlet keeps on a toolbar instead (Sound and media). */
 export const CATEGORIES: CategoryDefinition[] = [
-    { key: 'general',       label: 'General',              Icon: SlidersHorizontal },
-    { key: 'appearance',    label: 'Appearance',           Icon: Palette },
-    { key: 'mainDisplay',   label: 'Main display',         Icon: Monitor },
-    { key: 'inputLine',     label: 'Input line',           Icon: Terminal },
-    { key: 'editor',        label: 'Editor',               Icon: Code2 },
-    { key: 'shortcuts',     label: 'Shortcuts',            Icon: Keyboard },
-    { key: 'mapper',        label: 'Mapper',               Icon: MapIcon },
-    { key: 'media',         label: 'Sound and media',      Icon: Volume2 },
-    { key: 'connection',    label: 'Connection',           Icon: Globe, separatorAbove: true },
-    { key: 'privacy',       label: 'Privacy and security', Icon: ShieldCheck },
-    { key: 'accessibility', label: 'Accessibility',        Icon: Accessibility },
-    { key: 'advanced',      label: 'Advanced',             Icon: Wrench },
+    { key: 'general',       label: 'General',              Icon: GLYPHS['settings-general'] },
+    { key: 'appearance',    label: 'Appearance',           Icon: GLYPHS['settings-appearance'] },
+    { key: 'mainDisplay',   label: 'Main display',         Icon: GLYPHS['settings-display'] },
+    { key: 'inputLine',     label: 'Input line',           Icon: GLYPHS['settings-input'] },
+    { key: 'editor',        label: 'Editor',               Icon: GLYPHS['settings-editor'] },
+    { key: 'shortcuts',     label: 'Shortcuts',            Icon: GLYPHS['settings-shortcuts'] },
+    { key: 'mapper',        label: 'Mapper',               Icon: GLYPHS['settings-mapper'] },
+    { key: 'media',         label: 'Sound and media',      Icon: GLYPHS['toolbar-sound-on'] },
+    { key: 'connection',    label: 'Connection',           Icon: GLYPHS['settings-connection'], separatorAbove: true },
+    { key: 'privacy',       label: 'Privacy and security', Icon: GLYPHS['settings-privacy'] },
+    { key: 'accessibility', label: 'Accessibility',        Icon: GLYPHS['settings-accessibility'] },
+    { key: 'advanced',      label: 'Advanced',             Icon: GLYPHS['settings-advanced'] },
 ];
 
 /** A page reached by drilling into a card: the sidebar stays on the parent
@@ -266,7 +248,7 @@ export function SettingsShell({ cards, subpages, category, onCategory, subpage, 
         const sub = card.subpage ? subpages.find(s => s.key === card.subpage) ?? null : null;
         return {
             key: card.subpage ?? card.category,
-            Icon: cat?.Icon ?? Wrench,
+            Icon: cat?.Icon ?? GLYPHS['settings-advanced'],
             text: sub ? `${cat?.label ?? card.category} › ${sub.title}` : cat?.label ?? card.category,
         };
     };
@@ -295,7 +277,7 @@ export function SettingsShell({ cards, subpages, category, onCategory, subpage, 
                                     className={`settings-sidebar__item${!searching && cat.key === activeCategory?.key ? ' settings-sidebar__item--active' : ''}`}
                                     onClick={() => { setQuery(''); onSubpage(null); onCategory(cat.key); }}
                                 >
-                                    <cat.Icon size={16} className="settings-sidebar__icon" aria-hidden="true" />
+                                    <cat.Icon size={18} strokeWidth={GLYPH_STROKE_WIDTH} className="settings-sidebar__icon" aria-hidden="true" />
                                     <span className="settings-sidebar__label">{cat.label}</span>
                                 </button>
                             </li>
@@ -312,7 +294,7 @@ export function SettingsShell({ cards, subpages, category, onCategory, subpage, 
                                 onClick={differences.onOpen}
                                 title={differences.label}
                             >
-                                <Info size={16} className="settings-sidebar__icon" aria-hidden="true" />
+                                <Glyph name="toolbar-about" size={18} className="settings-sidebar__icon" />
                                 <span className="settings-sidebar__label">{differences.label}</span>
                             </button>
                         </li>
@@ -328,7 +310,7 @@ export function SettingsShell({ cards, subpages, category, onCategory, subpage, 
                                 rel="noreferrer noopener"
                                 title={support.label}
                             >
-                                <CircleHelp size={16} className="settings-sidebar__icon" aria-hidden="true" />
+                                <Glyph name="settings-support" size={18} className="settings-sidebar__icon" />
                                 <span className="settings-sidebar__label">{support.label}</span>
                             </a>
                         </li>
@@ -337,7 +319,7 @@ export function SettingsShell({ cards, subpages, category, onCategory, subpage, 
             </nav>
             <div className="settings-content">
                 <div className="settings-search">
-                    <Search size={15} className="settings-search__icon" aria-hidden="true" />
+                    <Glyph name="settings-search" size={15} className="settings-search__icon" />
                     <input
                         ref={searchRef}
                         type="search"
@@ -372,7 +354,7 @@ export function SettingsShell({ cards, subpages, category, onCategory, subpage, 
                         </button>
                     )}
                     {!searching && activeCategory && (
-                        <activeCategory.Icon size={17} className="settings-titlerow__icon" aria-hidden="true" />
+                        <activeCategory.Icon size={20} strokeWidth={GLYPH_STROKE_WIDTH} className="settings-titlerow__icon" aria-hidden="true" />
                     )}
                     <h2 className="settings-titlerow__title">{title}</h2>
                 </div>

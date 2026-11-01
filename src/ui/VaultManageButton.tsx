@@ -41,13 +41,15 @@ export function VaultManageButton({ connections, variant = 'icon' }: VaultManage
     return (
         <>
             <button
-                className={variant === 'row' ? 'btn btn--secondary btn--sm vault-manage-row-btn' : 'connection-vault-btn'}
+                // The icon form sits among the launcher's tool buttons and takes their
+                // class, so the four read as one row.
+                className={variant === 'row' ? 'btn btn--secondary btn--sm vault-manage-row-btn' : 'launcher-tool'}
                 onClick={() => setOpen(true)}
                 type="button"
                 title={title}
                 aria-label={variant === 'row' ? undefined : title}
             >
-                <KeyRound size={16} />
+                <KeyRound size={variant === 'row' ? 16 : 18} />
                 {variant === 'row' && (
                     <span>
                         {!snapshot.exists

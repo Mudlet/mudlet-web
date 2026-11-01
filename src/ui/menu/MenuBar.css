@@ -21,8 +21,8 @@
     padding: 4px 9px;
     background: none;
     border: none;
-    border-radius: 4px;
-    color: var(--text-dim);
+    border-radius: var(--radius-chip);
+    color: var(--text-muted);
     font-family: inherit;
     font-size: 12.5px;
     line-height: 1.4;
@@ -32,10 +32,13 @@
 }
 
 .menu-title:hover,
-.menu-title:focus-visible,
+.menu-title:focus-visible {
+    background: var(--hover-bg);
+    color: var(--accent-text);
+}
 .menu-title--open {
-    background: var(--accent-glow);
-    color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-text);
 }
 
 .menu-title:focus-visible {
@@ -54,11 +57,12 @@
        inside the toolbar, which sits in the console's monospace family. Menus
        are chrome and read in the UI font wherever they are opened from. */
     font-family: var(--font-ui), sans-serif;
-    padding: 4px 0;
+    padding: 4px;
     background: var(--bg-surface);
+    color: var(--text);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: inset 0 1px 0 var(--border-hi), var(--shadow-float);
+    border-radius: var(--radius-input);
+    box-shadow: var(--shadow-float);
     font-size: 12px;
 }
 
@@ -99,9 +103,10 @@
     align-items: center;
     gap: 6px;
     width: 100%;
-    padding: 5px 12px 5px 6px;
+    padding: 4px 12px 4px 6px;
     background: none;
     border: none;
+    border-radius: var(--radius-chip);
     color: var(--text);
     font-family: inherit;
     font-size: inherit;
@@ -113,8 +118,8 @@
 
 .menu-item:hover,
 .menu-item:focus {
-    background: var(--accent-glow);
-    color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-text);
 }
 
 .menu-item:focus {
@@ -123,13 +128,13 @@
 }
 
 .menu-item:disabled {
-    color: var(--text-dim);
+    color: var(--text-disabled);
     cursor: default;
 }
 
 .menu-item:disabled:hover {
     background: none;
-    color: var(--text-dim);
+    color: var(--text-disabled);
 }
 
 /* The tick column is always present, checked or not, so entries under one
@@ -165,8 +170,8 @@
 /* The key sequence, pushed to the right edge the way Qt draws an accelerator. */
 .menu-item__key {
     margin-left: 18px;
-    color: var(--text-dim);
-    font-size: 11px;
+    color: var(--text-muted);
+    font-size: var(--type-caption);
     font-variant-numeric: tabular-nums;
 }
 
@@ -178,7 +183,7 @@
 
 .menu-item__arrow {
     margin-left: 14px;
-    color: var(--text-dim);
+    color: var(--text-muted);
 }
 
 .menu-sub {
@@ -187,8 +192,8 @@
 
 .menu-sep {
     height: 1px;
-    margin: 4px 8px;
-    background: var(--border);
+    margin: 4px 6px;
+    background: var(--separator);
 }
 
 /* ── Split button (QToolButton::MenuButtonPopup) ──────────────
@@ -229,7 +234,7 @@
 
 .split-button__arrow:hover,
 .split-button__arrow[aria-expanded="true"] {
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
     color: var(--accent);
 }
 

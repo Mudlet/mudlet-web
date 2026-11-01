@@ -1,11 +1,15 @@
+/* Desktop's menu recipe (uiDesign::menuStyleSheet): the card tone, the field's
+   hairline and corner, rows cut to the chip's corner and washed in the accent
+   under the pointer. Leading room for a mark keeps every label on one line. */
 .ctx-menu {
     position: fixed;
     z-index: var(--z-popup);
     background: var(--bg-surface);
+    color: var(--text);
     border: 1px solid var(--border);
-    box-shadow: inset 0 1px 0 var(--border-hi), var(--shadow-float);
-    border-radius: var(--radius);
-    padding: 3px 0;
+    box-shadow: var(--shadow-float);
+    border-radius: var(--radius-input);
+    padding: 4px;
     min-width: 180px;
     font-family: var(--font-ui), sans-serif;
     font-size: 12px;
@@ -17,9 +21,10 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    padding: 6px 12px;
+    padding: 4px 12px 4px 6px;
     background: none;
     border: none;
+    border-radius: var(--radius-chip);
     color: var(--text);
     cursor: pointer;
     text-align: left;
@@ -33,8 +38,8 @@
    still identifiable in forced-colours / high-contrast modes. */
 .ctx-menu__item:hover,
 .ctx-menu__item:focus {
-    background: var(--accent-glow);
-    color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-text);
 }
 
 .ctx-menu__item:focus {
@@ -43,53 +48,53 @@
 }
 
 .ctx-menu__item:disabled {
-    color: var(--text-dim);
+    color: var(--text-disabled);
     cursor: default;
 }
 
 .ctx-menu__item:disabled:hover {
     background: none;
-    color: var(--text-dim);
+    color: var(--text-disabled);
 }
 
 .ctx-menu__item--danger {
-    color: var(--danger);
+    color: var(--state-error);
 }
 
 .ctx-menu__item--danger:hover,
 .ctx-menu__item--danger:focus {
-    background: color-mix(in srgb, var(--danger) 12%, transparent);
-    color: var(--danger);
+    background: color-mix(in srgb, var(--state-error) 14%, transparent);
+    color: var(--state-error);
 }
 
 .ctx-menu__item--danger:focus {
-    outline-color: var(--danger);
+    outline-color: var(--state-error);
 }
 
 .ctx-menu__sep {
     height: 1px;
-    background: var(--border);
-    margin: 3px 0;
+    background: var(--separator);
+    margin: 4px 6px;
 }
 
 .ctx-menu__check {
     display: inline-block;
-    width: 12px;
+    width: 13px;
     flex-shrink: 0;
-    color: var(--accent);
-    font-size: 11px;
+    color: var(--mark-ink);
+    font-size: var(--type-caption);
 }
 
 /* Right-aligned keyboard hint, e.g. "Ctrl+F" on the Find entry. */
 .ctx-menu__shortcut {
     margin-left: auto;
     padding-left: 18px;
-    color: var(--text-dim);
-    font-size: 11px;
+    color: var(--text-muted);
+    font-size: var(--type-caption);
 }
 
 .ctx-menu__empty {
-    padding: 6px 12px;
+    padding: 4px 12px;
     font-size: 12px;
-    color: var(--text-dim);
+    color: var(--text-disabled);
 }

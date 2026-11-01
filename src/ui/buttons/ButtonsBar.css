@@ -81,7 +81,7 @@
 
 .mudlet-btn:hover {
     background: var(--hover-bg-strong);
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
     color: var(--accent);
 }
 

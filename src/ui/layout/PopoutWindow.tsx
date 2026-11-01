@@ -63,11 +63,18 @@ export function PopoutWindow({ id, title, width, height, manager, onClosed }: Po
         // Carry theme attributes (data-theme, class, color-scheme) so CSS vars
         // resolve identically; stylesheets are mirrored below.
         const srcRoot = document.documentElement;
-        doc.documentElement.className = srcRoot.className;
-        for (const attr of Array.from(srcRoot.attributes)) {
-            if (attr.name === 'class') continue;
-            try { doc.documentElement.setAttribute(attr.name, attr.value); } catch { /* ignore */ }
-        }
+        const copyRootAttributes = () => {
+            doc.documentElement.className = srcRoot.className;
+            for (const attr of Array.from(srcRoot.attributes)) {
+                if (attr.name === 'class') continue;
+                try { doc.documentElement.setAttribute(attr.name, attr.value); } catch { /* ignore */ }
+            }
+        };
+        copyRootAttributes();
+        // Follow later theme switches too: `data-theme` and the derived design
+        // tokens written inline on the root (ui/design/themeTokens).
+        const rootObserver = new MutationObserver(copyRootAttributes);
+        rootObserver.observe(srcRoot, { attributes: true });
 
         const stopMirroring = mirrorStyles(document, doc);
 
@@ -91,6 +98,7 @@ export function PopoutWindow({ id, title, width, height, manager, onClosed }: Po
         return () => {
             child.removeEventListener('pagehide', handlePageHide);
             stopMirroring();
+            rootObserver.disconnect();
             // Re-adopt the target into the main document *before* tearing down
             // the child window, then let evRoot clean up its own wrapper.
             rescue();

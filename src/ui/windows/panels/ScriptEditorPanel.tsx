@@ -1,5 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AlertTriangle, Braces, ClipboardPaste, Clock, Copy, CopyPlus, Filter, Folder, FolderOpen, FolderPlus, Keyboard, MousePointerClick, Package, Shuffle, FileCode2, Trash2, Zap } from 'lucide-react';
+import { CircleAlert, TriangleAlert, Braces, ClipboardPaste, Timer, Copy, CopyPlus, Funnel, Folder, FolderOpen, FolderPlus, Keyboard, MousePointerClick, Package, Terminal, FileCode, Trash2, Zap } from 'lucide-react';
+import { GLYPH_STROKE_WIDTH } from '../../design/glyphs';
 import { Button, Input, ContextMenu, FileSourceButton, useConfirm, type PickedFile } from '../../components';
 import { VariablesView } from './VariablesView';
 import { useAppStore, useProfileField, useEditorSettings } from '../../../storage';
@@ -54,10 +55,10 @@ const CATEGORY_SINGULAR: Record<EditCategory, string> = {
 const BUTTON_GROUP_SINGULAR = 'Toolbar';
 
 const CATEGORY_ICON: Record<EditCategory, React.ElementType> = {
-    scripts:  FileCode2,
-    aliases:  Shuffle,
+    scripts:  FileCode,
+    aliases:  Terminal,
     triggers: Zap,
-    timers:   Clock,
+    timers:   Timer,
     keys:     Keyboard,
     buttons:  MousePointerClick,
 };
@@ -142,8 +143,10 @@ function isAncestorOf(ancestorId: string, itemId: string, items: AnyNode[]): boo
     return false;
 }
 
-const ICON_SIZE = 13;
-const ICON_STROKE = 1.6;
+// Desktop's editor trees: one mark, one size on every row, at the design's
+// stroke width (ui/design/glyphs).
+const ICON_SIZE = 14;
+const ICON_STROKE = GLYPH_STROKE_WIDTH;
 
 function ItemIcon({ category, isGroup, isExpanded, hasChildren = false }: { category: Category; isGroup: boolean; isExpanded: boolean; hasChildren?: boolean }) {
     if (isGroup) {
@@ -154,13 +157,13 @@ function ItemIcon({ category, isGroup, isExpanded, hasChildren = false }: { cate
     // Mudlet shows a funnel on a leaf trigger that holds nested child triggers
     // — the visual cue that it acts as a chain head, not just a one-off match.
     if (category === 'triggers' && hasChildren) {
-        return <Filter {...props} className="script-editor__item-icon script-editor__item-icon--chainhead" />;
+        return <Funnel {...props} className="script-editor__item-icon script-editor__item-icon--chainhead" />;
     }
     switch (category) {
-        case 'scripts':  return <FileCode2          {...props} />;
-        case 'aliases':  return <Shuffle            {...props} />;
+        case 'scripts':  return <FileCode          {...props} />;
+        case 'aliases':  return <Terminal            {...props} />;
         case 'triggers': return <Zap                {...props} />;
-        case 'timers':   return <Clock              {...props} />;
+        case 'timers':   return <Timer              {...props} />;
         case 'keys':     return <Keyboard           {...props} />;
         case 'buttons':  return <MousePointerClick  {...props} />;
         default:         return null;
@@ -387,7 +390,7 @@ function PackageIcon({ vfs, pkg }: { vfs: ProfileVFS | null; pkg: PackageManifes
         <div className={`script-editor__pkg-icon-frame${url ? ' script-editor__pkg-icon-frame--has-icon' : ''}`}>
             {url
                 ? <img className="script-editor__pkg-icon-img" src={url} alt="" />
-                : <Package className="script-editor__pkg-icon-fallback" size={28} strokeWidth={1.4} />}
+                : <Package className="script-editor__pkg-icon-fallback" size={28} strokeWidth={GLYPH_STROKE_WIDTH} />}
         </div>
     );
 }
@@ -2157,7 +2160,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                             className={`script-editor__nav-btn script-editor__nav-btn--row${category === cat ? ' script-editor__nav-btn--active' : ''}`}
                             onClick={() => setCategory(cat)}
                         >
-                            <Icon size={13} strokeWidth={1.6} className="script-editor__nav-icon" />
+                            <Icon size={13} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
                             <span className="script-editor__nav-label">{CATEGORY_LABELS[cat]}</span>
                         </button>
                     );
@@ -2166,7 +2169,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     className={`script-editor__nav-btn script-editor__nav-btn--row${category === 'variables' ? ' script-editor__nav-btn--active' : ''}`}
                     onClick={() => setCategory('variables')}
                 >
-                    <Braces size={13} strokeWidth={1.6} className="script-editor__nav-icon" />
+                    <Braces size={13} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
                     <span className="script-editor__nav-label">Variables</span>
                 </button>
                 <div className="script-editor__nav-sep" />
@@ -2174,7 +2177,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     className={`script-editor__nav-btn script-editor__nav-btn--row${category === 'errors' ? ' script-editor__nav-btn--active' : ''}`}
                     onClick={() => setCategory('errors')}
                 >
-                    <AlertCircle size={13} strokeWidth={1.6} className="script-editor__nav-icon" />
+                    <CircleAlert size={13} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
                     <span className="script-editor__nav-label">Errors</span>
                     {unreadErrors > 0 && (
                         <span className="script-editor__error-badge">{unreadErrors > 99 ? '99+' : unreadErrors}</span>
@@ -2185,7 +2188,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     className={`script-editor__nav-btn script-editor__nav-btn--row${category === 'packages' ? ' script-editor__nav-btn--active' : ''}`}
                     onClick={() => setCategory('packages')}
                 >
-                    <Package size={13} strokeWidth={1.6} className="script-editor__nav-icon" />
+                    <Package size={13} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
                     <span className="script-editor__nav-label">Packages</span>
                     {packages.length > 0 && (
                         <span className="script-editor__error-badge" style={{ background: '#3a3a3a' }}>{packages.length}</span>
@@ -2570,7 +2573,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                 {aliasLoops && (
                                     <div className="script-editor__meta-row">
                                         <span className="script-editor__inline-warning" role="status">
-                                            <AlertTriangle size={13} strokeWidth={1.7} />
+                                            <TriangleAlert size={13} strokeWidth={GLYPH_STROKE_WIDTH} />
                                             {aliasLoopWarning(editName)}
                                         </span>
                                     </div>
@@ -3180,21 +3183,21 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                     setCtxMenu(null);
                                 }}
                             >
-                                <Package size={13} strokeWidth={1.6} />
+                                <Package size={13} strokeWidth={GLYPH_STROKE_WIDTH} />
                                 Export as Package…
                             </button>
                             <button
                                 className="ctx-menu__item"
                                 onClick={() => { copyItem(ctxMenu.targetId!); setCtxMenu(null); }}
                             >
-                                <Copy size={13} strokeWidth={1.6} />
+                                <Copy size={13} strokeWidth={GLYPH_STROKE_WIDTH} />
                                 Copy
                             </button>
                             <button
                                 className="ctx-menu__item"
                                 onClick={() => { const id = ctxMenu.targetId!; setCtxMenu(null); duplicateItem(id); }}
                             >
-                                <CopyPlus size={13} strokeWidth={1.6} />
+                                <CopyPlus size={13} strokeWidth={GLYPH_STROKE_WIDTH} />
                                 Duplicate
                             </button>
                             <button
@@ -3205,7 +3208,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                     deleteItem(id);
                                 }}
                             >
-                                <Trash2 size={13} strokeWidth={1.6} />
+                                <Trash2 size={13} strokeWidth={GLYPH_STROKE_WIDTH} />
                                 Delete
                             </button>
                             <div className="ctx-menu__sep" />
@@ -3218,7 +3221,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                 onClick={() => { const id = ctxMenu.targetId; setCtxMenu(null); pasteItem(id); }}
                                 title={`Paste ${pasteable}`}
                             >
-                                <ClipboardPaste size={13} strokeWidth={1.6} />
+                                <ClipboardPaste size={13} strokeWidth={GLYPH_STROKE_WIDTH} />
                                 Paste {pasteable}
                             </button>
                             <div className="ctx-menu__sep" />
@@ -3247,7 +3250,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                             setCtxMenu(null);
                         }}
                     >
-                        <FolderPlus size={13} strokeWidth={1.6} />
+                        <FolderPlus size={13} strokeWidth={GLYPH_STROKE_WIDTH} />
                         Add {category === 'buttons' ? BUTTON_GROUP_SINGULAR : 'Group'}
                     </button>
                 </ContextMenu>

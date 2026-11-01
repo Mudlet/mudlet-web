@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ConnectionScreen } from './ui/ConnectionScreen';
 import { BrandLoginScreen } from './ui/BrandLoginScreen';
 import { SettingsModal } from './ui/SettingsModal';
@@ -17,6 +17,7 @@ import { GAME_LINK_PARAM, findGameByLink } from './mud/games/gameLinks';
 import { getBrand, isBrandedMode, brandConnectionData, matchBrandProfile, addBrandProfile } from './branding';
 import { setupIreDriverBugfix } from './import/defaultPackages';
 import { onSystemThemeChange, resolveTheme } from './utils/systemTheme';
+import { applyThemeTokens } from './ui/design/themeTokens';
 
 /**
  * Best-effort (re)grant of a linked profile's folder permission. Must be called
@@ -83,8 +84,11 @@ export default function App() {
     // a reload (issue #71).
     const [systemTick, setSystemTick] = useState(0);
     useEffect(() => onSystemThemeChange(() => setSystemTick(n => n + 1)), []);
-    useEffect(() => {
+    // Layout effect, so the derived design tokens (ui/design/themeTokens) are
+    // on the root before the first paint in the new theme.
+    useLayoutEffect(() => {
         document.documentElement.dataset.theme = resolveTheme(effectiveTheme);
+        applyThemeTokens(document.documentElement);
     }, [effectiveTheme, systemTick]);
 
     const connections = useAppStore(s => s.connections);

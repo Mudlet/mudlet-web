@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Braces, CaseSensitive, ChevronDown, ChevronRight, Clock, Folder, Keyboard, MousePointerClick, Regex, Search, Shuffle, FileCode2, WholeWord, Zap } from 'lucide-react';
+import { Braces, CaseSensitive, ChevronDown, ChevronRight, Timer, Folder, Keyboard, MousePointerClick, Regex, Search, Terminal, FileCode, WholeWord, Zap } from 'lucide-react';
 import { useAppStore } from '../../../storage';
 import type { AliasNode, ButtonNode, KeyNode, ScriptNode, TimerNode, TriggerNode, TriggerPattern } from '../../../storage/schema';
 import { visibleTreeNodes } from '../../../storage/schema';
@@ -21,8 +21,8 @@ const CATEGORY_SINGULAR: Record<EditCategory, string> = {
 };
 
 const CATEGORY_ICON: Record<EditCategory, React.ElementType> = {
-    scripts: FileCode2, aliases: Shuffle, triggers: Zap,
-    timers: Clock, keys: Keyboard, buttons: MousePointerClick,
+    scripts: FileCode, aliases: Terminal, triggers: Zap,
+    timers: Timer, keys: Keyboard, buttons: MousePointerClick,
 };
 
 function formatCode(code: string): string {

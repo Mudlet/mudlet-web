@@ -1,0 +1,311 @@
+/* ── Mudlet design language: shared recipes ──────────────────────────────────
+   The web side of desktop's src/uiDesign.{h,cpp} (Mudlet `ui/design-language`
+   branch; docs/design-language.md). Desktop has exactly one stylesheet builder
+   per kind of control and every window calls it; here each builder is one rule
+   set below, and a surface either uses its class or its own CSS points at the
+   same tokens. Every colour is a token from ui/design/themeTokens.ts — never a
+   literal — and every radius and size comes from the scales on :root (App.css).
+
+   Loaded after App.css and components.css. Rules for chrome are kept off
+   content a game or a script wrote (HTML panels, labels, the console), which
+   brings its own look. */
+
+/* ── Choice marks ───────────────────────────────────────────────────────────
+   uiDesign::choiceStyleSheet(): one mark for every choice — a 13px box on the
+   field tone with a hairline, the accent on the frame under the pointer, the
+   tick, dash or dot in the accent once it is set. A radio button is the same
+   mark with half its size for a corner. `:where()` keeps it at zero
+   specificity, so any surface (or brand) styling its own boxes still wins. */
+:where(input[type='checkbox'], input[type='radio']):not(:where(
+    .window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)) {
+    appearance: none;
+    -webkit-appearance: none;
+    flex-shrink: 0;
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    border: 1px solid var(--choice-outline);
+    border-radius: 3px;
+    background: var(--bg-input) center / 9px 9px no-repeat;
+    cursor: pointer;
+    vertical-align: middle;
+    transition: border-color 0.12s;
+}
+:where(input[type='radio']):not(:where(.window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)) {
+    border-radius: 50%;
+}
+:where(input[type='checkbox'], input[type='radio']):not(:where(
+    .window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)):is(:hover, :focus-visible) {
+    border-color: var(--accent);
+    outline: none;
+}
+:where(input[type='checkbox'], input[type='radio']):not(:where(
+    .window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)):active {
+    background-color: var(--accent-soft);
+}
+:where(input[type='checkbox']):not(:where(.window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)):checked {
+    border-color: var(--accent);
+    background-image: var(--mark-tick);
+}
+:where(input[type='checkbox']):not(:where(.window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)):indeterminate {
+    border-color: var(--accent);
+    background-image: var(--mark-dash);
+}
+:where(input[type='radio']):not(:where(.window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)):checked {
+    border-color: var(--accent);
+    background-image: var(--mark-dot);
+}
+:where(input[type='checkbox'], input[type='radio']):not(:where(
+    .window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)):disabled {
+    border-color: var(--border-disabled);
+    background-color: var(--field-disabled);
+    cursor: not-allowed;
+}
+:where(input[type='checkbox']):not(:where(.window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)):disabled:checked {
+    background-image: var(--mark-tick-quiet);
+}
+:where(input[type='checkbox']):not(:where(.window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)):disabled:indeterminate {
+    background-image: var(--mark-dash-quiet);
+}
+:where(input[type='radio']):not(:where(.window-html-panel *, .label-overlay *, .output-wrapper *, .map-editor-modal-body *)):disabled:checked {
+    background-image: var(--mark-dot-quiet);
+}
+
+/* ── Drop-down fields ───────────────────────────────────────────────────────
+   inputStyleSheet()'s combo box: a field like any other, with the design's
+   chevron in the muted ink in place of the platform's arrow. */
+:where(select):not(:where(.window-html-panel *, .label-overlay *, .map-editor-modal-body *, [multiple], [size])) {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: var(--bg-input);
+    background-image: var(--chevron-down);
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    background-size: 12px 12px;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-input);
+    padding: 2px 24px 2px 6px;
+    min-height: var(--input-height);
+    font: inherit;
+    cursor: pointer;
+}
+:where(select):not(:where(.window-html-panel *, .label-overlay *, .map-editor-modal-body *, [multiple], [size])):is(:hover, :focus) {
+    border-color: var(--accent);
+    outline: none;
+}
+:where(select):not(:where(.window-html-panel *, .label-overlay *, .map-editor-modal-body *, [multiple], [size])):disabled {
+    color: var(--text-disabled);
+    background-color: var(--field-disabled);
+    border-color: var(--border-disabled);
+    cursor: not-allowed;
+}
+:where(select) option {
+    background: var(--bg-surface);
+    color: var(--text);
+}
+
+/* ── The flat bar ───────────────────────────────────────────────────────────
+   uiDesign::toolBarStyleSheet(): the bar sits on the page's own surface with
+   one hairline seam on the edge it meets the window at. Its buttons have no
+   face and no frame at rest — the muted ink alone — wash in hoverSoft under
+   the pointer with the word in the accent's ink, and in accentSoft while held
+   or switched on. An unavailable one is dimmer than its neighbours, not faded.
+   The script editor's own bar over its item tree takes it too. */
+.ui-bar .btn,
+.mudlet-topbar .btn,
+.script-editor__list-header .btn {
+    height: auto;
+    min-height: 26px;
+    padding: 3px 7px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-bar-button);
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.ui-bar .btn:not(:disabled):hover,
+.mudlet-topbar .btn:not(:disabled):hover,
+.script-editor__list-header .btn:not(:disabled):hover {
+    color: var(--accent-text);
+    background-color: var(--hover-bg);
+    border-color: transparent;
+}
+.ui-bar .btn:not(:disabled):active,
+.mudlet-topbar .btn:not(:disabled):active,
+.script-editor__list-header .btn:not(:disabled):active {
+    background-color: var(--accent-soft);
+}
+.ui-bar .btn[aria-pressed='true'],
+.mudlet-topbar .btn[aria-pressed='true'],
+.script-editor__list-header .btn[aria-pressed='true'] {
+    color: var(--accent-text);
+    background-color: var(--accent-soft);
+}
+.ui-bar .btn:disabled,
+.mudlet-topbar .btn:disabled,
+.script-editor__list-header .btn:disabled {
+    color: var(--text-disabled-bar);
+    background: transparent;
+    border-color: transparent;
+}
+.ui-bar .btn:focus-visible,
+.mudlet-topbar .btn:focus-visible,
+.script-editor__list-header .btn:focus-visible {
+    border-color: var(--accent);
+}
+.ui-bar .btn .toolbar-icon,
+.mudlet-topbar .btn .toolbar-icon,
+.script-editor__list-header .btn .toolbar-icon {
+    opacity: 1;
+}
+
+/* A split button on the bar: the body acts, the trailing half opens the menu.
+   splitButtonMenuHalfStyleSheet() — the seam on the half's leading edge, its
+   own wash a step ahead of the body's, the design's chevron in the arrow. */
+.mudlet-topbar .split-button__main,
+.ui-bar .split-button__main {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+.mudlet-topbar .split-button__arrow,
+.ui-bar .split-button__arrow {
+    background: transparent;
+    border: 1px solid transparent;
+    border-left-color: var(--separator);
+    border-radius: 0 var(--radius-bar-button) var(--radius-bar-button) 0;
+    color: var(--text-muted);
+}
+.mudlet-topbar .split-button:hover .split-button__arrow,
+.ui-bar .split-button:hover .split-button__arrow {
+    border-left-color: var(--border);
+}
+.mudlet-topbar .split-button__arrow:hover,
+.mudlet-topbar .split-button__arrow[aria-expanded='true'],
+.ui-bar .split-button__arrow:hover,
+.ui-bar .split-button__arrow[aria-expanded='true'] {
+    color: var(--accent-text);
+    background-color: var(--hover-bg-strong);
+    border-color: transparent;
+    border-left-color: var(--border);
+}
+
+/* ── Card ───────────────────────────────────────────────────────────────────
+   cardStyleSheet(): a panel raised off the page — the card tone, one hairline,
+   the panel corner, 16px of air; a bold title inside the frame. */
+.ui-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-panel);
+    padding: 16px;
+}
+.ui-card__title {
+    font-family: var(--font-ui), sans-serif;
+    font-size: var(--type-body);
+    font-weight: 700;
+    color: var(--text);
+    margin: 0 0 8px;
+}
+
+/* ── Notice ─────────────────────────────────────────────────────────────────
+   noticeStyleSheet(): a line or two a window has to say something with — the
+   accent's wash on an accent hairline, the panel corner, muted words beside one
+   20px glyph inked for its kind. */
+.ui-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-panel);
+    color: var(--text-muted);
+    font-family: var(--font-ui), sans-serif;
+    font-size: var(--type-body);
+    line-height: 1.45;
+}
+.ui-notice__glyph { flex-shrink: 0; color: var(--accent-text); }
+.ui-notice--warning .ui-notice__glyph { color: var(--state-warning); }
+.ui-notice--error .ui-notice__glyph { color: var(--state-error); }
+
+/* ── Tab strip ──────────────────────────────────────────────────────────────
+   tabBarStyleSheet(): tabs as a row of chips on the page rather than folder
+   tabs — muted words on nothing at rest, hoverSoft and the accent's ink under
+   the pointer, accentSoft while chosen, the chip corner throughout and the
+   accent on the frame from the keyboard. */
+.ui-tabs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+}
+.ui-tab {
+    appearance: none;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-chip);
+    padding: 4px 10px;
+    color: var(--text-muted);
+    font-family: var(--font-ui), sans-serif;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.ui-tab:hover { background: var(--hover-bg); color: var(--accent-text); }
+.ui-tab[aria-selected='true'],
+.ui-tab--active { background: var(--accent-soft); color: var(--accent-text); }
+.ui-tab:focus-visible { outline: none; border-color: var(--accent); }
+.ui-tab:disabled { color: var(--text-disabled); cursor: default; }
+
+/* ── Chip ───────────────────────────────────────────────────────────────────
+   A word in a box: the chip corner, the caption step, muted ink. */
+.ui-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-chip);
+    color: var(--text-muted);
+    font-family: var(--font-ui), sans-serif;
+    font-size: var(--type-caption);
+    line-height: 18px;
+    white-space: nowrap;
+}
+
+/* ── Rows of a list or a tree ───────────────────────────────────────────────
+   itemRowStyleSheet(): every row cut to the panel corner, washed in hoverSoft
+   under the pointer, filled with the solid accent wash and inked in the
+   accent's ink while chosen, with a 3px accent bar standing in its leading
+   gutter (a gradient, so the bar keeps its width round the corner). */
+.ui-row {
+    border-radius: var(--radius-panel);
+    border-left: var(--accent-bar) solid transparent;
+}
+.ui-row:hover { background: var(--hover-bg); }
+.ui-row--selected,
+.ui-row[aria-selected='true'] {
+    color: var(--accent-text);
+    background:
+        linear-gradient(to right, var(--accent) 0 var(--accent-bar), transparent var(--accent-bar)) border-box,
+        var(--accent-wash-pane) padding-box;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────────────
+   sidebarStyleSheet(): a column of pill rows — 36px tall, an 18px glyph, the
+   chosen row in the accent's wash and ink, bold, with the accent bar at its
+   leading edge. */
+.ui-sidebar-item {
+    border-radius: var(--radius-panel);
+    border-left: var(--accent-bar) solid transparent;
+    min-height: 36px;
+    color: var(--text-muted);
+}
+.ui-sidebar-item:hover { background: var(--hover-bg); color: var(--text); }
+.ui-sidebar-item--active {
+    color: var(--accent-text);
+    font-weight: 700;
+    background:
+        linear-gradient(to right, var(--accent) 0 var(--accent-bar), transparent var(--accent-bar)) border-box,
+        var(--accent-soft) padding-box;
+}

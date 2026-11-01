@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from './components';
+import { ScrollText } from 'lucide-react';
+import { Glyph, GLYPH_STROKE_WIDTH, type GlyphName } from './design/glyphs';
 import { getBrand, type BrandCommand, type BrandToolbarContext, type StockToolbarButton } from '../branding';
 import type { SessionStatus } from '../mud/events';
 import type { AddonCommand } from './commands/addonCommands';
@@ -62,40 +64,38 @@ interface ToolbarProps {
     onAddonCommandClick?: (id: number) => void;
 }
 
-function Icon({ children }: { children: ReactNode }) {
-    return (
-        <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-            className="toolbar-icon"
-        >
-            {children}
-        </svg>
-    );
+/** A toolbar glyph: desktop's own (ui/design/glyphs), at the bar's size. The
+ *  class keeps the hover/opacity rules and the hamburger's layout. */
+function Icon({ name }: { name: GlyphName }) {
+    return <Glyph name={name} size={16} className="toolbar-icon" />;
 }
 
-const IconScripts = () => <Icon><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></Icon>;
-const IconFiles = () => <Icon><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></Icon>;
-const IconMap = () => <Icon><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6" /><line x1="8" y1="3" x2="8" y2="18" /><line x1="16" y1="6" x2="16" y2="21" /></Icon>;
-const IconLogs = () => <Icon><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></Icon>;
-const IconDocs = () => <Icon><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></Icon>;
-const IconSettings = () => <Icon><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></Icon>;
-const IconHelp = () => <Icon><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></Icon>;
-const IconBug = () => <Icon><path d="M8 2l1.88 1.88" /><path d="M14.12 3.88L16 2" /><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1" /><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6z" /><path d="M12 20v-9" /><path d="M6.53 9C4.6 8.8 3 7.1 3 5" /><path d="M6 13H2" /><path d="M3 21c0-2.1 1.7-3.9 3.8-4" /><path d="M20.97 5c0 2.1-1.6 3.8-3.5 4" /><path d="M22 13h-4" /><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4" /></Icon>;
-/** The power glyph, on the Connect button the way Qt's plug icon is on Mudlet's. */
-const IconConnect = () => <Icon><path d="M18.36 6.64a9 9 0 1 1-12.73 0" /><line x1="12" y1="2" x2="12" y2="12" /></Icon>;
-const IconMute = () => <Icon><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" /><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></Icon>;
-/** The same speaker with its waves back, for the button that gives sound back. */
-const IconSound = () => <Icon><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /></Icon>;
-const IconRecord = () => <Icon><circle cx="12" cy="12" r="6" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="9" /></Icon>;
-const IconStopReplay = () => <Icon><rect x="7" y="7" width="10" height="10" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="9" /></Icon>;
+// Desktop's main toolbar draws Connect, Map, Manual, Settings and the sound
+// pair from toolbar-*.svg; this client's buttons with no desktop twin take the
+// nearest glyph the design already names, so one picture keeps one meaning.
+const IconScripts = () => <Icon name="editor-scripts" />;
+const IconFiles = () => <Icon name="editor-folder" />;
+const IconMap = () => <Icon name="toolbar-map" />;
+const IconLogs = () => <Glyph icon={ScrollText} size={16} className="toolbar-icon" />;
+const IconDocs = () => <Icon name="toolbar-manual" />;
+const IconSettings = () => <Icon name="toolbar-settings" />;
+const IconHelp = () => <Icon name="settings-support" />;
+const IconBug = () => <Icon name="about-bug" />;
+/** Desktop's plug, on the Connect button. */
+const IconConnect = () => <Icon name="toolbar-connect" />;
+const IconMute = () => <Icon name="toolbar-sound-on" />;
+/** The speaker struck through, for the button that gives sound back. */
+const IconSound = () => <Icon name="toolbar-sound-off" />;
+/** Recording has no desktop glyph (Replay plays one back); a filled dot inside
+ *  a ring, drawn at the design's stroke width. */
+const IconRecord = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        strokeWidth={GLYPH_STROKE_WIDTH} aria-hidden="true" className="toolbar-icon">
+        <circle cx="12" cy="12" r="5" fill="currentColor" stroke="none" />
+        <circle cx="12" cy="12" r="9" />
+    </svg>
+);
+const IconStopReplay = () => <Icon name="toolbar-replay-stop" />;
 
 /** A placed command's icon: a package gives an image path, a host app or a
  *  brand gives a node. Both land in a box the stylesheet sizes, so a broken
@@ -454,9 +454,9 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
             kind: 'custom', id: 'replay-controls',
             node: (
                 <span className="toolbar-replay-controls">
-                    <Button variant="ghost" title="Slow down replay" onClick={() => onReplaySpeedChange(-1)}>−</Button>
+                    <Button variant="ghost" title="Slow down replay" aria-label="Slow down replay" onClick={() => onReplaySpeedChange(-1)}><Icon name="toolbar-replay-slower" /></Button>
                     <span className="toolbar-replay-speed" title="Replay speed">×{replaySpeed}</span>
-                    <Button variant="ghost" title="Speed up replay" onClick={() => onReplaySpeedChange(1)}>+</Button>
+                    <Button variant="ghost" title="Speed up replay" aria-label="Speed up replay" onClick={() => onReplaySpeedChange(1)}><Icon name="toolbar-replay-faster" /></Button>
                     <Button variant="ghost" title="Stop replay" onClick={fire(onReplayStop)}><IconStopReplay />Stop replay</Button>
                 </span>
             ),

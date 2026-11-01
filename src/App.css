@@ -141,20 +141,58 @@
 :root {
     color-scheme: dark;
 
-    /* ── Theme tokens (overridden by [data-theme]) ── */
-    --bg:           #090909;
-    --bg-surface:   #090909;
-    --bg-input:     #141414;
-    --bg-glass:     rgba(12, 12, 12, 0.72);
-    --border:       #383838;
-    --border-hi:    rgba(255, 255, 255, 0.09);
-    --text:         #d4d4d4;
-    --text-dim:     #606070;
+    /* ── Theme palette (overridden by [data-theme]) ──
+     * Mudlet's design language (docs/design-language.md) mixes every chrome
+     * colour from four palette roles, the way desktop's uiDesign::themeTokens()
+     * does: --bg is Window, --bg-input is Base, --text is WindowText and
+     * --accent is Highlight. ui/design/themeTokens.ts reads those four back on
+     * every theme change and writes the derived tokens inline on :root —
+     * page/card/pane/field, the softened and contrast-walked inks, border,
+     * separator, the accent and hover washes. A theme names only its palette;
+     * the values below the four roles are first-paint fallbacks for the dark
+     * base, overwritten by the derivation. The dark palette is desktop's own
+     * DarkTheme (src/DarkTheme.cpp): #353535 window, #191919 base. */
+    --bg:           #353535;
+    --bg-input:     #191919;
+    --text:         #ffffff;
     --accent:       #4ec9b0;
+    /* Derived (themeTokens.ts) — first-paint values for the dark base. */
+    --bg-surface:   #414141;
+    --bg-panel:     #373737;
+    --bg-glass:     rgba(65, 65, 65, 0.92);
+    --border:       #5a5a5a;
+    --border-hi:    rgba(255, 255, 255, 0.09);
+    --separator:    #222222;
+    --text-dim:     #afafaf;
+    --text-muted:   #afafaf;
+    --text-disabled: #8d8d8d;
+    --text-disabled-bar: #656565;
+    --accent-text:  #9ee1d4;
+    --accent-soft:  rgba(78, 201, 176, 0.14);
+    --accent-wash:  #3b5953;
+    --accent-wash-pane: #3d5a54;
+    --marker:       #a58209;
+    --button-face:  #4e4e4e;
+    --field-disabled: #2d2d2d;
+    --border-disabled: #464646;
+    --choice-outline: #989898;
+    --mark-ink:     #4ec9b0;
+    /* The tick, dash, dot and chevron, inked for the dark base. */
+    --mark-tick: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20color%3D%22%234ec9b0%22%3E%3Cpath%20d%3D%22M20%206%209%2017l-5-5%22%20stroke-width%3D%223.2%22%2F%3E%3C%2Fsvg%3E");
+    --mark-dash: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20color%3D%22%234ec9b0%22%3E%3Cpath%20d%3D%22M5%2012h14%22%20stroke-width%3D%223.2%22%2F%3E%3C%2Fsvg%3E");
+    --mark-dot: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20color%3D%22%234ec9b0%22%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%226%22%20stroke%3D%22none%22%20fill%3D%22currentColor%22%2F%3E%3C%2Fsvg%3E");
+    --mark-tick-quiet: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20color%3D%22%238d8d8d%22%3E%3Cpath%20d%3D%22M20%206%209%2017l-5-5%22%20stroke-width%3D%223.2%22%2F%3E%3C%2Fsvg%3E");
+    --mark-dash-quiet: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20color%3D%22%238d8d8d%22%3E%3Cpath%20d%3D%22M5%2012h14%22%20stroke-width%3D%223.2%22%2F%3E%3C%2Fsvg%3E");
+    --mark-dot-quiet: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20color%3D%22%238d8d8d%22%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%226%22%20stroke%3D%22none%22%20fill%3D%22currentColor%22%2F%3E%3C%2Fsvg%3E");
+    --chevron-down: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20color%3D%22%23afafaf%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%20stroke-width%3D%222%22%2F%3E%3C%2Fsvg%3E");
+    --chevron-down-lit: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20color%3D%22%239ee1d4%22%3E%3Cpath%20d%3D%22m6%209%206%206%206-6%22%20stroke-width%3D%222%22%2F%3E%3C%2Fsvg%3E");
+    --state-ok:     #5996cf;
+    --state-warning: #cf9959;
+    --state-error:  #f0544a;
     --accent-dim:   #2d7a6e;
-    --accent-glow:  rgba(78, 201, 176, 0.18);
+    --accent-glow:  rgba(78, 201, 176, 0.14);
     --accent-focus: rgba(78, 201, 176, 0.28);
-    --danger:       #f14c4c;
+    --danger:       #f0544a;
     --modal-backdrop:  rgba(0, 0, 0, 0.5);
     --hover-bg:        rgba(255, 255, 255, 0.05);
     --hover-bg-strong: rgba(255, 255, 255, 0.08);
@@ -198,7 +236,27 @@
     --menurow-h:    34px;
     --buttonrow-h:  36px;
     --cmdbar-h:     44px;
-    --radius:       6px;
+    /* ── Radius follows control size (design language) ──
+     * chip: a word in a box · input: a form control · panel: a card, a
+     * notice, a menu's frame, a prominent search field. --radius is the input
+     * step, the one most rules here meant; --radius-sm the chip. */
+    --radius-chip:  4px;
+    --radius-input: 5px;
+    --radius-panel: 8px;
+    --radius-bar-button: 6px;
+    --radius:       var(--radius-input);
+    --radius-sm:    var(--radius-chip);
+    /* ── Type scale — desktop's four steps (0.85 / 1 / 1.15 / 1.45) off the
+     14px body the launcher redesign set, rounded to whole pixels; the caption
+     step is that redesign's 12px floor. No fifth step. ── */
+    --type-caption: 12px;
+    --type-body:    14px;
+    --type-title:   16px;
+    --type-display: 20px;
+    /* ── Measurements shared by the recipes (ui/components/design.css) ── */
+    --input-height: 28px;
+    --accent-bar:   3px;
+    --glyph-stroke: 1.5;
 
     /* ── Responsive breakpoints (mirror src/hooks/useViewportMode.ts) ── */
     --bp-mobile:    600px;
@@ -214,11 +272,14 @@
     --safe-left:   env(safe-area-inset-left, 0px);
 }
 
+/* Stock themes name their palette (--bg, --bg-input, --text, --accent) and
+ * whatever the derivation does not cover; card, muted text, border, washes
+ * and the state inks come out of ui/design/themeTokens.ts. */
+
 /* ── Amber accent (dark base) ── */
 :root[data-theme="amber"] {
     --accent:       #e5a623;
     --accent-dim:   #8a6a1a;
-    --accent-glow:  rgba(229, 166, 35, 0.18);
     --accent-focus: rgba(229, 166, 35, 0.28);
 }
 
@@ -226,7 +287,6 @@
 :root[data-theme="sky"] {
     --accent:       #56b6f2;
     --accent-dim:   #2d6a93;
-    --accent-glow:  rgba(86, 182, 242, 0.18);
     --accent-focus: rgba(86, 182, 242, 0.28);
 }
 
@@ -234,21 +294,13 @@
 :root[data-theme="graylight"] {
     color-scheme: light;
     --bg:           #c9cbce;
-    --bg-surface:   #d6d8db;
     --bg-input:     #e7e9ec;
-    --bg-glass:     rgba(208, 210, 214, 0.85);
-    --border:       #a6a9af;
     --border-hi:    rgba(0, 0, 0, 0.05);
     --text:         #23252a;
-    --text-dim:     #63666e;
     --accent:       #3a6ea5;
     --accent-dim:   #2b5179;
-    --accent-glow:  rgba(58, 110, 165, 0.18);
     --accent-focus: rgba(58, 110, 165, 0.28);
-    --danger:       #c23a3e;
     --modal-backdrop:  rgba(0, 0, 0, 0.35);
-    --hover-bg:        rgba(0, 0, 0, 0.06);
-    --hover-bg-strong: rgba(0, 0, 0, 0.10);
     --btn-primary-text: #ffffff;
     --console-bg:   #000000;
     --console-text: #c0c0c0;
@@ -262,22 +314,15 @@
 /* ── Light (Qt Fusion-style) ── */
 :root[data-theme="light"] {
     color-scheme: light;
-    --bg:           #f0f0f0;
-    --bg-surface:   #fafafa;
+    /* Qt Fusion's light palette, which desktop's design is measured against. */
+    --bg:           #efefef;
     --bg-input:     #ffffff;
-    --bg-glass:     rgba(248, 248, 248, 0.85);
-    --border:       #c8c8c8;
     --border-hi:    rgba(0, 0, 0, 0.04);
-    --text:         #1a1a1a;
-    --text-dim:     #6b6b6b;
+    --text:         #000000;
     --accent:       #0078d4;
     --accent-dim:   #005a9e;
-    --accent-glow:  rgba(0, 120, 212, 0.18);
     --accent-focus: rgba(0, 120, 212, 0.28);
-    --danger:       #d13438;
     --modal-backdrop:  rgba(0, 0, 0, 0.35);
-    --hover-bg:        rgba(0, 0, 0, 0.05);
-    --hover-bg-strong: rgba(0, 0, 0, 0.08);
     --btn-primary-text: #ffffff;
     --console-bg:   #000000;
     --console-text: #c0c0c0;
@@ -307,18 +352,24 @@ html, body, #root {
     text-size-adjust: 100%;
 }
 
-/* ── Global scrollbar styling (themed) ────────────────────────── */
+/* ── Global scrollbar styling (themed) ──────────────────────────
+   Desktop's scrollBarStyleSheet(): the groove is the surface it scrolls, the
+   handle the text mixed 22% into it (40% under the pointer), cut round. A
+   translucent text tone lands on that same blend over whatever is behind. */
 * {
     scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
+    scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
 }
-*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar { width: 12px; height: 12px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 4px;
+    background: color-mix(in srgb, var(--text) 22%, transparent);
+    background-clip: padding-box;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    min-height: 32px;
 }
-*::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+*::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text) 40%, transparent); }
 *::-webkit-scrollbar-corner { background: transparent; }
 
 /* ── App layout ────────────────────────────────────────────── */
@@ -399,11 +450,11 @@ html, body, #root {
     z-index: var(--z-chrome);
     /* Pad in by the top notch inset so both rows clear it. */
     padding-top: var(--safe-top);
-    background: color-mix(in srgb, var(--bg-surface) 50%, transparent);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-    box-shadow: inset 0 1px 0 var(--border-hi);
+    /* Desktop's flat bar (uiDesign::toolBarStyleSheet): the page's own
+       surface, one hairline seam on the edge it meets the console at. The
+       buttons on it take the bar recipe in ui/design/design.css. */
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
 }
 
 /* Namespaced class so this rule's flex layout (align-items: center, fixed
@@ -559,7 +610,7 @@ html, body, #root {
 }
 
 .status-disconnected { background: var(--text-dim); }
-.status-connecting   { background: #e5a623; animation: pulse 1s ease-in-out infinite; }
+.status-connecting   { background: var(--state-warning); animation: pulse 1s ease-in-out infinite; }
 .status-connected    { background: var(--accent); }
 
 @keyframes pulse {
@@ -568,8 +619,8 @@ html, body, #root {
 }
 
 .ping {
-    font-size: 11px;
-    color: var(--text-dim);
+    font-size: var(--type-caption);
+    color: var(--text-muted);
     min-width: 48px;
     text-align: right;
     font-variant-numeric: tabular-nums;
@@ -595,9 +646,9 @@ html, body, #root {
 
 .toolbar-sep {
     width: 1px;
-    height: 18px;
+    height: 16px;
     background: var(--border);
-    margin: 0 2px;
+    margin: 0 6px;
     flex-shrink: 0;
 }
 
@@ -626,7 +677,7 @@ html, body, #root {
 
 .toolbar-replay-speed {
     font-size: 12px;
-    color: var(--text-dim);
+    color: var(--text-muted);
     min-width: 28px;
     text-align: center;
 }
@@ -652,53 +703,52 @@ html, body, #root {
     gap: 4px;
     width: 40px;
     height: 40px;
-    background: var(--bg-glass);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: inset 0 1px 0 var(--border-hi);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-bar-button);
     cursor: pointer;
     padding: 0;
-    transition: border-color 0.15s, box-shadow 0.15s;
+    transition: background-color 0.12s;
 }
 
-.toolbar-hamburger-btn:hover,
+.toolbar-hamburger-btn:hover {
+    background: var(--hover-bg);
+}
 .toolbar-hamburger-btn[aria-expanded="true"] {
-    border-color: var(--accent-dim);
-    box-shadow: inset 0 1px 0 var(--border-hi), 0 0 8px var(--accent-glow);
+    background: var(--accent-soft);
 }
 
 .toolbar-hamburger-btn span {
     display: block;
     width: 16px;
     height: 1.5px;
-    background: var(--text);
+    background: var(--text-muted);
     border-radius: 1px;
-    transition: background 0.15s;
+    transition: background 0.12s;
 }
 
 .toolbar-hamburger-btn:hover span,
 .toolbar-hamburger-btn[aria-expanded="true"] span {
-    background: var(--accent);
+    background: var(--accent-text);
 }
 
 /* Portaled to <body> and placed against the button's rect (see Toolbar.tsx) —
    a Qt popup window, so `left`/`top` arrive inline. */
 .toolbar-hamburger-menu {
     position: fixed;
-    background: var(--bg-input);
+    /* Desktop's menu surface: the card tone, the field's hairline and corner. */
+    background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-input);
     box-shadow: var(--shadow-float);
     min-width: 220px;
     /* Never spill past the viewport on a narrow phone (account for the right
        safe-area inset since the bar is right-anchored). */
     max-width: calc(100vw - 16px - var(--safe-right));
-    padding: 6px;
+    padding: 4px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
     z-index: var(--z-popup);
 }
 
@@ -708,6 +758,16 @@ html, body, #root {
     justify-content: flex-start;
     padding: 0 12px;
     font-size: 14px;
+    background: transparent;
+    border-color: transparent;
+    border-radius: var(--radius-chip);
+    color: var(--text);
+}
+.toolbar-hamburger-menu .btn:not(:disabled):hover,
+.toolbar-hamburger-menu .btn[aria-pressed='true'] {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+    border-color: transparent;
 }
 
 /* ── Main content area ──────────────────────────────────────── */
@@ -720,12 +780,15 @@ html, body, #root {
 }
 
 /* ── Resizable modal (shared shell for draggable/resizable modals) ── */
+/* A window is the page: cards and fields are what sit on it at depth
+   (docs/design-language.md, "Three tones of depth"). */
 .resizable-modal {
     position: fixed;
     z-index: var(--z-dialog);
-    background: var(--bg-surface);
+    background: var(--bg);
+    color: var(--text);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-panel);
     box-shadow: var(--shadow-float);
     display: flex;
     flex-direction: column;
@@ -736,12 +799,9 @@ html, body, #root {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 16px;
+    padding: 8px 12px 8px 16px;
     border-bottom: 1px solid var(--border);
-    background: var(--bg-glass);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    box-shadow: inset 0 1px 0 var(--border-hi);
+    background: var(--bg);
     cursor: grab;
     flex-shrink: 0;
     user-select: none;
@@ -751,8 +811,8 @@ html, body, #root {
 
 .resizable-modal__title {
     font-family: var(--font-ui), sans-serif;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: var(--type-body);
+    font-weight: 700;
     color: var(--text);
 }
 
@@ -807,8 +867,8 @@ html, body, #root {
     position: absolute;
     bottom: 4px; right: 4px;
     width: 6px; height: 6px;
-    border-right: 2px solid var(--border);
-    border-bottom: 2px solid var(--border);
+    border-right: 2px solid var(--text-muted);
+    border-bottom: 2px solid var(--text-muted);
     border-radius: 1px;
     opacity: 0.5;
     transition: opacity 0.15s;
@@ -873,7 +933,7 @@ html, body, #root {
 .connection-help-btn:hover,
 .connection-about-btn:hover {
     color: var(--text);
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
 }
 
 /* Shown while a profile is locked by another browser tab (single-owner guard). */
@@ -1112,7 +1172,7 @@ html, body, #root {
 }
 
 .about-gh:hover {
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
     background: var(--hover-bg);
     color: var(--accent);
 }
@@ -1251,20 +1311,23 @@ html, body, #root {
     font-size: 12px;
     font-weight: 500;
     border: none;
-    border-radius: calc(var(--radius) - 2px);
+    border-radius: var(--radius-chip);
     cursor: pointer;
     background: transparent;
-    color: var(--text-dim);
+    color: var(--text-muted);
     transition: background 0.12s, color 0.12s;
 }
 
+/* Desktop's segmented control (the editor's QRadioButton[editorSegment]): the
+   chosen segment in the accent's wash and ink, the others quiet. */
 .connection-mode-btn:hover {
-    color: var(--text);
+    color: var(--accent-text);
+    background: var(--hover-bg);
 }
 
 .connection-mode-btn.active {
-    background: var(--accent);
-    color: var(--btn-primary-text);
+    background: var(--accent-soft);
+    color: var(--accent-text);
 }
 
 .connection-host-row {
@@ -1959,7 +2022,7 @@ html, body, #root {
 
 .scroll-to-bottom:hover {
     background: color-mix(in srgb, var(--bg-input) 85%, transparent);
-    box-shadow: inset 0 1px 0 var(--border-hi), var(--shadow-button-hover), 0 0 8px var(--accent-glow);
+    box-shadow: inset 0 1px 0 var(--border-hi), var(--shadow-button-hover);
 }
 
 /* ── Per-userwindow command line (Mudlet enableCommandLine on a userwindow). */
@@ -1991,11 +2054,10 @@ html, body, #root {
     /* Reserve the home-indicator inset below the input on notched phones. */
     min-height: calc(var(--cmdbar-h) + var(--safe-bottom));
     padding: 0 calc(10px + var(--safe-right)) var(--safe-bottom) calc(10px + var(--safe-left));
-    background: var(--bg-glass);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    /* Desktop's console foot (TConsole, docs/design-language.md "The console's
+       foot"): one seam along its top in place of a frame round the input. */
+    background: var(--bg);
     border-top: 1px solid var(--border);
-    box-shadow: inset 0 -1px 0 var(--border-hi);
     flex-shrink: 0;
     position: relative;
     z-index: 10;
@@ -2033,8 +2095,8 @@ html, body, #root {
    line fills the content area exactly, so the input's text is centred and the
    textarea's top-aligned text land on the same baseline. */
 .command-input.input {
-    background: color-mix(in srgb, var(--bg-input) 60%, transparent);
-    border-color: var(--border);
+    background: var(--bg-input);
+    border-color: transparent;
     font-size: 13px;
     height: 32px;
     padding: 5px 8px 5px 24px;
@@ -2093,8 +2155,7 @@ html, body, #root {
 }
 
 .command-ghost__suffix {
-    color: var(--text-dim);
-    opacity: 0.65;
+    color: var(--text-disabled);
     font-style: italic;
 }
 
@@ -2183,7 +2244,7 @@ html, body, #root {
 }
 
 .map-panel-toggle:hover {
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
     color: var(--accent);
 }
 
@@ -2216,9 +2277,9 @@ html, body, #root {
 }
 
 .map-area-dropdown-btn:hover {
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
     color: var(--accent);
-    box-shadow: inset 0 1px 0 var(--border-hi), 0 0 8px var(--accent-glow);
+    box-shadow: inset 0 1px 0 var(--border-hi);
 }
 
 .map-area-dropdown-label {
@@ -2387,8 +2448,8 @@ html, body, #root {
 }
 
 .map-hamburger-btn:hover {
-    border-color: var(--accent-dim);
-    box-shadow: inset 0 1px 0 var(--border-hi), 0 0 8px var(--accent-glow);
+    border-color: var(--accent);
+    box-shadow: inset 0 1px 0 var(--border-hi);
 }
 
 .map-hamburger-btn span {
@@ -2636,7 +2697,7 @@ html, body, #root {
 
 .map-load-btn:hover {
     background: var(--bg-input);
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
 }
 
 /* ── Settings modal ─────────────────────────────────────────── */
@@ -2653,9 +2714,10 @@ html, body, #root {
     left: 50%;
     transform: translate(-50%, -50%);
     z-index: calc(var(--z-modal) + 1);
-    background: var(--bg-surface);
+    background: var(--bg);
+    color: var(--text);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-panel);
     box-shadow: var(--shadow-float);
     display: flex;
     flex-direction: column;
@@ -3204,7 +3266,7 @@ html, body, #root {
     display: flex;
     align-items: center;
     flex-shrink: 0;
-    color: var(--accent-dim);
+    color: var(--accent-text);
 }
 
 .vfs-file .vfs-icon {
@@ -3791,7 +3853,7 @@ html, body, #root {
 }
 
 .vfs-sql-back:hover {
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
     color: var(--accent);
 }
 
@@ -3887,7 +3949,7 @@ html, body, #root {
 }
 
 .vfs-sql-pager button:hover:not(:disabled) {
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
     color: var(--accent);
 }
 
@@ -3951,7 +4013,7 @@ html, body, #root {
 }
 
 .merge-bulk-btn:hover {
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
     color: var(--accent);
 }
 
@@ -4075,7 +4137,7 @@ html, body, #root {
 }
 
 .merge-btn-secondary:hover {
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
     color: var(--accent);
 }
 
@@ -4093,36 +4155,40 @@ html, body, #root {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 16px;
+    padding: 10px 12px 10px 16px;
     border-bottom: 1px solid var(--border);
-    background: var(--bg-glass);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    box-shadow: inset 0 1px 0 var(--border-hi);
+    background: var(--bg);
     flex-shrink: 0;
 }
 
 .modal-title {
     font-family: var(--font-ui), sans-serif;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: var(--type-body);
+    font-weight: 700;
     color: var(--text);
 }
 
+/* The flat bar's button: no face until the pointer is on it. */
 .modal-close {
     background: none;
-    border: none;
-    color: var(--text-dim);
+    border: 1px solid transparent;
+    color: var(--text-muted);
     cursor: pointer;
     font-size: 14px;
     line-height: 1;
     padding: 3px 6px;
-    border-radius: 4px;
-    transition: color 0.1s;
+    border-radius: var(--radius-bar-button);
+    transition: color 0.12s, background-color 0.12s;
 }
 
 .modal-close:hover {
-    color: var(--text);
+    color: var(--accent-text);
+    background: var(--hover-bg);
+}
+
+.modal-close:focus-visible {
+    outline: none;
+    border-color: var(--accent);
 }
 
 .modal-body {
@@ -4235,11 +4301,16 @@ html, body, #root {
     min-height: 0;
 }
 
+/* Desktop's sidebar (uiDesign::sidebarStyleSheet + SidebarItemDelegate): a
+   pane a fifth of the way to the card, parted from the page by the separator
+   seam; 36px pill rows with an 18px glyph, the chosen one in the accent's wash
+   and ink, bold, with the 3px accent bar standing at its leading edge. */
 .settings-sidebar {
-    width: 186px;
+    width: 196px;
     flex-shrink: 0;
-    border-right: 1px solid var(--border);
-    padding: 12px 8px;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--separator);
+    padding: 12px;
     overflow-y: auto;
 }
 
@@ -4254,7 +4325,7 @@ html, body, #root {
 
 .settings-sidebar__separator {
     height: 1px;
-    margin: 8px 10px;
+    margin: 8px 12px;
     background: var(--border);
 }
 
@@ -4262,29 +4333,42 @@ html, body, #root {
     appearance: none;
     background: transparent;
     border: none;
-    border-radius: var(--radius-sm, 4px);
+    border-left: var(--accent-bar) solid transparent;
+    border-radius: var(--radius-panel);
     width: 100%;
+    min-height: 36px;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 7px 10px;
+    padding: 0 10px 0 9px;
     font: inherit;
     font-family: var(--font-ui), sans-serif;
-    font-size: 13px;
+    font-size: var(--type-body);
     text-align: left;
-    color: var(--text-dim);
+    color: var(--text-muted);
     cursor: pointer;
-    transition: background 0.1s ease, color 0.1s ease;
+    transition: background-color 0.1s ease, color 0.1s ease;
 }
 
 .settings-sidebar__item:hover {
-    background: var(--bg-hover, rgba(127, 127, 127, 0.12));
-    color: var(--text);
+    background-color: var(--hover-bg);
+    color: var(--accent-text);
 }
 
-.settings-sidebar__item--active {
-    background: var(--bg-hover, rgba(127, 127, 127, 0.16));
-    color: var(--text);
+.settings-sidebar__item:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* A gradient rather than a coloured border-left, which bends into an arc at
+   the pill's corner and pinches to nothing at both ends. */
+.settings-sidebar__item--active,
+.settings-sidebar__item--active:hover {
+    background:
+        linear-gradient(to right, var(--accent) 0 var(--accent-bar), transparent var(--accent-bar)) border-box,
+        var(--accent-soft) padding-box;
+    color: var(--accent-text);
+    font-weight: 700;
 }
 
 /* The support row is a link out, not a page — never selected, never underlined
@@ -4296,7 +4380,8 @@ html, body, #root {
 
 .settings-sidebar__icon {
     flex-shrink: 0;
-    opacity: 0.85;
+    width: 18px;
+    height: 18px;
 }
 
 .settings-sidebar__label {
@@ -4310,8 +4395,8 @@ html, body, #root {
     min-width: 0;
     display: flex;
     flex-direction: column;
-    padding: 14px 16px 0;
-    gap: 12px;
+    padding: 16px 16px 0;
+    gap: 16px;
 }
 
 .settings-search {
@@ -4325,7 +4410,7 @@ html, body, #root {
     left: 9px;
     top: 50%;
     transform: translateY(-50%);
-    color: var(--text-dim);
+    color: var(--text-muted);
     pointer-events: none;
 }
 
@@ -4335,22 +4420,24 @@ html, body, #root {
     padding: 7px 10px 7px 30px;
     font: inherit;
     font-family: var(--font-ui), sans-serif;
-    font-size: 13px;
+    font-size: var(--type-body);
     color: var(--text);
-    background: var(--bg-input, var(--bg));
+    background: var(--bg-input);
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm, 4px);
+    /* The one control the panel is headed by, drawn taller than a form field,
+       so it takes the panel's corner (scmRadiusProminentInput). */
+    border-radius: var(--radius-panel);
 }
 
 .settings-search__field:focus {
     outline: none;
-    border-color: var(--accent, var(--text));
+    border-color: var(--accent);
 }
 
 .settings-search__empty {
     font-family: var(--font-ui), sans-serif;
-    font-size: 13px;
-    color: var(--text-dim);
+    font-size: var(--type-body);
+    color: var(--text-muted);
     margin: 4px 0;
 }
 
@@ -4374,14 +4461,16 @@ html, body, #root {
 }
 
 .settings-titlerow__icon {
-    color: var(--text-dim);
+    color: var(--text-muted);
     flex-shrink: 0;
 }
 
+/* The page title over a settings page — the Display step, and nothing else
+   takes it. */
 .settings-titlerow__title {
     font-family: var(--font-ui), sans-serif;
-    font-size: 15px;
-    font-weight: 600;
+    font-size: var(--type-display);
+    font-weight: 700;
     color: var(--text);
     margin: 0;
     overflow: hidden;
@@ -4400,14 +4489,14 @@ html, body, #root {
     padding: 4px 6px;
     font: inherit;
     font-family: var(--font-ui), sans-serif;
-    font-size: 13px;
-    color: var(--text-dim);
+    font-size: var(--type-body);
+    color: var(--text-muted);
     cursor: pointer;
 }
 
 .settings-back:hover {
-    color: var(--text);
-    background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+    color: var(--accent-text);
+    background: var(--hover-bg);
 }
 
 .settings-pages {
@@ -4417,14 +4506,17 @@ html, body, #root {
     padding-bottom: 16px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 16px;
 }
 
 /* One card: a titled group of rows, the unit the search moves around. */
+/* Desktop's card (uiDesign::cardStyleSheet): the card tone raised off the
+   page, one hairline, the panel corner, 16px of air, a bold title inside. */
 .settings-card {
+    background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius, 6px);
-    padding: 12px 14px;
+    border-radius: var(--radius-panel);
+    padding: 16px;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -4441,28 +4533,29 @@ html, body, #root {
 
 /* A card that is one bare row rather than a group — Mudlet's "settingsCardPlain". */
 .settings-card--plain {
+    background: transparent;
     border-color: transparent;
-    padding: 0 14px;
+    padding: 0 16px;
 }
 
 .settings-card__title {
     font-family: var(--font-ui), sans-serif;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: var(--type-body);
+    font-weight: 700;
     color: var(--text);
     margin: 0;
 }
 
 .settings-card__description {
     font-family: var(--font-ui), sans-serif;
-    font-size: 12px;
+    font-size: var(--type-caption);
     line-height: 1.45;
-    color: var(--text-dim);
+    color: var(--text-muted);
     margin: -2px 0 2px;
 }
 
 .settings-card__description a {
-    color: var(--accent, var(--text));
+    color: var(--accent-text);
 }
 
 .settings-card__body {
@@ -4482,17 +4575,19 @@ html, body, #root {
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: var(--text-dim);
+    color: var(--text-muted);
     margin: 6px 0 -4px;
 }
 
 /* The individual rows a query matched, tinted the way Mudlet spotlights them —
    and their neighbours dimmed the way an IDE's settings search does, so a card
    that came back for one of its ten rows says which one. */
+/* Desktop's spotlight: the row a search found washed in the accent with an
+   accent ring round it (uiDesign::spotlightStyleSheet). */
 .settings-row--hit {
-    border-radius: var(--radius-sm, 4px);
-    box-shadow: 0 0 0 6px var(--bg-hover, rgba(127, 127, 127, 0.14));
-    background: var(--bg-hover, rgba(127, 127, 127, 0.14));
+    border-radius: var(--radius-chip);
+    box-shadow: 0 0 0 6px var(--accent-soft), 0 0 0 7px var(--accent);
+    background: var(--accent-soft);
 }
 
 .settings-row--miss {
@@ -4516,9 +4611,9 @@ html, body, #root {
 /* The chevron row that leads into a subpage, carrying what it holds. */
 .settings-subpage-row {
     appearance: none;
-    background: transparent;
+    background: var(--button-face);
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm, 4px);
+    border-radius: var(--radius-input);
     display: flex;
     align-items: center;
     gap: 10px;
@@ -4533,7 +4628,8 @@ html, body, #root {
 }
 
 .settings-subpage-row:hover {
-    background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+    border-color: var(--accent);
+    background-color: var(--hover-bg);
 }
 
 .settings-subpage-row__label {
@@ -4542,8 +4638,8 @@ html, body, #root {
 }
 
 .settings-subpage-row__summary {
-    color: var(--text-dim);
-    font-size: 12px;
+    color: var(--text-muted);
+    font-size: var(--type-caption);
 }
 
 .vault-manage-row-btn {
@@ -4562,7 +4658,7 @@ html, body, #root {
     }
     .settings-sidebar__item {
         justify-content: center;
-        padding: 8px 0;
+        padding: 0;
     }
     .settings-sidebar__label {
         display: none;
@@ -4813,8 +4909,8 @@ html, body, #root {
 }
 
 .settings-ansi-swatch__bar:hover .settings-ansi-swatch__fill {
-    border-color: var(--accent-dim);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 6px var(--accent-glow);
+    border-color: var(--accent);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .settings-ansi-swatch__reset {
@@ -4863,8 +4959,8 @@ html, body, #root {
 }
 
 .settings-select:focus {
-    border-color: var(--accent-dim);
-    box-shadow: 0 0 0 3px var(--accent-focus);
+    border-color: var(--accent);
+    box-shadow: none;
 }
 
 /* ── ANSI animations ────────────────────────────────────────── */

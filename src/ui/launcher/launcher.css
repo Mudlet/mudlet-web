@@ -55,6 +55,9 @@
     gap: 4px;
 }
 
+/* Desktop's flat bar button (uiDesign::toolBarStyleSheet): no face at rest,
+   the chrome's muted ink rather than a fade, hoverSoft and the accent's ink
+   under the pointer. */
 .launcher-tool {
     width: 38px;
     height: 38px;
@@ -64,13 +67,13 @@
     border-radius: 8px;
     border: 1px solid transparent;
     background: none;
-    color: var(--text);
-    opacity: 0.75;
+    color: var(--text-muted);
     cursor: pointer;
 }
 
-.launcher-tool:hover { opacity: 1; background: var(--hover-bg); }
-.launcher-tool:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
+.launcher-tool:hover { color: var(--accent-text); background: var(--hover-bg); }
+.launcher-tool:active { background: var(--accent-soft); }
+.launcher-tool:focus-visible { outline: none; border-color: var(--accent); }
 
 /* ── Search ── */
 
@@ -107,7 +110,6 @@
 .launcher-search__input:focus {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 4px var(--accent-glow);
 }
 
 .launcher-search__kbd {
@@ -479,7 +481,6 @@
 .launcher-filter:focus {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 /* ── Menus (⋯ and Import) ──
@@ -528,7 +529,7 @@
 
 .launcher-pill {
     font-size: 12px;
-    border: 1px solid var(--accent-dim);
+    border: 1px solid var(--accent);
     color: var(--accent);
     border-radius: 999px;
     padding: 1px 9px;
@@ -542,7 +543,7 @@
     gap: 5px;
     font-family: var(--font-ui);
     font-size: 12px;
-    color: #e5c07b;
+    color: var(--state-warning);
 }
 
 /* ── Welcome (no profiles yet) ── */
@@ -630,8 +631,8 @@
 
 .launcher-grid--catalog .launcher-tile { content-visibility: auto; contain-intrinsic-size: 200px 170px; }
 
-.launcher-tile:hover { border-color: var(--accent-dim); }
-.launcher-tile:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.launcher-tile:hover { border-color: var(--accent); }
+.launcher-tile:focus-within { border-color: var(--accent); }
 .launcher-tile--editing { border-color: var(--accent); }
 .launcher-tile--elsewhere .launcher-tile__art { filter: grayscale(0.6) brightness(0.8); }
 
@@ -768,7 +769,7 @@
 /* The gap a dragged tile will drop into. */
 .launcher-tile--placeholder {
     border-style: dashed;
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
     background: var(--accent-glow);
 }
 

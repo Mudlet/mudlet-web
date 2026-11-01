@@ -49,7 +49,7 @@
 }
 
 .shortcut-row__key:hover {
-    border-color: var(--accent-dim);
+    border-color: var(--accent);
 }
 
 /* Armed and waiting for the keypress. Deliberately loud: while a row is armed

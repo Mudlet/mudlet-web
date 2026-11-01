@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Braces, Shuffle, Zap, Clock, Keyboard, MousePointerClick, Folder, FileCode2 } from 'lucide-react';
+import { Download, Braces, Terminal, Zap, Timer, Keyboard, MousePointerClick, Folder, FileCode } from 'lucide-react';
 import { ResizableModal } from '../../ResizableModal';
 import { Button, FileSourceButton, FormField, type PickedFile } from '../../components';
 import { useAppStore } from '../../../storage';
@@ -44,9 +44,9 @@ const CATEGORY_LABEL: Record<ExportCategory, string> = {
 
 const CATEGORY_ICON = {
     triggers: Zap,
-    aliases:  Shuffle,
+    aliases:  Terminal,
     scripts:  Braces,
-    timers:   Clock,
+    timers:   Timer,
     keys:     Keyboard,
     buttons:  MousePointerClick,
 } as const;
@@ -348,7 +348,7 @@ export function PackageExportModal({ connectionId, vfs, preselect, onClose, onEx
                         </div>
                         <div className="pkg-export__icon-name">
                             {iconName
-                                ? <><FileCode2 size={12} strokeWidth={1.6} />{iconName}{!iconBytes && vfsFiles.some(f => f.endsWith(`/${iconName}`) || f === iconName) ? ' (from package files)' : ''}</>
+                                ? <><FileCode size={12} strokeWidth={1.6} />{iconName}{!iconBytes && vfsFiles.some(f => f.endsWith(`/${iconName}`) || f === iconName) ? ' (from package files)' : ''}</>
                                 : <span className="pkg-export__muted">No icon</span>}
                             {iconName && (
                                 <button
