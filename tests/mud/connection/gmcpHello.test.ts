@@ -163,10 +163,10 @@ describe('GMCP Core.Hello handshake', () => {
     }
   });
 
-  it('advertises Char.Login version 1, since version 2 is not implemented', () => {
+  it('advertises Char.Login version 2, as Mudlet does', () => {
     const { sock } = connected();
     sock.deliver(GMCP_WILL);
-    expect(sentText(sock)).toContain('"Char.Login 1"');
+    expect(sentText(sock)).toContain('"Char.Login 2"');
   });
 
   it('does not announce when GMCP is disabled', () => {

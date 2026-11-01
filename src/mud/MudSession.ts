@@ -620,11 +620,38 @@ export class MudSession {
     }
 
     /** Reply to a GMCP `Char.Login.Default` request. Pass an account + password
-     *  to authenticate, or no arguments to send the empty "fall back to text
-     *  login" reply (the credentials popup's Cancel). The password is relayed
-     *  straight to the wire and never persisted. */
-    sendCharLoginCredentials(account?: string, password?: string): void {
-        this.client?.sendCharLoginCredentials(account, password);
+     *  to authenticate, or no account for the hand-off to the game's own
+     *  sign-in (the credentials popup's "Use text login"). `tokenStorage` is the
+     *  honest answer to whether a sign-in token minted now would be kept. The
+     *  password is relayed straight to the wire and never persisted here. */
+    sendCharLoginCredentials(account?: string, password?: string, tokenStorage = false): void {
+        this.client?.sendCharLoginCredentials(account, password, tokenStorage);
+    }
+
+    /** Replay a saved sign-in token (`Char.Login.Reconnect`). False when the
+     *  client refused — see `MudClient.sendCharLoginReconnect`. */
+    sendCharLoginReconnect(account: string, token: string, secureOnly: boolean, tokenStorage = false): boolean {
+        return this.client?.sendCharLoginReconnect(account, token, secureOnly, tokenStorage) ?? false;
+    }
+
+    /** Ask the game to restart a remembered provider's browser sign-in. */
+    sendCharLoginResume(account: string, provider: string, tokenStorage = false): void {
+        this.client?.sendCharLoginResume(account, provider, tokenStorage);
+    }
+
+    /** Complete a client-driven OAuth sign-in (`Char.Login.AuthCode`). False
+     *  when refused over an unencrypted connection. */
+    sendCharLoginAuthCode(
+        auth: { code: string; codeVerifier: string; redirectUri: string; nonce?: string },
+        tokenStorage = false,
+    ): boolean {
+        return this.client?.sendCharLoginAuthCode(auth, tokenStorage) ?? false;
+    }
+
+    /** Whether the link to the *game* is encrypted right now — the gate on every
+     *  `Char.Login` bearer secret. False with no socket. */
+    get gameTransportSecure(): boolean {
+        return this.client?.gameTransportSecure ?? false;
     }
 
     sendMSDP(variable: string, values: string[]): boolean {

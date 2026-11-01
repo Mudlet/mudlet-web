@@ -34,8 +34,10 @@ import {
 } from './vaultCrypto';
 import { evaluateVaultPrf, passkeysAvailable, registerVaultPasskey, type PasskeyRegistration } from './passkeyPrf';
 import {
-    loadVaultRecord, saveVaultRecord, type PasskeyUnlocker, type VaultRecord, type VaultUnlocker,
+    loadVaultRecord, saveVaultRecord, type PasskeyUnlocker, type VaultRecord, type VaultSignIn, type VaultUnlocker,
 } from './vaultRecord';
+
+export type { VaultSignIn } from './vaultRecord';
 
 /** What a listener needs to render. Immutable; identity changes on every
  *  mutation so `useSyncExternalStore` re-renders exactly when something did. */
@@ -46,6 +48,8 @@ export interface VaultSnapshot {
     locked: boolean;
     /** Profiles with a stored password — readable while locked. */
     entryIds: readonly string[];
+    /** Profiles with a saved GMCP sign-in token — readable while locked. */
+    signInIds: readonly string[];
     /** Unlock methods, without their key material. */
     unlockers: readonly { id: string; kind: VaultUnlocker['kind']; label: string; createdAt: string }[];
 }
@@ -71,7 +75,7 @@ interface VaultIO {
     save(record: VaultRecord | null): void;
 }
 
-const EMPTY_SNAPSHOT: VaultSnapshot = { exists: false, locked: false, entryIds: [], unlockers: [] };
+const EMPTY_SNAPSHOT: VaultSnapshot = { exists: false, locked: false, entryIds: [], signInIds: [], unlockers: [] };
 
 function newId(): string {
     return toBase64(randomBytes(9));
@@ -83,6 +87,8 @@ export class CredentialVault {
     private masterKey: CryptoKey | null = null;
     /** Decrypted secrets while unlocked, keyed by connection id. */
     private secrets: Record<string, string> | null = null;
+    /** Decrypted GMCP sign-ins while unlocked, keyed by connection id. */
+    private signIns: Record<string, VaultSignIn> | null = null;
     private listeners = new Set<() => void>();
     private snapshot: VaultSnapshot = EMPTY_SNAPSHOT;
 
@@ -120,6 +126,26 @@ export class CredentialVault {
      *  locked. Callers treat both the same way: fall back to asking the user. */
     getPassword(connectionId: string): string | undefined {
         return this.secrets?.[connectionId];
+    }
+
+    /** True when this profile has a saved sign-in *token* — answerable while
+     *  locked. A token-less resume hint does not count: it is not worth asking
+     *  the player to unlock for. */
+    hasSignIn(connectionId: string): boolean {
+        return !!this.record?.signInIds?.includes(connectionId);
+    }
+
+    /** The saved GMCP sign-in (a copy), or `undefined` when there is none or
+     *  the vault is locked. */
+    getSignIn(connectionId: string): VaultSignIn | undefined {
+        const entry = this.signIns?.[connectionId];
+        return entry ? { ...entry } : undefined;
+    }
+
+    /** Whether a secret written now would actually be kept: a vault exists and
+     *  is open. What the GMCP `token_storage` field reports. */
+    get canStore(): boolean {
+        return this.record !== null && this.masterKey !== null && this.secrets !== null;
     }
 
     // ── lifecycle ────────────────────────────────────────────────────────
@@ -201,6 +227,7 @@ export class CredentialVault {
         if (!this.masterKey && !this.secrets) return;
         this.masterKey = null;
         this.secrets = null;
+        this.signIns = null;
         this.emit();
     }
 
@@ -209,6 +236,7 @@ export class CredentialVault {
         this.record = null;
         this.masterKey = null;
         this.secrets = null;
+        this.signIns = null;
         this.io.save(null);
         this.emit();
     }
@@ -232,10 +260,36 @@ export class CredentialVault {
      * password is unreachable.
      */
     async forgetConnection(connectionId: string): Promise<boolean> {
-        if (!this.record?.entryIds.includes(connectionId)) return true;
+        const hasPassword = !!this.record?.entryIds.includes(connectionId);
+        // A locked vault lists only tokens in the clear, so a resume hint is
+        // found by asking the decrypted map when there is one.
+        const hasSignIn = this.hasSignIn(connectionId) || !!this.signIns?.[connectionId];
+        if (!hasPassword && !hasSignIn) return true;
         if (this.locked) return false;
-        await this.setPassword(connectionId, null);
+        if (hasPassword) await this.setPassword(connectionId, null);
+        if (hasSignIn) await this.setSignIn(connectionId, null);
         return true;
+    }
+
+    /**
+     * Store (or, with `null`, forget) one profile's GMCP sign-in. Requires
+     * unlocked: whether a token can be kept at all is decided from
+     * {@link canStore} *before* the game is told (`token_storage`), so a locked
+     * vault here is a race for the caller to report, not a silent drop.
+     */
+    async setSignIn(connectionId: string, entry: VaultSignIn | null): Promise<void> {
+        const master = this.requireMaster();
+        const record = this.requireRecord();
+        const signIns = { ...(this.signIns ?? {}) };
+        if (entry) signIns[connectionId] = { ...entry };
+        else delete signIns[connectionId];
+        const signInPayload = await encryptJson(master, signIns);
+        this.signIns = signIns;
+        this.writeRecord({
+            ...(this.record ?? record),
+            signInIds: Object.keys(signIns).filter(id => !!signIns[id].token),
+            signInPayload,
+        });
     }
 
     /** Drop stored passwords for profiles that no longer exist. No-op while
@@ -244,9 +298,13 @@ export class CredentialVault {
         if (!this.record || this.locked || !this.secrets) return;
         const keep = new Set(existingConnectionIds);
         const stale = Object.keys(this.secrets).filter(id => !keep.has(id));
-        if (stale.length === 0) return;
-        for (const id of stale) delete this.secrets[id];
-        await this.persistSecrets();
+        if (stale.length > 0) {
+            for (const id of stale) delete this.secrets[id];
+            await this.persistSecrets();
+        }
+        for (const id of Object.keys(this.signIns ?? {}).filter(id => !keep.has(id))) {
+            await this.setSignIn(id, null);
+        }
     }
 
     // ── unlockers ────────────────────────────────────────────────────────
@@ -356,6 +414,7 @@ export class CredentialVault {
     ): Promise<void> {
         this.masterKey = master;
         this.secrets = { ...(seed ?? {}) };
+        this.signIns = {};
         this.record = {
             version: 1,
             prfSalt: prfSalt ?? toBase64(randomBytes(32)),
@@ -369,8 +428,13 @@ export class CredentialVault {
 
     private async adoptMasterKey(master: CryptoKey): Promise<void> {
         const record = this.requireRecord();
+        const secrets = record.payload ? await decryptJson<Record<string, string>>(master, record.payload) : {};
+        const signIns = record.signInPayload
+            ? await decryptJson<Record<string, VaultSignIn>>(master, record.signInPayload)
+            : {};
         this.masterKey = master;
-        this.secrets = record.payload ? await decryptJson<Record<string, string>>(master, record.payload) : {};
+        this.secrets = secrets;
+        this.signIns = signIns;
         this.emit();
     }
 
@@ -378,10 +442,13 @@ export class CredentialVault {
         const master = this.requireMaster();
         const record = this.requireRecord();
         const secrets = this.secrets ?? {};
+        const payload = await encryptJson(master, secrets);
+        // Spread the record as it stands *after* the await: a sign-in written
+        // while this one encrypted must not be rolled back by a stale copy.
         this.writeRecord({
-            ...record,
+            ...(this.record ?? record),
             entryIds: Object.keys(secrets),
-            payload: await encryptJson(master, secrets),
+            payload,
         });
     }
 
@@ -397,6 +464,7 @@ export class CredentialVault {
             exists: true,
             locked: this.masterKey === null,
             entryIds: [...this.record.entryIds],
+            signInIds: [...(this.record.signInIds ?? [])],
             unlockers: this.record.unlockers.map(u => ({
                 id: u.id, kind: u.kind, label: u.label, createdAt: u.createdAt,
             })),

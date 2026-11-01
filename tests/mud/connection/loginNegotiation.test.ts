@@ -274,24 +274,128 @@ describe('login-time telnet negotiation replies', () => {
 
   it('emits charLogin.request on Char.Login.Default (no auto-reply)', () => {
     const { sock, bus } = connected();
-    let methods: string[] | undefined;
-    bus.on('charLogin.request', (m) => { methods = m; });
+    let caps: unknown;
+    bus.on('charLogin.request', (c) => { caps = c; });
     sock.deliver(gmcpFrame('Char.Login.Default {"type":["password-credentials"]}'));
-    expect(methods).toEqual(['password-credentials']);
-    // The client no longer auto-answers — the UI drives the reply now.
+    expect(caps).toEqual({ version: 1, methods: ['password-credentials'] });
+    // The client never auto-answers — CharLoginController drives the reply.
     expect(sentText(sock)).not.toContain('Char.Login.Credentials');
   });
 
-  it('sendCharLoginCredentials sends account + password', () => {
+  it('sendCharLoginCredentials sends account + password with the common fields', () => {
     const { client, sock } = connected();
     client.sendCharLoginCredentials('myaccount', 'secret');
-    expect(sentText(sock)).toContain('Char.Login.Credentials {"account":"myaccount","password":"secret"}');
+    expect(sentText(sock)).toContain(
+      'Char.Login.Credentials {"account":"myaccount","password":"secret","version":1,"token_storage":false}');
   });
 
-  it('sendCharLoginCredentials with no account sends the empty fallback', () => {
+  it('sendCharLoginCredentials with no account sends the bare version 1 hand-off', () => {
     const { client, sock } = connected();
-    client.sendCharLoginCredentials();
+    client.sendCharLoginCredentials(undefined, undefined, true);
     expect(sentText(sock)).toContain('Char.Login.Credentials {}');
+  });
+
+  it('a version 2 hand-off carries version and token_storage but no account', () => {
+    const { client, sock } = connected();
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":2,"type":["oauth"]}'));
+    sock.sent.length = 0;
+    client.sendCharLoginCredentials(undefined, undefined, true);
+    expect(sentText(sock)).toContain('Char.Login.Credentials {"version":2,"token_storage":true}');
+  });
+
+  it('reads a string version and clamps a higher one to 2', () => {
+    const { sock, bus } = connected();
+    const versions: number[] = [];
+    bus.on('charLogin.request', (c) => { versions.push(c.version); });
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":"2","type":["oauth"]}'));
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":7,"type":["oauth"]}'));
+    sock.deliver(gmcpFrame('Char.Login.Default {"version":2.5,"type":["oauth"]}'));
+    expect(versions).toEqual([2, 2, 1]);
+  });
+
+  describe('game transport security', () => {
+    const oauthDefault = gmcpFrame('Char.Login.Default {"version":2,"type":["oauth"],'
+      + '"location":"https://id.example/.well-known/openid-configuration","client_id":"mudlet"}');
+
+    it('treats a wss:// direct connection as secure', () => {
+      const { client, sock, bus } = connected({ url: 'wss://game.invalid' });
+      let oauth: unknown;
+      bus.on('charLogin.request', (c) => { oauth = c.oauth; });
+      sock.deliver(oauthDefault);
+      expect(client.gameTransportSecure).toBe(true);
+      expect(oauth).toEqual({
+        location: 'https://id.example/.well-known/openid-configuration',
+        clientId: 'mudlet', scopes: [], nonceRequired: false,
+      });
+    });
+
+    it('ignores the OAuth fields over a cleartext connection', () => {
+      const { client, sock, bus } = connected();
+      let oauth: unknown = 'unset';
+      bus.on('charLogin.request', (c) => { oauth = c.oauth; });
+      sock.deliver(oauthDefault);
+      expect(client.gameTransportSecure).toBe(false);
+      expect(oauth).toBeUndefined();
+    });
+
+    // A wss:// proxy only secures the browser↔proxy hop; the game leg is
+    // encrypted once the proxy says it shook hands with the game.
+    it('treats a proxy dial as secure only after tls.established', () => {
+      const { client, sock } = connected({ url: 'wss://proxy.invalid/?host=g&port=6000&tls=1' });
+      expect(client.gameTransportSecure).toBe(false);
+      sock.onmessage?.({ data: JSON.stringify({ type: 'tls.established', protocol: 'TLSv1.3' }) } as never);
+      expect(client.gameTransportSecure).toBe(true);
+    });
+
+    it('never treats a proxy dial without tls=1 as secure', () => {
+      const { client } = connected({ url: 'wss://proxy.invalid/?host=g&port=23' });
+      expect(client.gameTransportSecure).toBe(false);
+    });
+
+    it('refuses to send a secure-only token or an auth code in the clear', () => {
+      const { client, sock } = connected();
+      expect(client.sendCharLoginReconnect('acct', 'tok', true)).toBe(false);
+      expect(client.sendCharLoginAuthCode({ code: 'c', codeVerifier: 'v', redirectUri: 'https://x/' })).toBe(false);
+      expect(sentText(sock)).toBe('');
+      // A token the server explicitly allowed in the clear does go.
+      expect(client.sendCharLoginReconnect('acct', 'tok', false)).toBe(true);
+      expect(sentText(sock)).toContain('Char.Login.Reconnect {"account":"acct","token":"tok","version":1,"token_storage":false}');
+    });
+
+    it('sends Char.Login.AuthCode over a secure connection', () => {
+      const { client, sock } = connected({ url: 'wss://game.invalid' });
+      sock.deliver(oauthDefault);
+      sock.sent.length = 0;
+      expect(client.sendCharLoginAuthCode(
+        { code: 'c0de', codeVerifier: 'v3r', redirectUri: 'https://web.mudlet.org/oauth-callback.html', nonce: 'n' },
+        true,
+      )).toBe(true);
+      expect(sentText(sock)).toContain('Char.Login.AuthCode {"code":"c0de","code_verifier":"v3r",'
+        + '"redirect_uri":"https://web.mudlet.org/oauth-callback.html","nonce":"n","version":2,"token_storage":true}');
+    });
+  });
+
+  it('emits charLogin.url for http(s) links only', () => {
+    const { sock, bus } = connected();
+    const links: unknown[] = [];
+    bus.on('charLogin.url', (l) => { links.push(l); });
+    sock.deliver(gmcpFrame('Char.Login.URL {"url":"https://game.example/login?x=1","provider":"Discord"}'));
+    sock.deliver(gmcpFrame('Char.Login.URL {"url":"javascript:alert(1)"}'));
+    expect(links).toEqual([{ url: 'https://game.example/login?x=1', provider: 'discord' }]
+      .concat([null as never]));
+  });
+
+  it('emits charLogin.token, defaulting secure_only to the transport', () => {
+    const { sock, bus } = connected();
+    const tokens: unknown[] = [];
+    bus.on('charLogin.token', (t) => { tokens.push(t); });
+    sock.deliver(gmcpFrame('Char.Login.Token {"account":"a","token":"t"}'));
+    sock.deliver(gmcpFrame('Char.Login.Token {"account":"a","token":"t","secure_only":"true"}'));
+    sock.deliver(gmcpFrame('Char.Login.Token {"account":"a"}'));
+    expect(tokens).toEqual([
+      { account: 'a', token: 't', secureOnly: false },
+      { account: 'a', token: 't', secureOnly: true },
+    ]);
   });
 
   it('emits charLogin.result on Char.Login.Result', () => {

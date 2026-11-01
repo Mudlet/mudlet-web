@@ -1,5 +1,6 @@
 // Assets the library build ships as plain files next to the bundle:
-// - vfs-sw.js: emitted into consumer builds by the Mudlet Web/vite plugin.
+// - vfs-sw.js, oauth-callback.html: emitted into consumer builds by the
+//   Mudlet Web/vite plugin.
 // - default-package archives: referenced from dist-lib/index.js as external
 //   relative `?url` imports (see vite.lib.config.ts), resolved and emitted by the
 //   consumer's Vite. Rollup rewrites those specifiers relative to the output
@@ -23,11 +24,12 @@ if (!assets.length) throw new Error(`no ?url default-package imports found in ${
 
 mkdirSync('dist-lib', { recursive: true });
 copyFileSync('public/vfs-sw.js', 'dist-lib/vfs-sw.js');
+copyFileSync('public/oauth-callback.html', 'dist-lib/oauth-callback.html');
 for (const rel of assets) {
     mkdirSync(`dist-lib/${dirname(rel)}`, { recursive: true });
     copyFileSync(`src/${rel}`, `dist-lib/${rel}`);
 }
-console.log(`copy-lib-assets: vfs-sw.js + ${assets.length} default-package asset(s)`);
+console.log(`copy-lib-assets: vfs-sw.js + oauth-callback.html + ${assets.length} default-package asset(s)`);
 
 // The bundled games' logos, externalised for the same reason (see isExternal in
 // vite.lib.config.ts) and copied whole: unlike the defaults directory this one is

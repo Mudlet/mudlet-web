@@ -58,6 +58,39 @@ export interface VaultRecord {
     /** AES-GCM under the master key over `Record<connectionId, password>`.
      *  `null` before the first secret is stored. */
     payload: Ciphertext | null;
+    /** Profiles holding a saved GMCP `Char.Login` sign-in token (see
+     *  {@link VaultSignIn}). Plaintext for the same reason as `entryIds`: a
+     *  locked vault has to be able to say a profile has something worth
+     *  unlocking for. Absent in a record written before sign-ins existed. */
+    signInIds?: string[];
+    /** AES-GCM under the master key over `Record<connectionId, VaultSignIn>`.
+     *  A field of its own rather than more keys in `payload`, so a build from
+     *  before sign-ins existed still reads its passwords unchanged, and carries
+     *  this across its own writes untouched (it spreads the record). */
+    signInPayload?: Ciphertext | null;
+}
+
+/**
+ * A saved GMCP `Char.Login` v2 sign-in: the reconnect token a game issued with
+ * `Char.Login.Token`, the account it names, and what is needed to replay it
+ * safely — or to resume the same provider once it stops working.
+ *
+ * Mudlet keeps the same entry in the OS keychain (`GMCPAuthenticator`'s
+ * metadata + token keys). The token is a bearer secret — it signs the account
+ * in without a password — so it lives encrypted here or not at all.
+ */
+export interface VaultSignIn {
+    /** The account the token was issued for; `Char.Login.Reconnect` names it. */
+    account: string;
+    /** Provider id (`discord`, `google`, …) learned from `Char.Login.URL`, so a
+     *  dead token can turn into a resume of that provider's sign-in. */
+    provider?: string;
+    /** The bearer token. Absent in a resume hint left behind by a dead one. */
+    token?: string;
+    /** The token may only be replayed over an encrypted game connection — the
+     *  issuing server's requirement, stored because the connection that set it
+     *  is long gone by replay time. Missing reads as true, never widening. */
+    secureOnly?: boolean;
 }
 
 function isCiphertext(v: unknown): v is Ciphertext {
@@ -82,6 +115,8 @@ export function parseVaultRecord(raw: string | null): VaultRecord | null {
             unlockers,
             entryIds: Array.isArray(v.entryIds) ? v.entryIds.filter(id => typeof id === 'string') : [],
             payload: isCiphertext(v.payload) ? v.payload : null,
+            signInIds: Array.isArray(v.signInIds) ? v.signInIds.filter(id => typeof id === 'string') : [],
+            signInPayload: isCiphertext(v.signInPayload) ? v.signInPayload : null,
         };
     } catch {
         return null;
