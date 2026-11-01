@@ -151,7 +151,7 @@ describe('buildAppMenus', () => {
         ],
         showTimestamps: false,
         shortcutFor: id => (id === 'scriptEditor' ? 'Alt+E' : undefined),
-        onOpenScripts: () => {}, onOpenMap: () => {}, onOpenFiles: () => {}, onOpenLogs: () => {},
+        onOpenScripts: () => {}, onOpenMap: () => {}, onOpenFiles: () => {}, onOpenNotepad: () => {}, onOpenLogs: () => {},
         onToggleReplayRecording: () => {}, onReplayStop: () => {}, onOpenSettings: () => {},
         onToggleTimestamps: () => {}, onToggleFullscreen: () => {}, onToggleToolbar: () => {},
         onOpenDocs: () => {},
@@ -196,8 +196,8 @@ describe('buildAppMenus', () => {
     });
 
     it('never draws a rule with nothing on one side of it', () => {
-        // Hiding the four Toolbox tools leaves the separator first in the list.
-        const tools = new Set(['scripts', 'map', 'files', 'logs']);
+        // Hiding the five Toolbox tools leaves the separator first in the list.
+        const tools = new Set(['scripts', 'map', 'notepad', 'files', 'logs']);
         const menus = buildAppMenus(context({ show: id => !tools.has(id) }));
         for (const m of menus) {
             expect(m.items[0].kind).not.toBe('separator');

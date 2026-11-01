@@ -29,7 +29,7 @@ import { getBrand, type StockToolbarButton } from '../../branding';
 /** Everything the client can be asked to do from the keyboard. */
 export type AppCommandId =
     | 'connect' | 'disconnect' | 'reconnect' | 'closeProfile'
-    | 'scriptEditor' | 'map' | 'files' | 'logs' | 'toggleReplay'
+    | 'scriptEditor' | 'map' | 'notepad' | 'files' | 'logs' | 'toggleReplay'
     | 'preferences' | 'toggleTimestamps' | 'mute' | 'toggleLogging'
     | 'fullscreen' | 'toggleButtonBar'
     | 'inputLine' | 'docs' | 'help' | 'about';
@@ -64,6 +64,7 @@ export const APP_SHORTCUTS: readonly AppShortcutDef[] = [
 
     { id: 'scriptEditor', label: 'Script editor', group: 'Toolbox', stock: 'scripts', defaultKey: 'Alt+E', defaultKeyMac: 'Ctrl+E' },
     { id: 'map', label: 'Map', group: 'Toolbox', stock: 'map', defaultKey: 'Alt+M', defaultKeyMac: 'Ctrl+M' },
+    { id: 'notepad', label: 'Notepad', group: 'Toolbox', stock: 'notepad', defaultKey: 'Alt+N', defaultKeyMac: 'Ctrl+N' },
     { id: 'files', label: 'Files', group: 'Toolbox', stock: 'files', defaultKey: '', defaultKeyMac: '' },
     { id: 'logs', label: 'Logs', group: 'Toolbox', stock: 'logs', defaultKey: '', defaultKeyMac: '' },
     { id: 'toggleReplay', label: 'Record replay', group: 'Toolbox', stock: 'record', defaultKey: 'Ctrl+Alt+R', defaultKeyMac: 'Ctrl+Alt+R' },

@@ -49,6 +49,7 @@ export interface AppMenuContext {
     onOpenScripts: () => void;
     onOpenMap: () => void;
     onOpenFiles: () => void;
+    onOpenNotepad: () => void;
     onOpenLogs: () => void;
     onToggleReplayRecording: () => void;
     onReplayStop: () => void;
@@ -104,6 +105,7 @@ export function buildAppMenus(ctx: AppMenuContext): TopMenu[] {
         menu('toolbox', 'Toolbox', [
             ctx.show('scripts') ? item('scriptEditor', 'Script editor', ctx.onOpenScripts) : null,
             ctx.show('map') ? item('map', 'Map', ctx.onOpenMap) : null,
+            ctx.show('notepad') ? item('notepad', 'Notepad', ctx.onOpenNotepad) : null,
             ctx.show('files') ? item('files', 'Files', ctx.onOpenFiles) : null,
             ctx.show('logs') ? item('logs', 'Logs', ctx.onOpenLogs) : null,
             sep('toolbox-1'),

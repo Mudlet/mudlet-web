@@ -98,7 +98,7 @@ export const STOCK_THEMES: { value: string; label: string }[] = [
  *  Every id also gates the matching menu-bar entry, so a brand that removed a
  *  feature does not find it again in a menu. */
 export type StockToolbarButton =
-    | 'scripts' | 'files' | 'map' | 'logs' | 'docs' | 'help' | 'reportBug' | 'settings'
+    | 'scripts' | 'files' | 'notepad' | 'map' | 'logs' | 'docs' | 'help' | 'reportBug' | 'settings'
     | 'record' | 'mute' | 'connection' | 'close';
 
 /** What a brand toolbar button can do when clicked. */
