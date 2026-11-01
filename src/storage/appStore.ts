@@ -210,12 +210,14 @@ type PersistedAppSchema = Pick<AppSchema, 'connections' | 'client'>;
  * profiles, so losing it retroactively turns a new profile into a legacy one;
  * `mudletLinked`/`mudletImported` mark a Mudlet-originated profile as owning
  * its own package set, so losing those silently unlinks a linked folder.
+ * `lastConnectedAt` is stamped by the session rather than the form, and losing
+ * it on every edit would drop the profile to the back of the launcher.
  *
  * An explicit value in `data` still wins — same precedence `addConnection`
  * gives `data.createdAt`, so a profile import/copy can set them deliberately.
  * Unlinking goes through `patchConnection` (see App.tsx), which is unaffected.
  */
-const PROVENANCE_FIELDS = ['createdAt', 'mudletLinked', 'mudletImported'] as const;
+const PROVENANCE_FIELDS = ['createdAt', 'mudletLinked', 'mudletImported', 'lastConnectedAt'] as const;
 
 function carriedProvenance(prev: MudConnection, data: Omit<MudConnection, 'id'>): Partial<MudConnection> {
     const carried: Partial<MudConnection> = {};

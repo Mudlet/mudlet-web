@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from 'react';
-import { useAppStore, useEditorSettings, selectProfileField, MAPPER_DEFAULTS, symbolFontSource, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, SEARCH_ENGINES, resolveSearchEngine, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type EditorSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
+import { useAppStore, useEditorSettings, selectProfileField, PROFILE_DEFAULTS, MAPPER_DEFAULTS, symbolFontSource, PLAYER_MARKER_DEFAULTS, MAP_INFO_BG_DEFAULT, PROTOCOL_DEFAULTS, WS_SUBPROTOCOL_CHOICES, SEARCH_ENGINES, resolveSearchEngine, type Theme, type OutputFontSource, type ProfileSettings, type MapperSettings, type EditorSettings, type PlayerMarkerSettings, type MapInfoBgColor, type ProtocolSettings } from '../storage';
 import { PlayerMarkerPreview } from './PlayerMarkerPreview';
 import { Input, FontPicker, Toggle, HelpTip, Button, useConfirm } from './components';
 import { getThemeChoices, isBrandedMode } from '../branding';
@@ -58,7 +58,6 @@ const DEFAULT_PROMPT_TIMEOUT_MS = 300;
 // placeholder show what is actually drawn when the profile sets neither.
 const DEFAULT_GRID_COLOR = '#c8c8c8';
 const DEFAULT_GRID_LINE_WIDTH = 0.02;
-const DEFAULT_FONT_SIZE = 13;
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 48;
 const MAX_BORDER_PX = 1000;
@@ -1101,7 +1100,7 @@ export function SettingsModal({ onClose, connectionId, vfs = null, tlsStatus = n
                                 max={MAX_FONT_SIZE}
                                 step={1}
                                 value={fontSizeText}
-                                placeholder={String(DEFAULT_FONT_SIZE)}
+                                placeholder={String(PROFILE_DEFAULTS.fontSize)}
                                 onChange={e => setFontSizeText(e.target.value)}
                                 onBlur={handleFontSizeBlur}
                             />

@@ -6,6 +6,7 @@ import { normaliseShortcut, type AddonCommand } from './ui/commands/addonCommand
 import { boundShortcuts, shortcutPlatform } from './ui/commands/appShortcuts';
 import { useMudSession } from './hooks/useMudSession';
 import { useAutoReconnect } from './hooks/useAutoReconnect';
+import { useRecordLastPlayed } from './hooks/useRecordLastPlayed';
 import { useEngines } from './hooks/useEngines';
 import { claimedByAppShortcut } from './hooks/useKeyboardShortcuts';
 import { Toolbar } from './ui/Toolbar';
@@ -1183,6 +1184,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         enabled: liveConnection.reconnectOnDrop ?? false,
         redial: () => redialFromStore(),
     });
+    useRecordLastPlayed(session, connection.id);
 
     /** Redial using the connection record as it stands in the store right now,
      *  rather than the `connection` prop captured at render — the TLS handlers

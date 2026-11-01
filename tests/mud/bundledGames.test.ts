@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { BUNDLED_GAMES, findBundledGame, gameOwnUi } from '../../src/mud/games/bundledGames';
-import { connectionFromGame } from '../../src/ui/BundledGameGrid';
+import { connectionFromGame } from '../../src/mud/games/gameLinks';
 
 /**
  * The catalogue is generated from Mudlet's TGameDetails.h by

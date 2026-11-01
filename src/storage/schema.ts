@@ -76,6 +76,12 @@ export interface MudConnection {
      *  profiles created after it shipped, and never lands on top of a layout
      *  someone already built. See `stockDefaults`. */
     createdAt?: string;
+    /** When this profile last reached its game (ms since epoch), stamped on
+     *  `client.established` — a socket that opened but never got through to the
+     *  game, or a profile opened offline, doesn't count. Orders the launcher
+     *  (most recent first, the newest in the "Continue playing" banner). Absent
+     *  means never played since the field shipped. */
+    lastConnectedAt?: number;
     /** Connect to the game over TLS — Mudlet's `mSslTsl` / the connection
      *  dialog's "secure connection" checkbox. Meaningful in `mud` (proxy) mode
      *  only: the browser cannot wrap a raw socket itself, so the proxy performs
@@ -768,7 +774,8 @@ export function resolveSearchEngine(name: string | undefined): string {
  *  profile hasn't set the field. */
 export const PROFILE_DEFAULTS: ProfileSettings = {
     showTimestamps: false,
-    fontSize: 11,
+    // Mudlet's Host::mDisplayFont point size.
+    fontSize: 14,
     outputBackground: '',
     autoClearInput: false,
     commandSeparator: ';;',
