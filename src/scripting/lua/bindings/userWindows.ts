@@ -125,6 +125,13 @@ export function installUserWindowBindings({
         // in the middle of a constructor that measured the main window before
         // the call and resolves its percentages against it straight after.
         if (api.windows.isDocked(window)) api.windows.settleLayout();
+        // A handler this call runs — as the window is made, or as the layout
+        // loads — can delete the window, or put another in its place under the
+        // same name. Either way the one this call opened is gone, and desktop
+        // (TMainConsole::placeUserWindow) stops there and says so.
+        const opened = api.windows.record(window);
+        const gone = () => !opened || api.windows.record(window) !== opened;
+        const deleted = `userwindow '${window}' was deleted while it was being opened`;
         if (!existed) {
             // Host::openWindow gives a new user window a font of its own —
             // TMainConsole::createUserWindow's setFontSize(10), whatever size
@@ -134,6 +141,14 @@ export function installUserWindowBindings({
             api.windows.setFontSize(window, USER_WINDOW_DEFAULT_FONT_SIZE);
             api.windows.announceCreatedSize(window);
             api.raiseFontChangeEvent(window);
+            if (gone()) return deleted;
+            // A new dock asked to restore the layout loads the whole saved
+            // layout, as mudlet::loadWindowLayout() does from placeUserWindow —
+            // once per window, as its hasLayoutAlready flag has it.
+            if (restoreLayout) {
+                api.loadWindowLayout();
+                if (gone()) return deleted;
+            }
         }
         return true;
     });

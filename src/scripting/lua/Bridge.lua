@@ -2630,7 +2630,11 @@ do
             return nil, 'docking option "' .. area:lower() .. '" not available. available docking options are'
                 .. ' "t" top, "b" bottom, "r" right, "l" left and "f" floating'
         end
-        return _rawOpenUserWindow(...)
+        -- A string is Host::openWindow's refusal for a window a handler the
+        -- call ran deleted, or put another in the place of, as it opened.
+        local r = _rawOpenUserWindow(...)
+        if type(r) == 'string' then return nil, r end
+        return r
     end
 
     -- Both take the widget name as argument #1 and have nothing sensible to do
@@ -7749,6 +7753,12 @@ do
                 return "invalid port number " .. n .. " given, it must be in range 1 to 65535"
             end
         end,
+        editorFontSize = function(n)
+            n = int(n)
+            if not (n >= 1 and n <= 1000) then
+                return "editorFontSize " .. n .. " is out of range, it must be between 1 and 1000"
+            end
+        end,
         commandLineHistorySaveSize = function(n)
             n = int(n)
             if not (n >= 0 and n <= 1000000) then
@@ -7838,11 +7848,11 @@ do
             end
             value = string.format("%d,%d,%d,%d", channels[1], channels[2], channels[3], a)
         end
-        if key == "mapSymbolFont" and not tostring(value):find("%S") then
-            return nil, "mapSymbolFont must not be empty"
+        if (key == "mapSymbolFont" or key == "editorFont") and not tostring(value):find("%S") then
+            return nil, key .. " must not be empty"
         end
         local ok = _setConfig(key, value)
-        if ok == false and key == "mapSymbolFont" then
+        if ok == false and (key == "mapSymbolFont" or key == "editorFont") then
             return nil, "font '" .. tostring(value) .. "' is not available"
         end
         if ok == false then
@@ -9729,9 +9739,19 @@ do
     function setMainWindowSize(width, height)
         width = __mudlet_check_number(width, "setMainWindowSize", 1, "width")
         height = __mudlet_check_number(height, "setMainWindowSize", 2, "height")
-        -- Deliberately swallowed: Mudlet's C++ setMainWindowSize returns no
-        -- values at all, and UI_spec pins that with select("#", ...).
-        _rawSetMainWindowSize(width, height)
+        -- TLuaInterpreter::setMainWindowSize: true, or the refusal when the
+        -- profile has no main window to size.
+        if _rawSetMainWindowSize(width, height) then return true end
+        return nil, "the profile has no main window"
+    end
+
+    -- saveWindowLayout answers true/false, or the refusal it gives while a
+    -- load is running (a handler the load raised asked for it).
+    local _rawSaveWindowLayout = saveWindowLayout
+    function saveWindowLayout()
+        local r = _rawSaveWindowLayout()
+        if type(r) == 'string' then return nil, r end
+        return r
     end
 end
 
