@@ -217,6 +217,29 @@ describe('default packages', () => {
                     .toEqual(['brand-mapper']);
             }
         });
+
+        it('hands a brand function this game\'s stock defaults and installs what it returns', () => {
+            const dropUi = (stock: { name: string; filename: string; url: string }[]) =>
+                stock.filter(p => p.name !== 'mudlet-base-ui');
+            expect(resolveDefaultPackages(dropUi, 'elephant.org').map(d => d.name))
+                .toEqual(['run-lua-code', 'echo', 'enable-accessibility', 'deleteOldProfiles', 'generic_mapper', 'mpkg', 'gui-drop']);
+            // The stock list it sees is still chosen per game.
+            expect(resolveDefaultPackages(dropUi, 'stickmud.com').map(d => d.name)).toContain('mudlet-mapper');
+            expect(resolveDefaultPackages(stock => [...stock, brandPkg], 'elephant.org').map(d => d.name))
+                .toContain('brand-mapper');
+        });
+
+        it('hands a brand function a copy, so editing it leaves the stock defaults alone', () => {
+            const before = stockDefaults('elephant.org').map(p => ({ ...p }));
+            const mutate = (stock: { name: string; filename: string; url: string; removable?: boolean }[]) => {
+                stock.forEach(p => { p.removable = false; });
+                stock.push(brandPkg);
+                return stock;
+            };
+            resolveDefaultPackages(mutate, 'elephant.org');
+            resolveDefaultPackages(mutate, 'elephant.org');
+            expect(stockDefaults('elephant.org')).toEqual(before);
+        });
     });
 
     it('exposes every bundled default regardless of host', () => {

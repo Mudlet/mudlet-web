@@ -7,7 +7,7 @@ import type { RestoredNode } from '../../../storage/appStore';
 import { captureDeletion, describeDeletion, describeInsertion, pushBounded, type EditorItemCommand } from './editorUndo';
 import { cloneSubtree, collectSubtree, type EditorClipboard } from './editorClipboard';
 import { aliasLoopWarning, aliasSubstitutionLoops } from './aliasLoop';
-import { isPackageRemovable } from '../../../branding';
+import { isPackageRemovable } from '../../../import/defaultPackages';
 import { DEFAULT_ANSI_PALETTE } from '../../../mud/text/colors';
 import { colorPatternText, parseColorPattern } from '../../../mud/triggers/legacyColorPatterns';
 import type { AliasNode, ButtonLocation, ButtonNode, ButtonOrientation, ButtonRotation, KeyNode, PackageManifest, ScriptNode, TimerNode, TriggerNode, TriggerPattern, TriggerPatternType } from '../../../storage/schema';

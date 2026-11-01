@@ -13,7 +13,7 @@ import type {ButtonNode, ProfileSettings, ScriptNode, TimerNode} from '../storag
 import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled, isTempParentRef, tempParentRef, tempRefId, tempRootOf} from '../storage/schema';
 import {MAIN_CONSOLE_BUFFER_SIZE} from '../mud/text/Console';
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
-import {isPackageRemovable} from '../branding';
+import {isPackageRemovable} from '../import/defaultPackages';
 import {saveProfileData} from '../storage/profileVfsData';
 import type {BufferSegment, FormatColor, FormatStateSnapshot} from '../mud/text/FormatState';
 import {AnsiAwareBuffer, computeTrailingState} from '../mud/text/FormatState';
