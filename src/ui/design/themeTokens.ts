@@ -46,6 +46,10 @@ export interface ThemeTokens {
      *  the palette's Base on a dark page, where the grey page would read as a
      *  dialog; the page itself on a light one. */
     deep: Rgb;
+    /** A window's title bar: the platform draws desktop's (#262626 over a
+     *  #353535 page on macOS dark), so a web window's header takes that step
+     *  below the page and the toolbar under it needs no rule between. */
+    titleBar: Rgb;
     /** The code pane, from the edbee theme desktop pairs with the appearance
      *  (src/edbee_defaults/Mudlet Dark.tmTheme / Mudlet Light.tmTheme). */
     code: { background: Rgb; text: Rgb; lineHighlight: Rgb; selection: Rgb; invisibles: Rgb };
@@ -95,7 +99,9 @@ const BUTTON_FACE_LIFT_ON_LIGHT = 0.04;
 const DISABLED_FIELD_TOWARDS_PAGE = 0.6;
 const DISABLED_BORDER_WEIGHT = 0.10;
 const CHOICE_OUTLINE = 0.55;
-
+// Measured off desktop's window: #353535 page under a #262626 title bar.
+const TITLE_BAR_DROP_ON_DARK = 0.28;
+const TITLE_BAR_DROP_ON_LIGHT = 0.05;
 export const STATE_HUE_OK = 0.58;
 export const STATE_HUE_WARNING = 0.09;
 export const STATE_HUE_ERROR = 0.01;
@@ -277,6 +283,7 @@ export function themeTokens(palette: Palette): ThemeTokens {
         accentWashPage: washes[0],
         accentWashPane: washes[1],
         deep: darkPage ? palette.base : page,
+        titleBar: blend(page, BLACK, darkPage ? TITLE_BAR_DROP_ON_DARK : TITLE_BAR_DROP_ON_LIGHT),
         code: darkPage ? MUDLET_DARK_CODE : MUDLET_LIGHT_CODE,
         marker,
         buttonFace: blend(card, text, darkPage ? BUTTON_FACE_LIFT_ON_DARK : BUTTON_FACE_LIFT_ON_LIGHT),
@@ -317,7 +324,7 @@ export const DERIVED_PROPERTIES = [
     '--bg', '--bg-surface', '--bg-panel', '--bg-input', '--bg-glass', '--text',
     '--text-dim', '--text-muted', '--text-disabled', '--text-disabled-bar',
     '--border', '--separator', '--accent-text', '--accent-soft', '--accent-wash',
-    '--accent-wash-pane', '--bg-deep', '--code-bg', '--code-text', '--code-line',
+    '--accent-wash-pane', '--bg-deep', '--bg-titlebar', '--code-bg', '--code-text', '--code-line',
     '--code-selection', '--code-invisibles', '--accent-glow', '--hover-bg', '--hover-bg-strong',
     '--marker', '--button-face', '--field-disabled', '--border-disabled',
     '--choice-outline', '--mark-ink', '--mark-tick', '--mark-dash', '--mark-dot',
@@ -347,6 +354,7 @@ export function tokenProperties(t: ThemeTokens): Record<(typeof DERIVED_PROPERTI
         '--accent-wash': toHex(t.accentWashPage),
         '--accent-wash-pane': toHex(t.accentWashPane),
         '--bg-deep': toHex(t.deep),
+        '--bg-titlebar': toHex(t.titleBar),
         '--code-bg': toHex(t.code.background),
         '--code-text': toHex(t.code.text),
         '--code-line': toHex(t.code.lineHighlight),

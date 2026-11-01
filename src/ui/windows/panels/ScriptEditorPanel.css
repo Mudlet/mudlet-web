@@ -23,23 +23,50 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 4px 6px;
+    min-height: 40px;
+    padding: 4px 8px 4px 20px;
     background: var(--bg);
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
     min-width: 0;
+    position: relative;
+}
+
+/* The bar's grip (gripGlyphFile): two columns of three dots at its leading
+   edge, in the chrome's muted ink. Drawn, not an image, so it takes the ink. */
+.script-editor__toolbar::before {
+    content: '';
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    width: 5px;
+    height: 8px;
+    transform: translateY(-50%);
+    background:
+        radial-gradient(circle, var(--text-muted) 0 1px, transparent 1.2px) 0 0 / 3px 3px;
+    opacity: 0.8;
 }
 
 .script-editor__actions,
 .script-editor__toolbar-end {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 4px;
     min-width: 0;
+}
+
+/* Desktop's toolbar words and glyphs are a size up from a dialog's buttons. */
+.script-editor__toolbar .btn.script-editor__tool {
+    min-height: 30px;
+    padding: 3px 9px;
+    gap: 6px;
+    font-size: 13px;
 }
 
 .script-editor__tool .toolbar-icon {
     flex-shrink: 0;
+    width: 18px;
+    height: 18px;
 }
 
 /* Below this the words go and the glyphs stay; each button keeps its name in
@@ -627,10 +654,82 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    margin: 0 12px 10px;
-    border-radius: var(--radius-panel);
+    /* Rounded at the top, and running down to the status bar's seam. */
+    margin: 0 12px;
+    border-radius: var(--radius-panel) var(--radius-panel) 0 0;
     overflow: hidden;
     background: var(--code-bg);
+}
+
+/* ── Event chips ─────────────────────────────────────────────
+   Desktop's ChipRow: the names as chips, and a dashed "+ Add event" that
+   becomes a field. */
+.event-chips {
+    flex: 1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+}
+
+.event-chips__chip {
+    font-family: var(--font-mono), monospace;
+    font-size: 12px;
+    line-height: 22px;
+    color: var(--text);
+    background: var(--bg-input);
+    padding: 0 4px 0 8px;
+}
+
+.event-chips__remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-chip);
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.event-chips__remove:hover {
+    color: var(--accent-text);
+    background: var(--hover-bg);
+}
+
+.event-chips__add,
+.event-chips__field {
+    height: 30px;
+    box-sizing: border-box;
+    border-radius: var(--radius-input);
+    font-family: var(--font-mono), monospace;
+    font-size: 12px;
+}
+
+.event-chips__add {
+    padding: 0 12px;
+    border: 1px dashed var(--choice-outline);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.event-chips__add:hover {
+    border-color: var(--accent);
+    color: var(--accent-text);
+}
+
+.event-chips__field {
+    width: 180px;
+    padding: 0 8px;
+    border: 1px solid var(--accent);
+    background: var(--bg-input);
+    color: var(--text);
+    outline: none;
 }
 
 .script-editor__code-heading {
@@ -927,7 +1026,7 @@
     height: 84px;
     flex-shrink: 0;
     overflow-y: auto;
-    margin: 0 12px 10px;
+    margin: 8px 12px 10px;
     border: 1px solid var(--border);
     border-radius: var(--radius-panel);
     background: var(--bg-input);

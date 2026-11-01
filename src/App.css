@@ -172,6 +172,7 @@
     --accent-wash:  #3b5953;
     --accent-wash-pane: #3d5a54;
     --bg-deep:      #191919;
+    --bg-titlebar:  #262626;
     --code-bg:      #1a1a1d;
     --code-text:    #dededd;
     --code-line:    #232329;
@@ -806,8 +807,9 @@ html, body, #root {
     align-items: center;
     justify-content: space-between;
     padding: 8px 12px 8px 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
+    /* The window's title bar: a step under the page, as the platform draws
+       desktop's, with no rule — whatever sits under it brings its own seam. */
+    background: var(--bg-titlebar);
     cursor: grab;
     flex-shrink: 0;
     user-select: none;
@@ -819,7 +821,7 @@ html, body, #root {
     font-family: var(--font-ui), sans-serif;
     font-size: var(--type-body);
     font-weight: 700;
-    color: var(--text);
+    color: var(--text-muted);
 }
 
 .resizable-modal__header-actions {
@@ -4162,8 +4164,7 @@ html, body, #root {
     align-items: center;
     justify-content: space-between;
     padding: 10px 12px 10px 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
+    background: var(--bg-titlebar);
     flex-shrink: 0;
 }
 

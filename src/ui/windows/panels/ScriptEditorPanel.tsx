@@ -17,6 +17,7 @@ import type { MudSession, ScriptLogSource, ScriptLogSourceKind } from '../../../
 import type { ProfileVFS } from '../../../scripting/vfs/ProfileVFS';
 import type { ScriptingEngine } from '../../../scripting/ScriptingEngine';
 import { LuaEditor } from './LuaEditor';
+import { EventChips } from './EventChips';
 import { installModuleFromVfsPath, installPackageFromBytes, preparePackageInstallFromFile, uninstallPackageFiles } from '../../../import/packageInstaller';
 import { PackageRepositoryModal } from './PackageRepositoryModal';
 import { PackageExportModal, type ExportCategory } from './PackageExportModal';
@@ -2402,7 +2403,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                     isOver && dragOver!.intent === 'into'   ? 'script-editor__item--drop-into'   : '',
                                 ].filter(Boolean).join(' ')}
                                 onClick={() => setSelectedId(item.id)}
-                                style={{ paddingLeft: `${2 + depth * 18}px` }}
+                                style={{ paddingLeft: `${2 + depth * 20}px` }}
                                 onDragStart={e => handleDragStart(e, item.id)}
                                 onDragOver={e => handleDragOver(e, item)}
                                 onDrop={e => handleDrop(e, item)}
@@ -2447,9 +2448,6 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                         comes from the engine that hands them out. */}
                                     {showItemIds && (
                                         <span className="script-editor__item-id">#{itemNumericId(item.id)}</span>
-                                    )}
-                                    {hasChildren && (
-                                        <span className="script-editor__item-count">{childCount}</span>
                                     )}
                                     {'key' in item && (item as KeyNode).key && (
                                         <span className="script-editor__item-key">
@@ -3066,13 +3064,10 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                         )}
                         {category === 'scripts' && (
                             <div className="script-editor__meta-row script-editor__meta-row--top">
-                                <span className="script-editor__row-label" title="One per line — each fires the global function named after this script">Events</span>
-                                <textarea
-                                    className="script-editor__patterns"
+                                <span className="script-editor__row-label" title="Each fires the global function named after this script">Events</span>
+                                <EventChips
                                     value={editEventHandlers}
-                                    onChange={e => { setEditEventHandlers(e.target.value); setDirty(true); }}
-                                    placeholder="sysConnectionEvent"
-                                    spellCheck={false}
+                                    onChange={next => { setEditEventHandlers(next); setDirty(true); }}
                                 />
                             </div>
                         )}
@@ -3307,17 +3302,19 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                         />
                     </div>
 
-                    <div className="script-editor__log">
-                        {visibleLogs.length === 0
-                            ? <span className="script-editor__log-empty">No output</span>
-                            : visibleLogs.map((entry, i) => (
+                    {/* What running the code printed. Desktop's editor has no
+                        such pane, so it only takes room once there is
+                        something in it. */}
+                    {visibleLogs.length > 0 && (
+                        <div className="script-editor__log">
+                            {visibleLogs.map((entry, i) => (
                                 <div key={i} className={`script-editor__log-entry script-editor__log-entry--${entry.level}`}>
                                     {entry.text}
                                 </div>
-                            ))
-                        }
-                        <div ref={logEndRef} />
-                    </div>
+                            ))}
+                            <div ref={logEndRef} />
+                        </div>
+                    )}
 
                 </div>
             ) : (
