@@ -171,6 +171,12 @@
     --accent-soft:  rgba(78, 201, 176, 0.14);
     --accent-wash:  #3b5953;
     --accent-wash-pane: #3d5a54;
+    --bg-deep:      #191919;
+    --code-bg:      #1a1a1d;
+    --code-text:    #dededd;
+    --code-line:    #232329;
+    --code-selection: #33333a;
+    --code-invisibles: #3a3a42;
     --marker:       #a58209;
     --button-face:  #4e4e4e;
     --field-disabled: #2d2d2d;

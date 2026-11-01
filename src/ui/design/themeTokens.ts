@@ -42,6 +42,13 @@ export interface ThemeTokens {
     /** The deepest accent wash, solid, over the page (a chosen row). */
     accentWashPage: Rgb;
     accentWashPane: Rgb;
+    /** A full-window content surface the page's chrome frames (the launcher):
+     *  the palette's Base on a dark page, where the grey page would read as a
+     *  dialog; the page itself on a light one. */
+    deep: Rgb;
+    /** The code pane, from the edbee theme desktop pairs with the appearance
+     *  (src/edbee_defaults/Mudlet Dark.tmTheme / Mudlet Light.tmTheme). */
+    code: { background: Rgb; text: Rgb; lineHighlight: Rgb; selection: Rgb; invisibles: Rgb };
     marker: Rgb;
     /** A push button's face, a step off the card (`buttonFaceColour`). */
     buttonFace: Rgb;
@@ -104,6 +111,22 @@ export const QUIET_MINIMUM_RATIO = 3.0;
 export const DISABLED_BAR_MINIMUM_RATIO = 2.0;
 
 const WHITE: Rgb = { r: 255, g: 255, b: 255 };
+
+// The two edbee themes desktop ships for the code pane and switches with the
+// appearance (EditorThemePairTest). Their colours are the theme's, not mixed
+// from the palette — the same exemption desktop's `theme-fixed` marks. Light's
+// file uses #bbbbbb for both the current line and the selection, which on
+// white makes the line look selected; the line highlight is softened here.
+const MUDLET_DARK_CODE = {
+    background: { r: 0x1a, g: 0x1a, b: 0x1d }, text: { r: 0xde, g: 0xde, b: 0xdd },
+    lineHighlight: { r: 0x23, g: 0x23, b: 0x29 }, selection: { r: 0x33, g: 0x33, b: 0x3a },
+    invisibles: { r: 0x3a, g: 0x3a, b: 0x42 },
+};
+const MUDLET_LIGHT_CODE = {
+    background: { r: 255, g: 255, b: 255 }, text: { r: 0, g: 0, b: 0 },
+    lineHighlight: { r: 0xee, g: 0xee, b: 0xee }, selection: { r: 0xbb, g: 0xbb, b: 0xbb },
+    invisibles: { r: 0xbb, g: 0xbb, b: 0xbb },
+};
 const BLACK: Rgb = { r: 0, g: 0, b: 0 };
 
 // ── Colour helpers ────────────────────────────────────────────────────────
@@ -253,6 +276,8 @@ export function themeTokens(palette: Palette): ThemeTokens {
         hoverSoft: rgba(text, HOVER_WASH),
         accentWashPage: washes[0],
         accentWashPane: washes[1],
+        deep: darkPage ? palette.base : page,
+        code: darkPage ? MUDLET_DARK_CODE : MUDLET_LIGHT_CODE,
         marker,
         buttonFace: blend(card, text, darkPage ? BUTTON_FACE_LIFT_ON_DARK : BUTTON_FACE_LIFT_ON_LIGHT),
         disabledField: blend(field, page, DISABLED_FIELD_TOWARDS_PAGE),
@@ -292,7 +317,8 @@ export const DERIVED_PROPERTIES = [
     '--bg', '--bg-surface', '--bg-panel', '--bg-input', '--bg-glass', '--text',
     '--text-dim', '--text-muted', '--text-disabled', '--text-disabled-bar',
     '--border', '--separator', '--accent-text', '--accent-soft', '--accent-wash',
-    '--accent-wash-pane', '--accent-glow', '--hover-bg', '--hover-bg-strong',
+    '--accent-wash-pane', '--bg-deep', '--code-bg', '--code-text', '--code-line',
+    '--code-selection', '--code-invisibles', '--accent-glow', '--hover-bg', '--hover-bg-strong',
     '--marker', '--button-face', '--field-disabled', '--border-disabled',
     '--choice-outline', '--mark-ink', '--mark-tick', '--mark-dash', '--mark-dot',
     '--mark-tick-quiet', '--mark-dash-quiet', '--mark-dot-quiet', '--chevron-down',
@@ -320,6 +346,12 @@ export function tokenProperties(t: ThemeTokens): Record<(typeof DERIVED_PROPERTI
         '--accent-soft': t.accentSoft,
         '--accent-wash': toHex(t.accentWashPage),
         '--accent-wash-pane': toHex(t.accentWashPane),
+        '--bg-deep': toHex(t.deep),
+        '--code-bg': toHex(t.code.background),
+        '--code-text': toHex(t.code.text),
+        '--code-line': toHex(t.code.lineHighlight),
+        '--code-selection': toHex(t.code.selection),
+        '--code-invisibles': toHex(t.code.invisibles),
         '--accent-glow': t.accentSoft,
         '--hover-bg': t.hoverSoft,
         '--hover-bg-strong': rgba(t.text, HOVER_WASH * 2),

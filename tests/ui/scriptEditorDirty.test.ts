@@ -51,10 +51,9 @@ async function selectItem(name: string) {
     await act(async () => { item.click(); });
 }
 
-/** The label on the primary action button — the editor's dirty indicator. */
+/** The label on the save action — the editor's dirty indicator. */
 function saveLabel(): string {
-    const btns = [...container.querySelectorAll('.script-editor__actions button')] as HTMLElement[];
-    return btns[btns.length - 1].textContent ?? '';
+    return container.querySelector('.script-editor__save')?.textContent ?? '';
 }
 
 describe('script editor dirty indicator', () => {

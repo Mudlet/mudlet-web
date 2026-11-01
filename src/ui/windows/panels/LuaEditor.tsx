@@ -18,7 +18,7 @@ import { optionsCompartment, optionExtensions, type EditorOptions } from '../../
  *  the update listener can tell it apart from an edit the user made. */
 const valueSync = Annotation.define<true>();
 
-function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: string, opts: EditorOptions) {
+function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, onCursorFn: (view: EditorView) => void, theme: string, opts: EditorOptions) {
     return [
         history(),
         // Desktop wires Ctrl+F / F3 / Shift+F3 straight to the source editor
@@ -49,6 +49,7 @@ function buildExtensions(onChangeFn: () => void, onSaveFn: () => void, theme: st
             ...historyKeymap,
         ]),
         EditorView.updateListener.of(update => {
+            if (update.selectionSet || update.docChanged) onCursorFn(update.view);
             // Only a real edit counts as a change. Replacing the document to
             // adopt a new `value` prop is the parent telling us what the doc
             // already is — reporting that back as an edit is how selecting an
@@ -72,9 +73,12 @@ interface Props {
     /** Jump request from the parent (e.g. error log click). Bump `revision` to
      *  re-trigger a jump even when `line` is unchanged. */
     gotoLine?: { line: number; revision: number } | null;
+    /** The caret's 1-based line and column, for the code heading's readout
+     *  (desktop's "Line 1, Column 1" over the code pane). */
+    onCursor?: (line: number, column: number) => void;
 }
 
-export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
+export function LuaEditor({ value, onChange, onSave, gotoLine, onCursor }: Props) {
     const containerRef = useRef<HTMLDivElement>(null);
     const editorHostRef = useRef<HTMLDivElement>(null);
     const viewRef      = useRef<EditorView | null>(null);
@@ -82,6 +86,8 @@ export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
     onChangeRef.current = onChange;
     const onSaveRef    = useRef(onSave);
     onSaveRef.current  = onSave;
+    const onCursorRef  = useRef(onCursor);
+    onCursorRef.current = onCursor;
     const theme = useEffectiveTheme();
     const themeRef = useRef(theme);
     themeRef.current = theme;
@@ -101,6 +107,10 @@ export function LuaEditor({ value, onChange, onSave, gotoLine }: Props) {
                     onChangeRef.current(viewRef.current!.state.doc.toString());
                 }, () => {
                     onSaveRef.current?.();
+                }, v => {
+                    const head = v.state.selection.main.head;
+                    const line = v.state.doc.lineAt(head);
+                    onCursorRef.current?.(line.number, head - line.from + 1);
                 }, themeRef.current, optionsRef.current),
             }),
             parent: editorHostRef.current,

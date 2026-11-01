@@ -55,7 +55,7 @@ async function selectItem(name: string) {
 
 async function clickDelete() {
     const btn = ([...container.querySelectorAll('.script-editor__actions button')] as HTMLElement[])
-        .find(b => b.textContent === 'Delete')!;
+        .find(b => (b.textContent ?? '').startsWith('Delete'))!;
     await act(async () => { btn.click(); });
 }
 

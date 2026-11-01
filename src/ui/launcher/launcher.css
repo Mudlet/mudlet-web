@@ -3,12 +3,16 @@
    are dark in every theme — they're the profile's or game's own colours under
    a scrim — so text on them is fixed white; everything else follows the theme. */
 
+/* The launcher fills the window the way the console does, so it sits on the
+   deep ground (--bg-deep: the palette's Base on a dark theme, the page on a
+   light one) rather than on the grey a dialog's page takes; its tiles and
+   fields (--bg-input) lift off it by the same step they always did. */
 .launcher {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    background: var(--bg);
+    background: var(--bg-deep);
     color: var(--text);
     font-family: var(--font-ui);
     font-size: 14px;

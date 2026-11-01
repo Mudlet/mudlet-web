@@ -25,6 +25,9 @@ interface Props {
 export function ScriptEditorModal({ connectionId, session, vfs, scriptingEngineRef, onClose, onOpenVfsFile }: Props) {
     const savedBounds = useAppStore(s => s.connectionScriptEditorBounds[connectionId]);
     const saveBounds  = useAppStore(s => s.saveScriptEditorBounds);
+    // Desktop's window title: "<profile> - Editor". "Scripts" is one of the
+    // kinds in the sidebar, so it is not the window's name.
+    const profileName = useAppStore(s => s.connections.find(c => c.id === connectionId)?.name);
 
     const boundsRef = useRef(savedBounds ?? null);
     const panelRef = useRef<ScriptEditorPanelHandle>(null);
@@ -45,7 +48,7 @@ export function ScriptEditorModal({ connectionId, session, vfs, scriptingEngineR
 
     return (
         <ResizableModal
-            title="Scripts"
+            title={profileName ? `${profileName} - Editor` : 'Editor'}
             className="script-editor-modal"
             onClose={onClose}
             // Escape belongs to what's inside: ScriptEditorPanel's key capture,

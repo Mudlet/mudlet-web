@@ -87,8 +87,8 @@ const triggers = (conn: string): TriggerNode[] =>
 async function newTrigger(conn: string): Promise<TriggerNode> {
     await mount(conn);
     await openTab('Triggers');
-    const btn = [...container.querySelectorAll('.script-editor__list-header button')]
-        .find(b => b.textContent === '+ New') as HTMLElement;
+    const btn = [...container.querySelectorAll('.script-editor__actions button')]
+        .find(b => b.textContent === 'Add Trigger') as HTMLElement;
     await act(async () => { btn.click(); });
     const made = triggers(conn);
     expect(made).toHaveLength(1);

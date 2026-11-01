@@ -111,10 +111,10 @@
    face and no frame at rest — the muted ink alone — wash in hoverSoft under
    the pointer with the word in the accent's ink, and in accentSoft while held
    or switched on. An unavailable one is dimmer than its neighbours, not faded.
-   The script editor's own bar over its item tree takes it too. */
+   The script editor's toolbar takes it too. */
 .ui-bar .btn,
 .mudlet-topbar .btn,
-.script-editor__list-header .btn {
+.script-editor__toolbar .btn {
     height: auto;
     min-height: 26px;
     padding: 3px 7px;
@@ -126,37 +126,37 @@
 }
 .ui-bar .btn:not(:disabled):hover,
 .mudlet-topbar .btn:not(:disabled):hover,
-.script-editor__list-header .btn:not(:disabled):hover {
+.script-editor__toolbar .btn:not(:disabled):hover {
     color: var(--accent-text);
     background-color: var(--hover-bg);
     border-color: transparent;
 }
 .ui-bar .btn:not(:disabled):active,
 .mudlet-topbar .btn:not(:disabled):active,
-.script-editor__list-header .btn:not(:disabled):active {
+.script-editor__toolbar .btn:not(:disabled):active {
     background-color: var(--accent-soft);
 }
 .ui-bar .btn[aria-pressed='true'],
 .mudlet-topbar .btn[aria-pressed='true'],
-.script-editor__list-header .btn[aria-pressed='true'] {
+.script-editor__toolbar .btn[aria-pressed='true'] {
     color: var(--accent-text);
     background-color: var(--accent-soft);
 }
 .ui-bar .btn:disabled,
 .mudlet-topbar .btn:disabled,
-.script-editor__list-header .btn:disabled {
+.script-editor__toolbar .btn:disabled {
     color: var(--text-disabled-bar);
     background: transparent;
     border-color: transparent;
 }
 .ui-bar .btn:focus-visible,
 .mudlet-topbar .btn:focus-visible,
-.script-editor__list-header .btn:focus-visible {
+.script-editor__toolbar .btn:focus-visible {
     border-color: var(--accent);
 }
 .ui-bar .btn .toolbar-icon,
 .mudlet-topbar .btn .toolbar-icon,
-.script-editor__list-header .btn .toolbar-icon {
+.script-editor__toolbar .btn .toolbar-icon {
     opacity: 1;
 }
 

@@ -6,15 +6,18 @@ import { tags as t } from '@lezer/highlight';
 import { isLightTheme } from '../../branding';
 
 // Chrome (background, gutter, autocomplete, scrollbar) using app CSS vars so
-// the editor adopts the active theme. Syntax highlighting is swapped via the
-// shared highlightCompartment below.
+// the editor adopts the active theme. The code surface itself is desktop's:
+// the --code-* tokens carry the edbee theme Mudlet pairs with the appearance
+// (Mudlet Dark / Mudlet Light, ui/design/themeTokens.ts), the gutter sits on
+// that same surface with no rule, and only the current line number is lit.
+// Syntax highlighting is swapped via the shared highlightCompartment below.
 export const mudletCmTheme = EditorView.theme({
     '&': {
         height: '100%',
         fontSize: '13px',
         fontFamily: 'var(--font-mono)',
-        background: 'var(--bg)',
-        color: 'var(--text)',
+        background: 'var(--code-bg)',
+        color: 'var(--code-text)',
     },
     '&.cm-focused': { outline: 'none' },
     '.cm-scroller': {
@@ -23,31 +26,31 @@ export const mudletCmTheme = EditorView.theme({
         overflow: 'auto',
     },
     '.cm-content': {
-        caretColor: 'var(--accent)',
-        padding: '10px 0',
+        caretColor: 'var(--code-text)',
+        padding: '6px 0',
     },
     '.cm-line': { padding: '0 12px' },
-    '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
+    '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--code-text)' },
     '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
-        backgroundColor: 'var(--accent-glow)',
+        backgroundColor: 'var(--code-selection)',
     },
     '.cm-gutters': {
-        background: 'var(--bg-input)',
-        borderRight: '1px solid var(--border)',
-        color: 'var(--text-dim)',
+        background: 'var(--code-bg)',
+        border: 'none',
+        color: 'var(--text-disabled)',
     },
     '.cm-lineNumbers .cm-gutterElement': {
         padding: '0 10px 0 6px',
         minWidth: '36px',
     },
-    '.cm-activeLine': { backgroundColor: 'var(--hover-bg)' },
+    '.cm-activeLine': { backgroundColor: 'var(--code-line)' },
     '.cm-activeLineGutter': {
-        backgroundColor: 'var(--hover-bg-strong)',
-        color: 'var(--text)',
+        backgroundColor: 'var(--code-line)',
+        color: 'var(--code-text)',
     },
     '.cm-matchingBracket': {
-        background: 'var(--accent-glow)',
-        outline: '1px solid var(--accent-focus)',
+        background: 'var(--code-selection)',
+        outline: '1px solid var(--accent)',
     },
     '.cm-tooltip': {
         background: 'var(--bg-surface)',
@@ -65,8 +68,8 @@ export const mudletCmTheme = EditorView.theme({
         padding: '3px 10px',
     },
     '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
-        background: 'var(--accent)',
-        color: 'var(--btn-primary-text)',
+        background: 'var(--accent-soft)',
+        color: 'var(--accent-text)',
     },
     '.cm-completionDetail': {
         color: 'var(--text-dim)',
@@ -74,8 +77,7 @@ export const mudletCmTheme = EditorView.theme({
         marginLeft: '8px',
     },
     '.cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionDetail': {
-        color: 'var(--btn-primary-text)',
-        opacity: '0.75',
+        color: 'var(--accent-text)',
     },
     '.cm-completionInfo': {
         background: 'var(--bg-surface)',

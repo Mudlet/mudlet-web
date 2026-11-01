@@ -20,6 +20,7 @@ it. When it changes, read the diff and bring what matters across manually.
 | --- | --- |
 | `uiDesign::themeTokens()` — page/card/pane/field, the softened text, the contrast-walked muted, disabled and accent inks, border, separator, washes, state colours | `src/ui/design/themeTokens.ts`, a line-for-line transcription with the same constants. `applyThemeTokens()` runs on every theme change (`App.tsx`) and writes the tokens inline on `:root` |
 | The four palette roles (Window, Base, WindowText, Highlight) | A theme's `--bg`, `--bg-input`, `--text`, `--accent`. Stock and brand themes name only those; everything else is derived. A theme can opt out with `--design-derive: off` |
+| The edbee themes desktop pairs with the appearance (Mudlet Dark / Mudlet Light) | `--code-bg`, `--code-text`, `--code-line`, `--code-selection`, used by the CodeMirror chrome (`ui/codemirror/theme.ts`) |
 | Desktop's DarkTheme palette and Fusion light | The stock `dark`/`amber`/`sky` themes use DarkTheme's `#353535`/`#191919`/white (keeping their own accents); `light` uses Fusion's `#efefef`/white/black |
 | `themedGlyphFile()` — the tick, dash, dot and chevron inked per theme | `--mark-*` / `--chevron-*` data-URI properties written by the same token pass |
 | Radius scale (`scmRadiusChip` 4, `scmRadiusInput` 5, `scmRadiusPanel` 8, toolbar button 6) | `--radius-chip`, `--radius-input`, `--radius-panel`, `--radius-bar-button` in `App.css` |
@@ -32,11 +33,11 @@ it. When it changes, read the diff and bring what matters across manually.
 - **Main toolbar and menu bar** — flat bar on the page with a seam, desktop's toolbar glyphs, split buttons, menus on the card tone.
 - **Context menus, menu-bar drop-downs, the compact hamburger menu** — the menu recipe.
 - **Settings** — pane-tone sidebar with pill rows and the accent bar, cards, Display-step page title, prominent search field, search spotlight.
-- **Script editor** — category sidebar as the settings sidebar, item tree as pill rows on the pane, editor glyphs for the item kinds, flat bar over the tree, fields at the input height.
+- **Script editor** — desktop's window structure: a flat toolbar across the top (Add / Add Group / Save / Activate / Delete named for the kind, undo and redo, import and export), an icon rail with the label toggle on its seam, "Search items…" heading the tree, the kind as the tree's root, state dots in place of check boxes (filled on, ring off, ring-and-dot when a group above is off; click toggles), switched-off rows struck through, the package glyph on a package's top folder, label-column form rows, the code pane under a "Lua script" heading with the caret's line and column, and a status bar counting items and active ones. Window title "<profile> - Editor". The per-kind forms below Name (trigger patterns, timers, keys, buttons) keep their own layout for now.
 - **Window shells** (`.modal`, `.resizable-modal`, confirm dialog) — the window is the page; headers on the page with a seam.
 - **Console foot** — one seam over the command line, no frame.
 - **Shared controls** — buttons (face, primary as accent wash), fields, check boxes and radios, selects, the toggle, scrollbars.
-- **Launcher** — kept its own geometry (it was redesigned on its own); colours follow the tokens, focus glows removed, its tool buttons on the flat bar recipe.
+- **Launcher** — kept its own geometry (it was redesigned on its own); colours follow the tokens, focus glows removed, its tool buttons on the flat bar recipe. It fills the window the way the console does, so it sits on `--bg-deep` (the palette's Base, `#191919`, on a dark theme; the page on a light one) rather than on a dialog's grey page.
 
 Not yet brought in: the map panel and editor, the log browser, the file
 browser and previews, package dialogs beyond what the shared rules reach, and

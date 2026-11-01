@@ -1,6 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { CircleAlert, TriangleAlert, Braces, ClipboardPaste, Timer, Copy, CopyPlus, Funnel, Folder, FolderOpen, FolderPlus, Keyboard, MousePointerClick, Package, Terminal, FileCode, Trash2, Zap } from 'lucide-react';
-import { GLYPH_STROKE_WIDTH } from '../../design/glyphs';
+import { Glyph, GLYPH_STROKE_WIDTH } from '../../design/glyphs';
 import { Button, Input, ContextMenu, FileSourceButton, useConfirm, type PickedFile } from '../../components';
 import { VariablesView } from './VariablesView';
 import { useAppStore, useProfileField, useEditorSettings } from '../../../storage';
@@ -53,6 +53,9 @@ const CATEGORY_SINGULAR: Record<EditCategory, string> = {
 };
 
 const BUTTON_GROUP_SINGULAR = 'Toolbar';
+
+/** Per-browser memory of whether the editor's sidebar shows its words. */
+const RAIL_LABELS_KEY = 'mudlet_editorSidebarLabelsShown';
 
 const CATEGORY_ICON: Record<EditCategory, React.ElementType> = {
     scripts:  FileCode,
@@ -1246,7 +1249,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         kind: ScriptLogSourceKind; id: string; line?: number; revision: number;
     } | null>(null);
 
-    const [listWidth, setListWidth]     = useState(() => initialListWidth ?? 180);
+    const [listWidth, setListWidth]     = useState(() => initialListWidth ?? 260);
 
     // Click handler for the "→" button on error log rows. Switches category if
     // needed (the [category] effect will clear selection; our jump effect below
@@ -1289,8 +1292,42 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         category === 'buttons'  ? buttons    :
         EMPTY;
 
-    const treeEntries = flattenTree(items, null, expanded);
+    // The search field over the tree (desktop's "Search items…"): a match
+    // shows with every group above it, opened, so it is never hidden inside a
+    // closed one; with no query the tree is the user's own, folds and all.
+    const [treeQuery, setTreeQuery] = useState('');
+    const query = treeQuery.trim().toLowerCase();
+    const treeEntries = useMemo(() => {
+        if (!query) return flattenTree(items, null, expanded);
+        const byId = new Map(items.map(i => [i.id, i] as const));
+        const shown = new Set<string>();
+        for (const it of items) {
+            if (!it.name.toLowerCase().includes(query)) continue;
+            for (let n: AnyNode | undefined = it; n && !shown.has(n.id); n = n.parentId ? byId.get(n.parentId) : undefined) {
+                shown.add(n.id);
+            }
+        }
+        return flattenTree(items, null, shown).filter(e => shown.has(e.item.id));
+    }, [items, expanded, query]);
     const selected = items.find(i => i.id === selectedId) ?? null;
+    const activeCount = items.filter(i => isEffectivelyEnabled(i, items)).length;
+
+    // The sidebar is a rail of glyphs until it is opened (desktop's
+    // SidebarToggle, kept under `editorSidebarLabelsShown`); remembered per
+    // browser, and only a convenience, so a storage failure just means closed.
+    const [railLabels, setRailLabels] = useState(() => {
+        try { return localStorage.getItem(RAIL_LABELS_KEY) === '1'; } catch { return false; }
+    });
+    const toggleRailLabels = () => setRailLabels(open => {
+        try { localStorage.setItem(RAIL_LABELS_KEY, open ? '0' : '1'); } catch { /* not kept */ }
+        return !open;
+    });
+
+    // The caret's place in the code, read out over the code pane.
+    const [caret, setCaret] = useState({ line: 1, column: 1 });
+    const onCaret = useCallback((line: number, column: number) => {
+        setCaret(prev => (prev.line === line && prev.column === column ? prev : { line, column }));
+    }, []);
 
     // Live self-loop check for the open alias. Desktop refuses the save; Mudlet Web
     // warns and lets it through — see aliasLoop.ts for why.
@@ -1753,6 +1790,10 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
 
     const handleToggle = (id: string, e: React.MouseEvent) => {
         e.stopPropagation();
+        toggleEnabled(id);
+    };
+
+    const toggleEnabled = (id: string) => {
         const item = items.find(i => i.id === id);
         if (!item) return;
         if (category === 'scripts')        updateScript(connectionId, id, { enabled: !item.enabled });
@@ -2128,8 +2169,12 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
     );
 
     const categoryLabel = isEditCategory ? CATEGORY_LABELS[category as EditCategory].toLowerCase() : '';
+    // The kind the toolbar names its acts after, as desktop's does: "Add
+    // Script", "Add Script Group", "Delete Trigger".
+    const singular = isEditCategory ? CATEGORY_SINGULAR[category as EditCategory] : 'Item';
+    const groupSingular = category === 'buttons' ? BUTTON_GROUP_SINGULAR : `${singular} Group`;
     const emptyMsg = items.length === 0
-        ? `No ${categoryLabel} yet — click "+ New" to create one`
+        ? `No ${categoryLabel} yet — use "Add ${singular}" to create one`
         : `Select a ${categoryLabel.replace(/s$/, '')} to edit`;
 
     return (
@@ -2150,8 +2195,67 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     >×</button>
                 </div>
             )}
+            {/* Desktop's editor toolbar: the acts on the chosen item, each a
+                glyph and a word naming the kind (Add Script, Delete Trigger),
+                then the stacks and the transfer acts. The words give way to
+                the glyphs alone when the window is narrow (see the CSS). */}
+            <div className="script-editor__toolbar" role="toolbar" aria-label="Editor actions">
+                <div className="script-editor__actions">
+                    <Button variant="ghost" className="script-editor__tool" disabled={!isEditCategory}
+                        title={isEditCategory ? `Add ${singular}` : undefined} onClick={() => handleNew(false)}>
+                        <Glyph name="editor-add" className="toolbar-icon" /><span className="script-editor__tool-label">Add {singular}</span>
+                    </Button>
+                    <Button variant="ghost" className="script-editor__tool" disabled={!isEditCategory}
+                        title={isEditCategory ? `Add ${groupSingular}` : undefined} onClick={() => handleNew(true)}>
+                        <Glyph name="editor-add-group" className="toolbar-icon" /><span className="script-editor__tool-label">Add {groupSingular}</span>
+                    </Button>
+                    <Button variant="ghost" className="script-editor__tool script-editor__save" disabled={!isEditCategory || !selected}
+                        onClick={handleSave}>
+                        <Glyph name="editor-save-item" className="toolbar-icon" />
+                        <span className="script-editor__tool-label">
+                            {category === 'scripts'
+                                ? (dirty ? 'Save & Run' : 'Run')
+                                : (dirty ? 'Save' : 'Saved')}
+                        </span>
+                    </Button>
+                    <Button variant="ghost" className="script-editor__tool" disabled={!isEditCategory || !selected}
+                        aria-pressed={selected ? !selected.enabled : undefined}
+                        onClick={() => { if (selected) toggleEnabled(selected.id); }}>
+                        <Glyph name="editor-activate" className="toolbar-icon" />
+                        <span className="script-editor__tool-label">{selected && !selected.enabled ? 'Activate' : 'Deactivate'}</span>
+                    </Button>
+                    <Button variant="ghost" className="script-editor__tool" disabled={!isEditCategory || !selected}
+                        onClick={handleDelete}>
+                        <Glyph name="editor-delete" className="toolbar-icon" /><span className="script-editor__tool-label">Delete {selected?.isGroup ? groupSingular : singular}</span>
+                    </Button>
+                    <span className="toolbar-sep" aria-hidden="true" />
+                    <Button variant="ghost" className="script-editor__tool" aria-label="Undo" title="Undo"
+                        onClick={() => { undoLast(); }}>
+                        <Glyph name="editor-undo" className="toolbar-icon" />
+                    </Button>
+                    <Button variant="ghost" className="script-editor__tool" aria-label="Redo" title="Redo"
+                        onClick={() => { redoLast(); }}>
+                        <Glyph name="editor-redo" className="toolbar-icon" />
+                    </Button>
+                </div>
+                <div className="script-editor__toolbar-end">
+                    <Button variant="ghost" className="script-editor__tool" aria-label="Import a package" title="Import a package"
+                        onClick={() => setCategory('packages')}>
+                        <Glyph name="editor-import" className="toolbar-icon" />
+                    </Button>
+                    <Button variant="ghost" className="script-editor__tool" aria-label="Export as a package" title="Export as a package"
+                        onClick={() => {
+                            setExportPreselect(isEditCategory && selected ? { category: category as ExportCategory, id: selected.id } : null);
+                            setShowExport(true);
+                        }}>
+                        <Glyph name="editor-export" className="toolbar-icon" />
+                    </Button>
+                </div>
+            </div>
+
+            <div className="script-editor__body">
             {/* Category nav */}
-            <div className="script-editor__nav">
+            <div className={`script-editor__nav${railLabels ? ' script-editor__nav--labels' : ''}`}>
                 {EDIT_CATEGORIES.map(cat => {
                     const Icon = CATEGORY_ICON[cat];
                     return (
@@ -2159,8 +2263,9 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                             key={cat}
                             className={`script-editor__nav-btn script-editor__nav-btn--row${category === cat ? ' script-editor__nav-btn--active' : ''}`}
                             onClick={() => setCategory(cat)}
+                            title={railLabels ? undefined : CATEGORY_LABELS[cat]}
                         >
-                            <Icon size={13} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
+                            <Icon size={18} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
                             <span className="script-editor__nav-label">{CATEGORY_LABELS[cat]}</span>
                         </button>
                     );
@@ -2168,16 +2273,18 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 <button
                     className={`script-editor__nav-btn script-editor__nav-btn--row${category === 'variables' ? ' script-editor__nav-btn--active' : ''}`}
                     onClick={() => setCategory('variables')}
+                    title={railLabels ? undefined : 'Variables'}
                 >
-                    <Braces size={13} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
+                    <Braces size={18} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
                     <span className="script-editor__nav-label">Variables</span>
                 </button>
                 <div className="script-editor__nav-sep" />
                 <button
                     className={`script-editor__nav-btn script-editor__nav-btn--row${category === 'errors' ? ' script-editor__nav-btn--active' : ''}`}
                     onClick={() => setCategory('errors')}
+                    title={railLabels ? undefined : 'Errors'}
                 >
-                    <CircleAlert size={13} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
+                    <CircleAlert size={18} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
                     <span className="script-editor__nav-label">Errors</span>
                     {unreadErrors > 0 && (
                         <span className="script-editor__error-badge">{unreadErrors > 99 ? '99+' : unreadErrors}</span>
@@ -2187,12 +2294,26 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 <button
                     className={`script-editor__nav-btn script-editor__nav-btn--row${category === 'packages' ? ' script-editor__nav-btn--active' : ''}`}
                     onClick={() => setCategory('packages')}
+                    title={railLabels ? undefined : 'Packages'}
                 >
-                    <Package size={13} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
+                    <Package size={18} strokeWidth={GLYPH_STROKE_WIDTH} className="script-editor__nav-icon" />
                     <span className="script-editor__nav-label">Packages</span>
                     {packages.length > 0 && (
-                        <span className="script-editor__error-badge" style={{ background: '#3a3a3a' }}>{packages.length}</span>
+                        <span className="script-editor__error-badge script-editor__error-badge--count">{packages.length}</span>
                     )}
+                </button>
+                {/* Desktop's SidebarToggle: the chevron on the seam that shows
+                    and hides the rail's words. */}
+                <button
+                    type="button"
+                    className="script-editor__rail-toggle"
+                    onClick={toggleRailLabels}
+                    aria-expanded={railLabels}
+                    aria-label={railLabels ? 'Hide sidebar labels' : 'Show sidebar labels'}
+                    title={railLabels ? 'Hide sidebar labels' : 'Show sidebar labels'}
+                >
+                    <Glyph name={railLabels ? 'about-chevron-right' : 'about-chevron-right'} size={14}
+                        style={railLabels ? { transform: 'scaleX(-1)' } : undefined} />
                 </button>
             </div>
             {showRepository && (
@@ -2216,9 +2337,21 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
             {/* Item list — hidden on the Errors and Packages tabs */}
             {isEditCategory && <div className="script-editor__list" style={{ width: listWidth }}>
                 <div className="script-editor__list-resize" onMouseDown={handleListResizeStart} />
-                <div className="script-editor__list-header">
-                    <Button variant="secondary" size="sm" onClick={() => handleNew(false)}>+ New</Button>
-                    <Button variant="secondary" size="sm" onClick={() => handleNew(true)}>+ {category === 'buttons' ? BUTTON_GROUP_SINGULAR : 'Group'}</Button>
+                <div className="script-editor__tree-search">
+                    <Glyph name="settings-search" size={15} className="script-editor__tree-search-icon" />
+                    <input
+                        type="search"
+                        className="script-editor__tree-search-field"
+                        placeholder="Search items…"
+                        aria-label={`Search ${CATEGORY_LABELS[category as EditCategory].toLowerCase()}`}
+                        value={treeQuery}
+                        onChange={e => setTreeQuery(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Escape' && treeQuery) { e.stopPropagation(); setTreeQuery(''); } }}
+                    />
+                </div>
+                <div className="script-editor__tree-heading">
+                    {React.createElement(CATEGORY_ICON[category as EditCategory], { size: 16, strokeWidth: GLYPH_STROKE_WIDTH, 'aria-hidden': true })}
+                    <span>{CATEGORY_LABELS[category as EditCategory]}</span>
                 </div>
                 <div
                     className="script-editor__items"
@@ -2240,6 +2373,18 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                         const childCount = childCounts.get(item.id) ?? 0;
                         const hasChildren = childCount > 0;
                         const isEmptyGroup = item.isGroup && !hasChildren;
+                        // Desktop's state dot: filled while the item runs, a
+                        // ring while it is off, and a ring round a dot while it
+                        // is on but a group above it is off.
+                        const dot = !item.enabled ? 'off' : effective ? 'on' : 'held';
+                        const kindWord = item.isGroup ? groupSingular.toLowerCase() : singular.toLowerCase();
+                        const dotTitle = dot === 'on'
+                            ? `Active — click to deactivate this ${kindWord}`
+                            : dot === 'held'
+                                ? `Active, but a group above it is off, so it does not run — click to deactivate this ${kindWord}`
+                                : `Inactive — click to activate this ${kindWord}`;
+                        const parent = item.parentId ? items.find(i => i.id === item.parentId) : undefined;
+                        const isPackageRoot = item.isGroup && !!item.packageName && parent?.packageName !== item.packageName;
                         return (
                             <div
                                 key={item.id}
@@ -2250,40 +2395,47 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                                     item.isGroup ? 'script-editor__item--group' : '',
                                     isEmptyGroup ? 'script-editor__item--empty-group' : '',
                                     !effective ? 'script-editor__item--inherited-disabled' : '',
+                                    !item.enabled ? 'script-editor__item--off' : '',
                                     item.id === dragId ? 'script-editor__item--dragging' : '',
                                     isOver && dragOver!.intent === 'before' ? 'script-editor__item--drop-before' : '',
                                     isOver && dragOver!.intent === 'after'  ? 'script-editor__item--drop-after'  : '',
                                     isOver && dragOver!.intent === 'into'   ? 'script-editor__item--drop-into'   : '',
                                 ].filter(Boolean).join(' ')}
                                 onClick={() => setSelectedId(item.id)}
-                                style={{ paddingLeft: `${8 + depth * 14}px` }}
+                                style={{ paddingLeft: `${2 + depth * 18}px` }}
                                 onDragStart={e => handleDragStart(e, item.id)}
                                 onDragOver={e => handleDragOver(e, item)}
                                 onDrop={e => handleDrop(e, item)}
                                 onDragEnd={handleDragEnd}
                                 onContextMenu={e => handleItemContextMenu(e, item.id)}
                             >
-                                {hasChildren || item.isGroup ? (
+                                {hasChildren ? (
                                     <button
                                         className="script-editor__item-expand"
                                         onClick={e => handleToggleExpand(item.id, e)}
                                         tabIndex={-1}
-                                        title={isEmptyGroup ? 'Empty group' : (isExpanded ? 'Collapse' : 'Expand')}
+                                        aria-label={isExpanded || query ? 'Collapse' : 'Expand'}
+                                        title={isExpanded || query ? 'Collapse' : 'Expand'}
                                     >
-                                        <ItemIcon category={category} isGroup={item.isGroup} isExpanded={isExpanded && hasChildren} hasChildren={hasChildren} />
+                                        <Glyph name={isExpanded || query ? 'editor-chevron-down' : 'about-chevron-right'} size={14} />
                                     </button>
                                 ) : (
-                                    <span className="script-editor__item-spacer">
-                                        <ItemIcon category={category} isGroup={false} isExpanded={false} />
-                                    </span>
+                                    <span className="script-editor__item-spacer" />
                                 )}
-                                <input
-                                    type="checkbox"
-                                    checked={item.enabled}
-                                    onChange={() => {}}
+                                <button
+                                    type="button"
+                                    className={`script-editor__dot script-editor__dot--${dot}`}
+                                    aria-pressed={item.enabled}
+                                    aria-label={dotTitle}
+                                    title={dotTitle}
+                                    tabIndex={-1}
                                     onClick={e => handleToggle(item.id, e)}
-                                    style={{ accentColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0 }}
                                 />
+                                {isPackageRoot ? (
+                                    <Glyph name="packages-package" size={16} className="script-editor__item-icon" />
+                                ) : (item.isGroup || hasChildren) ? (
+                                    <ItemIcon category={category} isGroup={item.isGroup} isExpanded={isExpanded && hasChildren} hasChildren={hasChildren} />
+                                ) : null}
                                 <span className="script-editor__item-name">
                                     {item.name}
                                     {/* Mudlet's "Show Items' ID number": the id
@@ -2542,9 +2694,7 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                 <div className="script-editor__pane">
                     <div className="script-editor__meta">
                         <div className="script-editor__meta-row">
-                            {selected.isGroup && (
-                                <span className="script-editor__group-badge">{category === 'buttons' ? BUTTON_GROUP_SINGULAR : 'Group'}</span>
-                            )}
+                            <span className="script-editor__row-label">Name</span>
                             <Input
                                 className="script-editor__name"
                                 value={editName}
@@ -2915,8 +3065,8 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                             </>
                         )}
                         {category === 'scripts' && (
-                            <div className="script-editor__meta-row script-editor__meta-row--col">
-                                <span className="script-editor__field-label">Event handlers (one per line — fires the global function named after this script)</span>
+                            <div className="script-editor__meta-row script-editor__meta-row--top">
+                                <span className="script-editor__row-label" title="One per line — each fires the global function named after this script">Events</span>
                                 <textarea
                                     className="script-editor__patterns"
                                     value={editEventHandlers}
@@ -3139,12 +3289,23 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                         )}
                     </div>
 
-                    <LuaEditor
-                        value={editCode}
-                        onChange={code => { setEditCode(code); setDirty(true); }}
-                        onSave={handleSave}
-                        gotoLine={editorGotoLine}
-                    />
+                    {/* Desktop's code pane: a heading naming what the code
+                        is, with the caret's place on the right, over the
+                        code surface. */}
+                    <div className="script-editor__code">
+                        <div className="script-editor__code-heading">
+                            <Glyph name="editor-scripts" size={15} />
+                            <span className="script-editor__code-title">Lua script</span>
+                            <span className="script-editor__code-caret">Line {caret.line}, Column {caret.column}</span>
+                        </div>
+                        <LuaEditor
+                            value={editCode}
+                            onChange={code => { setEditCode(code); setDirty(true); }}
+                            onSave={handleSave}
+                            gotoLine={editorGotoLine}
+                            onCursor={onCaret}
+                        />
+                    </div>
 
                     <div className="script-editor__log">
                         {visibleLogs.length === 0
@@ -3158,14 +3319,6 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                         <div ref={logEndRef} />
                     </div>
 
-                    <div className="script-editor__actions">
-                        <Button variant="ghost" size="sm" onClick={handleDelete}>Delete</Button>
-                        <Button variant="primary" size="sm" onClick={handleSave}>
-                            {category === 'scripts'
-                                ? (dirty ? 'Save & Run' : 'Run')
-                                : (dirty ? 'Save' : 'Saved')}
-                        </Button>
-                    </div>
                 </div>
             ) : (
                 isEditCategory && <div className="script-editor__empty">{emptyMsg}</div>
@@ -3255,6 +3408,17 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
                     </button>
                 </ContextMenu>
             )}
+            </div>
+
+            {/* Desktop's status bar: how many of this kind there are and how
+                many of them run. */}
+            <div className="script-editor__status" role="status">
+                {isEditCategory
+                    ? `${items.length} ${singular.toLowerCase()}(s) - ${activeCount} active`
+                    : category === 'packages'
+                        ? `${packages.length} package(s)`
+                        : ''}
+            </div>
         </div>
     );
 });

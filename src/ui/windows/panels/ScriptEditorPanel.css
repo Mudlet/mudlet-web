@@ -1,5 +1,6 @@
 .script-editor {
     display: flex;
+    flex-direction: column;
     flex: 1;
     min-height: 0;
     overflow: hidden;
@@ -7,6 +8,74 @@
     font-family: var(--font-ui), sans-serif;
     /* Anchors the undo toast below. */
     position: relative;
+    /* The toolbar drops its words below a measured width (desktop's measured
+       breakpoint), which is the editor's own width, not the viewport's. */
+    container-type: inline-size;
+    container-name: script-editor;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────
+   Desktop's editor toolbar (toolBarStyleSheet with the seam at the bottom):
+   on the page, flat buttons each a glyph and a word naming the kind, the
+   stacks and the transfer acts at the trailing end. */
+.script-editor__toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 6px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    min-width: 0;
+}
+
+.script-editor__actions,
+.script-editor__toolbar-end {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+}
+
+.script-editor__tool .toolbar-icon {
+    flex-shrink: 0;
+}
+
+/* Below this the words go and the glyphs stay; each button keeps its name in
+   its tooltip and accessible name. */
+@container script-editor (max-width: 760px) {
+    .script-editor__tool-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+}
+
+.script-editor__body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    position: relative;
+}
+
+/* ── Status bar ──────────────────────────────────────────────
+   How many items of this kind there are and how many run, on the page with
+   the seam on top. */
+.script-editor__status {
+    flex-shrink: 0;
+    min-height: 24px;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
 }
 
 /* Transient "…deleted. Undo" bar, the web stand-in for the Undo action Mudlet
@@ -72,16 +141,76 @@
 
 /* ── Category nav ───────────────────────────────────────── */
 /* Desktop's editor sidebar is the settings sidebar ("One sidebar for both
-   windows"): the pane tone, the separator seam, pill rows with the accent bar. */
+   windows"): a rail of glyphs on the page by default, parted from the tree
+   by the separator seam, pill rows with the accent bar; the chevron on the
+   seam opens it to show the words. */
 .script-editor__nav {
-    width: 140px;
+    width: 46px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     border-right: 1px solid var(--separator);
-    background: var(--bg-panel);
+    background: var(--bg);
     padding: 8px 6px;
-    gap: 2px;
+    gap: 4px;
+    position: relative;
+}
+
+.script-editor__nav--labels {
+    width: 150px;
+}
+
+/* In the rail the words stay in the accessible name, out of sight. */
+.script-editor__nav:not(.script-editor__nav--labels) .script-editor__nav-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.script-editor__nav:not(.script-editor__nav--labels) .script-editor__nav-btn.script-editor__nav-btn--row {
+    justify-content: center;
+    padding: 0;
+    position: relative;
+}
+
+.script-editor__nav:not(.script-editor__nav--labels) .script-editor__nav-btn .script-editor__error-badge {
+    position: absolute;
+    top: 3px;
+    right: 2px;
+    margin: 0;
+}
+
+/* SidebarToggle: a round chevron standing on the seam. */
+.script-editor__rail-toggle {
+    position: absolute;
+    top: 50%;
+    right: -12px;
+    transform: translateY(-50%);
+    z-index: 2;
+    width: 22px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.script-editor__rail-toggle:hover {
+    color: var(--accent-text);
+    border-color: var(--accent);
+}
+
+.script-editor__rail-toggle:focus-visible {
+    outline: none;
+    border-color: var(--accent);
 }
 
 .script-editor__nav-sep {
@@ -119,7 +248,7 @@
 .script-editor__nav-btn {
     display: block;
     width: 100%;
-    min-height: 32px;
+    min-height: 34px;
     padding: 0 8px 0 7px;
     background: none;
     border: none;
@@ -181,15 +310,58 @@
     background: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
-.script-editor__list-header {
+/* "Search items…": the one control the tree is headed by, so it takes the
+   panel's corner and is drawn taller than a form field. */
+.script-editor__tree-search {
+    position: relative;
+    flex-shrink: 0;
+    margin: 10px 10px 6px;
+}
+
+.script-editor__tree-search-icon {
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    pointer-events: none;
+}
+
+.script-editor__tree-search-field {
+    width: 100%;
+    box-sizing: border-box;
+    height: 32px;
+    padding: 0 10px 0 32px;
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-panel);
+    font-family: var(--font-ui), sans-serif;
+    font-size: 13px;
+    outline: none;
+}
+
+.script-editor__tree-search-field::placeholder {
+    color: var(--text-muted);
+}
+
+.script-editor__tree-search-field:focus {
+    border-color: var(--accent);
+}
+
+/* The tree's root: the kind it holds, with its glyph. */
+.script-editor__tree-heading {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    gap: 2px;
-    padding: 4px 6px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-panel);
+    gap: 8px;
+    padding: 6px 12px 2px 14px;
+    color: var(--text);
+    font-size: 13px;
     flex-shrink: 0;
+}
+
+.script-editor__tree-heading svg {
+    color: var(--text-muted);
 }
 
 .script-editor__import-error {
@@ -206,7 +378,7 @@
 .script-editor__items {
     flex: 1;
     overflow-y: auto;
-    padding: 4px;
+    padding: 2px 6px 6px;
 }
 
 /* Desktop's item rows (itemRowStyleSheet + EditorTreeDelegate): every row a
@@ -215,9 +387,10 @@
 .script-editor__item {
     display: flex;
     align-items: center;
-    gap: 5px;
-    min-height: 26px;
-    padding: 2px 4px 2px 3px;
+    gap: 6px;
+    min-height: 24px;
+    padding: 1px 6px 1px 3px;
+    margin-left: 14px;
     border-left: var(--accent-bar) solid transparent;
     border-radius: var(--radius-panel);
     cursor: pointer;
@@ -249,9 +422,41 @@
     flex-shrink: 0;
     width: 18px;
     height: 18px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+}
+
+/* ── State dot ───────────────────────────────────────────────
+   Desktop's tree mark (EditorTreeDelegate): filled in the "running" blue while
+   the item is on, a ring while it is off, a ring round a dot while it is on
+   but a group above it is off. A click toggles it. */
+.script-editor__dot {
+    flex-shrink: 0;
+    width: 10px;
+    height: 10px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1.5px solid transparent;
+    background: var(--state-ok);
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+.script-editor__dot--off {
+    background: transparent;
+    border-color: var(--text-muted);
+}
+
+.script-editor__dot--held {
+    background: radial-gradient(circle, var(--text-muted) 0 1.5px, transparent 2px);
+    border-color: var(--text-muted);
+}
+
+.script-editor__dot:hover {
+    box-shadow: 0 0 0 3px var(--hover-bg-strong);
+}
+
+.script-editor__dot:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--accent);
 }
 
 /* ── Item icons ──────────────────────────────────────────── */
@@ -272,9 +477,7 @@
     color: var(--accent-text);
 }
 
-.script-editor__item--group > .script-editor__item-name {
-    font-style: italic;
-}
+
 
 /* A word in a box: the chip corner and the caption step. */
 .script-editor__item-count {
@@ -304,8 +507,15 @@
     color: var(--text-muted);
 }
 
-.script-editor__item--inherited-disabled {
-    opacity: 0.4;
+/* Not running because a group above it is off: the quiet ink. */
+.script-editor__item--inherited-disabled .script-editor__item-name {
+    color: var(--text-disabled);
+}
+
+/* Switched off itself: struck through as well (desktop's tree). */
+.script-editor__item--off .script-editor__item-name {
+    color: var(--text-disabled);
+    text-decoration: line-through;
 }
 
 /* ── Drag and drop ───────────────────────────────────────── */
@@ -346,7 +556,7 @@
 
 .script-editor__item-name {
     flex: 1;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -370,10 +580,9 @@
 .script-editor__meta {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 8px 12px;
+    gap: 8px;
+    padding: 12px;
     background: var(--bg);
-    border-bottom: 1px solid var(--border);
     flex-shrink: 0;
     box-sizing: border-box;
     /* Static, content-sized header. Capped + scrollable so a tall form (e.g. a
@@ -387,6 +596,62 @@
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+/* Desktop's form rows: the word in a column of its own, in the chrome's
+   muted ink, the field taking the rest. */
+.script-editor__row-label {
+    flex: 0 0 72px;
+    color: var(--text-muted);
+    font-size: 13px;
+    user-select: none;
+}
+
+.script-editor__meta-row--top {
+    align-items: flex-start;
+}
+
+.script-editor__meta-row--top > .script-editor__row-label {
+    padding-top: 5px;
+}
+
+.script-editor__meta-row--top > textarea {
+    flex: 1;
+}
+
+/* ── Code pane ───────────────────────────────────────────────
+   The code on the edbee theme's surface under a heading naming it, the
+   caret's place on the right; inset from the window like desktop's. */
+.script-editor__code {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    margin: 0 12px 10px;
+    border-radius: var(--radius-panel);
+    overflow: hidden;
+    background: var(--code-bg);
+}
+
+.script-editor__code-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 30px;
+    padding: 0 10px;
+    background: var(--separator);
+    color: var(--text-muted);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.script-editor__code-title {
+    color: var(--text-muted);
+}
+
+.script-editor__code-caret {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
 }
 
 .script-editor__name {
@@ -656,30 +921,18 @@
     line-height: 1.45;
 }
 
-.script-editor__actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 6px;
-    padding: 6px 10px;
-    border-top: 1px solid var(--border);
-    background: var(--bg-glass);
-    -webkit-backdrop-filter: blur(12px);
-    backdrop-filter: blur(12px);
-    flex-shrink: 0;
-}
-
 /* ── Script log ─────────────────────────────────────────── */
+/* What running the code printed: a field-toned well under the code pane. */
 .script-editor__log {
-    height: 96px;
+    height: 84px;
     flex-shrink: 0;
     overflow-y: auto;
-    border-top: 1px solid var(--border);
+    margin: 0 12px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-panel);
     background: var(--bg-input);
     color: var(--text);
     padding: 4px 8px;
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
 }
 
 .script-editor__log-empty {
@@ -712,8 +965,8 @@
     height: 13px;
     min-width: 13px;
     padding: 0 4px;
-    background: var(--danger, #e05a5a);
-    color: #fff;
+    background: var(--state-error);
+    color: var(--bg-input);
     font-size: 9px;
     font-weight: 700;
     border-radius: 7px;
@@ -1972,4 +2225,10 @@
     color: var(--text-dim);
     opacity: 0.6;
     font-variant-numeric: tabular-nums;
+}
+
+/* A count rather than an alarm (installed packages): the chip's quiet face. */
+.script-editor__error-badge--count {
+    background: var(--hover-bg-strong);
+    color: var(--text-muted);
 }
