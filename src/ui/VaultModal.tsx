@@ -31,6 +31,17 @@ import { describeThrown } from '../utils/describeThrown';
  *  actually let their manager save it rather than picking something memorable. */
 const MIN_PASSPHRASE = 8;
 
+/** "The one password in here", "The 3 passwords and 1 saved sign-in in here" —
+ *  the subject of the delete-vault warning, naming what is about to be lost. */
+export function describeVaultContents(passwords: number, signIns: number): string {
+    const parts: string[] = [];
+    if (passwords > 0 || signIns === 0) {
+        parts.push(passwords === 1 ? 'one password' : `${passwords} passwords`);
+    }
+    if (signIns > 0) parts.push(signIns === 1 ? 'one saved sign-in' : `${signIns} saved sign-ins`);
+    return `The ${parts.join(' and ')} in here`;
+}
+
 export function VaultModal({ mode, reason, seed, connectionNames, onDone }: VaultUIProps) {
     const snapshot = useVault();
     const vault = getVault();
@@ -145,9 +156,8 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
     const discardVault = async (afterwards: 'close' | 'stay') => {
         const ok = await askConfirm({
             title: 'Delete saved logins',
-            message: snapshot.entryIds.length === 1
-                ? 'The one password in here cannot be recovered without a way to unlock it — deleting is the only way forward. You can set up saved logins again straight away.'
-                : `The ${snapshot.entryIds.length} passwords in here cannot be recovered without a way to unlock it — deleting is the only way forward. You can set up saved logins again straight away.`,
+            message: `${describeVaultContents(snapshot.entryIds.length, snapshot.signInIds.length)} cannot be `
+                + 'recovered without a way to unlock it — deleting is the only way forward. You can set up saved logins again straight away.',
             tone: 'danger',
             buttons: [
                 { label: 'Cancel', value: false, variant: 'ghost' },
@@ -328,6 +338,13 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
         () => snapshot.entryIds.map(id => ({ id, name: connectionNames?.[id] })),
         [snapshot.entryIds, connectionNames],
     );
+    // GMCP Char.Login reconnect tokens a game issued after a browser sign-in.
+    // Their ids are stored in the clear like the passwords', so the list shows
+    // while locked; removing one needs the vault open, as removing a password does.
+    const signIns = useMemo(
+        () => snapshot.signInIds.map(id => ({ id, name: connectionNames?.[id] })),
+        [snapshot.signInIds, connectionNames],
+    );
 
     const manageView = () => (
         <div className="vault-body">
@@ -472,6 +489,37 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
                             )}
                     </div>
 
+                    {signIns.length > 0 && (
+                        <div className="vault-section">
+                            <div className="form-section-title form-section-title--sub">
+                                Saved sign-ins ({signIns.length})
+                            </div>
+                            <p className="vault-hint vault-hint--small">
+                                Kept when a game signs you in through its web page, so you are signed in
+                                automatically next time. After removing one, you sign in on that page again.
+                            </p>
+                            <ul className="vault-list">
+                                {signIns.map(entry => (
+                                    <li key={entry.id}>
+                                        <span className="vault-list-name">
+                                            {entry.name ?? <em>deleted profile</em>}
+                                        </span>
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            disabled={busy || snapshot.locked}
+                                            title={snapshot.locked ? 'Unlock the vault to change what it holds.' : undefined}
+                                            aria-label={`Remove the saved sign-in for ${entry.name ?? 'a deleted profile'}`}
+                                            onClick={() => run(async () => { await vault?.setSignIn(entry.id, null); })}
+                                        >
+                                            Remove
+                                        </Button>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+
                     <div className="vault-section vault-section--danger">
                         {/* Deliberately NOT disabled while locked: a forgotten
                             passphrase leaves this as the only way out, and the
@@ -483,7 +531,7 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
                             disabled={busy}
                             onClick={() => void discardVault('stay')}
                         >
-                            Delete the vault and every password in it
+                            Delete the vault and everything in it
                         </Button>
                     </div>
                 </>
