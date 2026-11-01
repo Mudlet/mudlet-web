@@ -6742,6 +6742,12 @@ export class ScriptingEngine implements EngineHost {
         // lands on the same font raises nothing, as setDisplayFont does not.
         const mainFont = (): [string, number] => [this.api.getFont() ?? '', this.api.getFontSize() ?? 0];
         let lastMainFont = mainFont().join('\u0000');
+        // The script editor's font is reported the same way, by what it reads
+        // code in: ("editorFontFollowsDisplay", bool) when it starts or stops
+        // following the display font, then ("editor font", family, size) when
+        // the font it shows moved — which a display font moving is, only while
+        // the editor follows it.
+        let lastEditorFont = this.api.editorFontState();
         this.unsubs.push(useAppStore.subscribe((state) => {
             const next = (state.connectionProfile[this.connectionId] ?? {}) as Record<string, unknown>;
             if (next === lastProfile) return;
@@ -6751,6 +6757,9 @@ export class ScriptingEngine implements EngineHost {
             const fontNow = `${family}\u0000${size}`;
             const fontChanged = fontNow !== lastMainFont;
             lastMainFont = fontNow;
+            const prevEditorFont = lastEditorFont;
+            const editorFont = this.api.editorFontState();
+            lastEditorFont = editorFont;
             // Adopted before anything is raised, not after: a handler is allowed
             // to write a setting back from inside the event, and that write
             // re-enters this subscriber. Diffing it against the pre-change
@@ -6765,6 +6774,12 @@ export class ScriptingEngine implements EngineHost {
                 // raises it before Host::updateConsolesFont reports the setting.
                 this.raiseEvent('sysFontChangeEvent', ['main', family, size]);
                 this.raiseEvent('sysSettingChanged', ['main window font', family, size]);
+            }
+            if (editorFont.follows !== prevEditorFont.follows) {
+                this.raiseEvent('sysSettingChanged', ['editorFontFollowsDisplay', editorFont.follows]);
+            }
+            if (editorFont.family !== prevEditorFont.family || editorFont.size !== prevEditorFont.size) {
+                this.raiseEvent('sysSettingChanged', ['editor font', editorFont.family, editorFont.size]);
             }
         }));
 
