@@ -445,7 +445,7 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
         show('docs') ? { kind: 'button', id: 'docs', icon: <IconDocs />, label: 'Docs', title: 'Lua scripting reference', run: onOpenDocs } : null,
         show('help') ? { kind: 'button', id: 'help', icon: <IconHelp />, label: 'Help', title: 'Profiles, connecting, storage and browser limits', run: onOpenHelp } : null,
         show('settings') ? { kind: 'button', id: 'settings', icon: <IconSettings />, label: 'Settings', run: onOpenSettings } : null,
-        show('notepad') ? { kind: 'button', id: 'notepad', icon: <IconNotepad />, label: 'Notepad', title: 'Notes for this profile, kept in notes.txt', run: onOpenNotepad } : null,
+        show('notepad') ? { kind: 'button', id: 'notepad', icon: <IconNotepad />, label: 'Notepad', title: 'Notes for this profile, kept in notes.json', run: onOpenNotepad } : null,
         show('files') ? { kind: 'button', id: 'files', icon: <IconFiles />, label: 'Files', run: onOpenFiles } : null,
         show('logs') ? { kind: 'button', id: 'logs', icon: <IconLogs />, label: 'Logs', run: onOpenLogs } : null,
         show('record') ? {

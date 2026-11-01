@@ -367,6 +367,10 @@ export interface ProfileSettings {
      *  enabled so existing profiles opt in without a migration; set to `false`
      *  to stop recording for this profile. */
     loggingEnabled?: boolean;
+    /** The Notepad's send controls (Send all / line / selection, Prepend,
+     *  Stop) are shown. Hidden unless set, as desktop keeps them
+     *  (`Notepad/SendControlsVisible` in the profile's ini). */
+    notepadSendControls?: boolean;
     /** Flash the browser tab title (Mudlet's taskbar-blink equivalent) when new
      *  server data arrives while the Mudlet Web tab/window is unfocused. Off unless
      *  explicitly set to true. */

@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import type { ProfileVFS } from '../../src/scripting/vfs/ProfileVFS';
-import { countInNotes, findInNotes, notesPath, readNotes, writeNotes } from '../../src/ui/notepad';
+import {
+    closeTab, countInNotes, findInNotes, lineAt, lineToSend, loadNotepad, moveTab, notesPath, parseNotepad, saveNotepad,
+} from '../../src/ui/notepad';
 import { buildAppMenus } from '../../src/ui/menu/appMenus';
 import { APP_SHORTCUTS } from '../../src/ui/commands/appShortcuts';
 
-// Mudlet's Notepad (dlgNotepad) keeps one plain-text file per profile,
-// notes.txt in the profile's home directory.
+// Mudlet's Notepad (dlgNotepad) keeps named tabs per profile in notes.json in
+// the profile's home directory, migrating the older single-note text files.
 
 function fakeVfs(): ProfileVFS & { files: Map<string, string> } {
     const files = new Map<string, string>();
@@ -18,17 +20,67 @@ function fakeVfs(): ProfileVFS & { files: Map<string, string> } {
     } as unknown as ProfileVFS & { files: Map<string, string> };
 }
 
-describe('notes.txt', () => {
+describe('notes.json', () => {
     it('lives in the profile home, where getMudletHomeDir() points', () => {
-        expect(notesPath(fakeVfs())).toBe('/profiles/abc/notes.txt');
+        expect(notesPath(fakeVfs())).toBe('/profiles/abc/notes.json');
     });
 
-    it('reads empty before anything was written, and round-trips text', () => {
+    it('opens one empty "Notes" tab before anything was written', () => {
+        expect(loadNotepad(fakeVfs())).toEqual({ tabs: [{ name: 'Notes', content: '' }], activeTab: 0 });
+    });
+
+    it('round-trips tabs and the active tab in desktop’s shape', () => {
         const vfs = fakeVfs();
-        expect(readNotes(vfs)).toBe('');
-        writeNotes(vfs, 'kill the rat\nbuy bread');
-        expect(vfs.files.get('/profiles/abc/notes.txt')).toBe('kill the rat\nbuy bread');
-        expect(readNotes(vfs)).toBe('kill the rat\nbuy bread');
+        const data = { tabs: [{ name: 'Quests', content: 'kill the rat' }, { name: 'Shop', content: 'bread\nmilk' }], activeTab: 1 };
+        saveNotepad(vfs, data);
+        const written = JSON.parse(vfs.files.get('/profiles/abc/notes.json')!);
+        expect(written).toEqual({ version: 1, ...data });
+        expect(loadNotepad(vfs)).toEqual(data);
+    });
+
+    it('migrates desktop’s single pre-tab note, preferring notes_utf8.txt', () => {
+        const vfs = fakeVfs();
+        vfs.files.set('/profiles/abc/notes.txt', 'old');
+        expect(loadNotepad(vfs)).toEqual({ tabs: [{ name: 'Notes', content: 'old' }], activeTab: 0 });
+        vfs.files.set('/profiles/abc/notes_utf8.txt', 'newer');
+        expect(loadNotepad(vfs).tabs[0].content).toBe('newer');
+        // Once notes.json exists, the old files are not read again.
+        saveNotepad(vfs, { tabs: [{ name: 'A', content: 'json' }], activeTab: 0 });
+        expect(loadNotepad(vfs).tabs[0].content).toBe('json');
+    });
+
+    it('is as forgiving as desktop’s restore()', () => {
+        const one = { tabs: [{ name: 'Notes', content: '' }], activeTab: 0 };
+        expect(parseNotepad('not json')).toEqual(one);
+        expect(parseNotepad('[]')).toEqual(one);
+        expect(parseNotepad('{"tabs":[]}')).toEqual(one);
+        expect(parseNotepad('{"tabs":[{"name":"","content":"x"}],"activeTab":7}'))
+            .toEqual({ tabs: [{ name: 'New Note', content: 'x' }], activeTab: 0 });
+    });
+});
+
+describe('tabs', () => {
+    const three = { tabs: ['a', 'b', 'c'].map(name => ({ name, content: '' })), activeTab: 1 };
+    const names = (d: typeof three) => d.tabs.map(t => t.name);
+
+    it('never closes the last tab', () => {
+        const one = { tabs: [{ name: 'a', content: '' }], activeTab: 0 };
+        expect(closeTab(one, 0)).toBe(one);
+    });
+
+    it('keeps the same tab active when another closes', () => {
+        const closedBefore = closeTab(three, 0);
+        expect(names(closedBefore)).toEqual(['b', 'c']);
+        expect(closedBefore.activeTab).toBe(0);
+        expect(closeTab(three, 2).activeTab).toBe(1);
+        // Closing the active last tab lands on its neighbour.
+        expect(closeTab({ ...three, activeTab: 2 }, 2).activeTab).toBe(1);
+    });
+
+    it('moves a tab and follows the active one', () => {
+        const moved = moveTab(three, 0, 2);
+        expect(names(moved)).toEqual(['b', 'c', 'a']);
+        expect(moved.tabs[moved.activeTab].name).toBe('b');
     });
 });
 
@@ -46,16 +98,28 @@ describe('the find bar', () => {
     });
 
     it('steps backwards and wraps to the last match', () => {
-        expect(findInNotes(text, 'rat', 0, 3, { backwards: true })!.start).toBe(23);
-        expect(findInNotes(text, 'rat', 23, 26, { backwards: true })!.start).toBe(12);
+        expect(findInNotes(text, 'rat', 0, 3, true)!.start).toBe(23);
+        expect(findInNotes(text, 'rat', 23, 26, true)!.start).toBe(12);
     });
 
-    it('honours match case and reports no match', () => {
-        expect(findInNotes(text, 'rat', 0, 0, { matchCase: true })!.start).toBe(12);
+    it('ignores case, as desktop’s find does, and reports no match', () => {
+        expect(findInNotes(text, 'RAT', 0, 0)!.start).toBe(0);
         expect(findInNotes(text, 'mouse', 0, 0)).toBeNull();
         expect(findInNotes(text, '', 0, 0)).toBeNull();
         expect(countInNotes(text, 'rat')).toBe(3);
-        expect(countInNotes(text, 'rat', true)).toBe(1);
+    });
+});
+
+describe('sending', () => {
+    it('takes the line under the caret', () => {
+        expect(lineAt('one\ntwo\nthree', 5)).toBe('two');
+        expect(lineAt('one\ntwo', 0)).toBe('one');
+        expect(lineAt('one\ntwo', 7)).toBe('two');
+    });
+
+    it('prepends, and skips blank lines', () => {
+        expect(lineToSend('north', 'say ')).toBe('say north');
+        expect(lineToSend('', 'say ')).toBeNull();
     });
 });
 

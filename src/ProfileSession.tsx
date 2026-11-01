@@ -1438,6 +1438,10 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     connectionId={connection.id}
                     connectionName={connection.name}
                     vfs={vfs}
+                    onSend={line => {
+                        if (engineRef.current) engineRef.current.sendCommand(line);
+                        else send(line, true);
+                    }}
                     onClose={() => setNotepadOpen(false)}
                 />
             )}
