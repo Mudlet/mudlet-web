@@ -185,7 +185,9 @@ describe('CharLoginController — version 2', () => {
         h.controller.request(v2(['oauth']));
         h.controller.url({ url: 'https://game.example/login', provider: 'discord' });
         expect(h.offers.at(-1)).toEqual({ url: 'https://game.example/login', provider: 'discord', flow: 'server' });
-        expect(h.posts.at(-1)?.[1]).toContain('https://game.example/login');
+        // Mudlet's hand-off wording, without the link (the dialog carries it).
+        expect(h.posts.at(-1)).toEqual(['INFO',
+            'Opening your browser to sign in with Discord. Complete the login there, then return here.']);
         // The token that follows is saved with that provider and announced once.
         h.controller.token({ account: 'rahj', token: 'tok', secureOnly: true });
         h.controller.token({ account: 'rahj', token: 'tok2', secureOnly: true });
@@ -194,6 +196,46 @@ describe('CharLoginController — version 2', () => {
         expect(h.posts.filter(([, t]) => t === CHAR_LOGIN_TOKEN_SAVED_MESSAGE)).toHaveLength(1);
         h.controller.result({ success: true });
         expect(h.offers.at(-1)).toBeNull();
+    });
+
+    describe('closes a Char.Login.URL offer once the game moves past it', () => {
+        const offered = () => {
+            const h = harness();
+            h.controller.request(v2(['oauth']));
+            h.controller.url({ url: 'https://game.example/login', provider: 'discord' });
+            expect(h.offers.at(-1)).not.toBeNull();
+            return h;
+        };
+        it('on a token', () => {
+            const h = offered();
+            h.controller.token({ account: 'rahj', token: 'tok', secureOnly: true });
+            expect(h.offers.at(-1)).toBeNull();
+        });
+        it('on a failed result', () => {
+            const h = offered();
+            h.controller.result({ success: false, message: 'no' });
+            expect(h.offers.at(-1)).toBeNull();
+        });
+        it('on the next Char.Login.Default (StickMUD: sign-in not linked to a character)', () => {
+            const h = offered();
+            h.tick(SIGN_IN_ATTEMPT_INTERVAL_MS);
+            h.controller.request(v2(['oauth']));
+            expect(h.offers.at(-1)).toBeNull();
+        });
+        it('on player input', () => {
+            const h = offered();
+            h.controller.playerInput();
+            expect(h.offers.at(-1)).toBeNull();
+        });
+        it('but not our own OAuth offer on player input or a re-sent Default', () => {
+            const h = harness();
+            h.controller.request(v2(['oauth'], { oauth: OAUTH }));
+            h.flows[0].opts.onAuthorizationUrl('https://id.example/auth');
+            expect(h.offers.at(-1)).toMatchObject({ flow: 'client' });
+            h.controller.playerInput();
+            h.controller.request(v2(['oauth'], { oauth: OAUTH }));
+            expect(h.offers.at(-1)).toMatchObject({ flow: 'client' });
+        });
     });
 
     it('reports an invalid sign-in link without rendering it', () => {

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from './components/Button';
 import { useModalFocus } from './components/useModalFocus';
 import { charLoginProviderName } from '../mud/protocol/charLoginFlow';
@@ -26,6 +26,33 @@ interface Props {
 export function BrowserSignInModal({ connectionName, offer, onClose, onUseGameSignIn }: Props) {
     const ref = useModalFocus<HTMLDivElement>(onClose);
     const [opened, setOpened] = useState(false);
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
+    // Set by the link's click, not only by a blur: the new tab can take focus
+    // before the effect below has subscribed.
+    const awayRef = useRef(false);
+    // A game-linked page ends in plain text — StickMUD sends no GMCP at all
+    // after Char.Login.URL, only "Signed in as …" — so nothing on the wire can
+    // close this. The dialog's job is done once the player has opened the page
+    // and come back, which is exactly what it asks them to do. Our own OAuth
+    // flow keeps it open: that one closes itself when the code is captured.
+    useEffect(() => {
+        if (!opened || offer.flow !== 'server') return;
+        const leave = () => { awayRef.current = true; };
+        const back = () => {
+            if (!awayRef.current || document.visibilityState !== 'visible' || !document.hasFocus()) return;
+            onCloseRef.current();
+        };
+        window.addEventListener('blur', leave);
+        window.addEventListener('focus', back);
+        const onVisibility = () => (document.visibilityState === 'hidden' ? leave() : back());
+        document.addEventListener('visibilitychange', onVisibility);
+        return () => {
+            window.removeEventListener('blur', leave);
+            window.removeEventListener('focus', back);
+            document.removeEventListener('visibilitychange', onVisibility);
+        };
+    }, [opened, offer.flow]);
     const provider = charLoginProviderName(offer.provider);
     const title = provider ? `Sign in with ${provider}` : 'Sign in';
     return (
@@ -71,7 +98,7 @@ export function BrowserSignInModal({ connectionName, offer, onClose, onUseGameSi
                             href={offer.url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            onClick={() => setOpened(true)}
+                            onClick={() => { awayRef.current = true; setOpened(true); }}
                             autoFocus
                         >
                             {opened ? 'Open the sign-in page again' : 'Open the sign-in page'}

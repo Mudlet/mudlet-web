@@ -473,11 +473,13 @@ export function charLoginProviderName(provider?: string): string {
 /** Offered with a `Char.Login.URL` or the client-driven flow's sign-in page. A
  *  browser blocks a tab opened outside a user gesture, so where Mudlet
  *  launches the system browser we always offer the link. */
-export function charLoginSignInLinkMessage(url: string, provider?: string): string {
+/** Mudlet's `GMCPAuthenticator::announceBrowserHandoff` wording. No link: the
+ *  sign-in dialog carries it, and a game-linked page is printed by the game. */
+export function charLoginSignInLinkMessage(provider?: string): string {
     const display = charLoginProviderName(provider);
     return display
-        ? `To sign in with ${display}, open this link in your browser: ${url}`
-        : `To sign in, open this link in your browser: ${url}`;
+        ? `Opening your browser to sign in with ${display}. Complete the login there, then return here.`
+        : 'Opening your browser to sign in. Complete the login there, then return here.';
 }
 
 export const CHAR_LOGIN_INVALID_URL_MESSAGE =

@@ -178,6 +178,7 @@ export class CharLoginController {
     private reconnectDeadline: unknown = null;
     private oauthFlow: Pick<OAuthClientFlow, 'start' | 'abort' | 'done'> | null = null;
     private offerShown = false;
+    private offerFlow: SignInOffer['flow'] | null = null;
 
     private readonly now: () => number;
     private readonly setTimer: (fn: () => void, ms: number) => unknown;
@@ -266,6 +267,9 @@ export class CharLoginController {
         }
         this.caps = caps;
         this.signInOffered = true;
+        // The game moved to its next step, so a page it linked earlier is
+        // finished with (StickMUD asks for a character name next).
+        this.withdrawServerOffer();
         // A browser sign-in the player may be halfway through answers this ask
         // already; restarting it would invalidate the page they have open.
         // (StickMUD re-sends Default once per menu step.)
@@ -420,6 +424,8 @@ export class CharLoginController {
 
     result(result: CharLoginResult): void {
         this.unanswered = false;
+        // Any answer ends a sign-in page the game linked: it has decided.
+        this.withdrawServerOffer();
         if (this.awaitingReconnectResult) {
             this.awaitingReconnectResult = false;
             this.clearReconnectDeadline();
@@ -502,7 +508,8 @@ export class CharLoginController {
 
     private offer(offer: SignInOffer): void {
         this.offerShown = true;
-        this.opts.ui.post('INFO', charLoginSignInLinkMessage(offer.url, offer.provider));
+        this.offerFlow = offer.flow;
+        this.opts.ui.post('INFO', charLoginSignInLinkMessage(offer.provider));
         this.opts.ui.offerSignIn(offer);
     }
 
@@ -512,6 +519,21 @@ export class CharLoginController {
         this.opts.ui.offerSignIn(null);
     }
 
+    /** Close a `Char.Login.URL` offer once the game has moved past it. The
+     *  game only says the page is done by what it does next — a token, a
+     *  result, its next `Default` — and some (StickMUD, for a sign-in not yet
+     *  linked to a character) send nothing but text. Our own OAuth offer has
+     *  its own ending (captured / failed) and is left alone. */
+    private withdrawServerOffer(): void {
+        if (this.offerFlow === 'server') this.withdrawOffer();
+    }
+
+    /** The player sent a command. A game waiting on a browser sign-in takes
+     *  input as "cancel" or as the next answer, so its page is done with. */
+    playerInput(): void {
+        this.withdrawServerOffer();
+    }
+
     // ── Char.Login.Token ─────────────────────────────────────────────────
 
     token(t: CharLoginToken): void {
@@ -519,6 +541,8 @@ export class CharLoginController {
             console.warn('GMCP Char.Login.Token ignored: this connection\'s Char.Login.Default named no way to sign in, so no saved token could be replayed.');
             return;
         }
+        // A token means the browser sign-in finished.
+        this.withdrawServerOffer();
         const { vault, session, ui } = this.opts;
         // A rotation of a token this connection replayed, after the player
         // forgot that sign-in, belongs to the sign-in they discarded.

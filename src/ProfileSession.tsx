@@ -901,12 +901,13 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     };
 
     /** Console notice about GMCP Char.Login, in Mudlet's house style
-     *  (`[ WARN ]  - Could not log in to the game…`). */
+     *  (`[ WARN ]  - Could not log in to the game…`). cTelnet::postMessage
+     *  prints an INFO's prefix cyan and its body green. */
     const postLoginMessage = (text: string, level: 'INFO' | 'WARN' = 'WARN') => {
         session.events.emit(
             'message',
             level === 'INFO'
-                ? `\x1b[36m[ INFO ]\x1b[0m  - ${text}`
+                ? `\x1b[36m[ INFO ]\x1b[0m  - \x1b[32m${text}\x1b[0m`
                 : `\x1b[33m[ WARN ]  - ${text}\x1b[0m`,
             'script',
             Date.now(),
@@ -1199,6 +1200,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         // *before* splitting it and *before* the aliases can swallow it.
         // TCommandLine reads the box with toPlainText() first, so a NBSP goes
         // out as a space and U+2028/U+2029 split lines like a newline (#375).
+        charLoginRef.current?.playerInput();
         for (const line of cmdLineCommands(command)) {
             if (engineRef.current) {
                 engineRef.current.sendCommand(line);
