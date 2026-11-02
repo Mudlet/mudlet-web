@@ -3682,7 +3682,9 @@ export class ScriptingAPI {
     private runHyperlinkUri(uri: string): void {
         const action = classifyHyperlinkUri(uri);
         if (!action) return;
-        if (action.kind === 'send') this.send(action.command);
+        // TBuffer::decodeOSC builds `send([[cmd]], false)`: an OSC 8 link or
+        // menu item sends without echoing (MXP <send> and label links echo).
+        if (action.kind === 'send') this.send(action.command, false);
         else if (action.kind === 'prompt') this.printCmdLine(action.command, true);
         else this.openUrl(action.url);
     }
@@ -3753,7 +3755,8 @@ export class ScriptingAPI {
                 if (action.kind === 'send') selectedSuffix = `&selected=${now}`;
             }
             this.oscLinks.markVisited(command);
-            if (action.kind === 'send') this.send(action.command + selectedSuffix);
+            // No echo — `send([[cmd]], false)`, as TBuffer::decodeOSC builds it.
+            if (action.kind === 'send') this.send(action.command + selectedSuffix, false);
             else if (action.kind === 'prompt') this.printCmdLine(action.command, true);
             else this.openUrl(action.url);
             const doc = (ev?.currentTarget as HTMLElement | undefined)?.ownerDocument
