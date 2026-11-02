@@ -6543,6 +6543,10 @@ export class ScriptingEngine implements EngineHost {
                                 const now = Date.now();
                                 pieces.forEach((piece, i) => this.session.events.emit(
                                     'message', piece, type, now, isPrompt && i === pieces.length - 1));
+                            } else if (buffer.deleted && type === 'mud') {
+                                // The log still has to hear of it: text a gagging
+                                // trigger appendLog()s waits behind the line before.
+                                this.session.events.emit('line.gagged');
                             }
 
                             // Flush this line's trigger echoes right after it renders so

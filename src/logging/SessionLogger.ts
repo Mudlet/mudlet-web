@@ -139,9 +139,11 @@ export class SessionLogger {
 
     start(): void {
         if (this.unsubscribe) return;
-        this.unsubscribe = this.session.events.on('message', (text, type, timestamp, _isPrompt, joinedTo) => {
-            this.capture(text, type, timestamp, joinedTo);
+        const offMessage = this.session.events.on('message', (text, type, timestamp, isPrompt, joinedTo) => {
+            this.capture(text, type, timestamp, joinedTo, isPrompt);
         });
+        const offGagged = this.session.events.on('line.gagged', () => this.logTextAppendedBehindPendingLine());
+        this.unsubscribe = () => { offMessage(); offGagged(); };
         this.flushTimer = setInterval(() => { void this.flush(); }, FLUSH_INTERVAL_MS);
     }
 
@@ -262,6 +264,7 @@ export class SessionLogger {
         if (!this.vfs || !this.logFilePath || this.fileBuffer.length === 0) return;
         const tail = this.fileBuffer.join('');
         this.fileBuffer = [];
+        this.appendedSinceFlush = false;
         try {
             const existing = this.vfs.exists(this.logFilePath) ? this.vfs.readFile(this.logFilePath) : '';
             this.vfs.writeFile(this.logFilePath, existing + tail);
@@ -280,7 +283,14 @@ export class SessionLogger {
      * out of the log altogether. Each entry pairs a buffer line with its log
      * text as it read when it was logged.
      */
-    private pendingLog: { line: AnsiAwareBuffer; text: string }[] = [];
+    private pendingLog: { line: AnsiAwareBuffer; text: string; isPrompt?: boolean }[] = [];
+    /** `appendLog()` text that arrived while a line was held back, so it is
+     *  written after that line, in arrival order — TBuffer's
+     *  `mTextAppendedToLog`. */
+    private appendedToLog = '';
+    /** Whether `appendLog()` text went into {@link fileBuffer} since it was
+     *  last written out. */
+    private appendedSinceFlush = false;
 
     private logText(line: AnsiAwareBuffer): string {
         // An HTML log line is TBuffer::bufferToHtml's: spans naming both
@@ -298,9 +308,28 @@ export class SessionLogger {
             if (!line.deleted) this.fileBuffer.push(text);
         }
         this.pendingLog = [];
+        if (this.appendedToLog) this.fileBuffer.push(this.appendedToLog);
+        this.appendedToLog = '';
     }
 
-    private capture(text?: string | AnsiAwareBuffer, type?: string, timestamp?: number, joinedTo?: AnsiAwareBuffer[]): void {
+    /** A gagged line never reaches {@link capture}, so without this a run of
+     *  them would hold their `appendLog()` text until a line that is not gagged
+     *  arrives. A held prompt stays held, as the command echo still lands on it
+     *  (TBuffer::logTextAppendedBehindPendingLine). */
+    private logTextAppendedBehindPendingLine(): void {
+        if (!this.logFilePath) return;
+        if (this.appendedToLog && !this.pendingLog.at(-1)?.isPrompt) {
+            this.commitPendingLine();
+            this.appendedSinceFlush = true;
+        }
+        // Desktop schedules a flush for it (scheduleLogFlush), rather than
+        // leaving it for the next line that is not gagged.
+        if (this.appendedSinceFlush) this.flushLogFile();
+    }
+    private capture(
+        text?: string | AnsiAwareBuffer, type?: string, timestamp?: number,
+        joinedTo?: AnsiAwareBuffer[], isPrompt?: boolean,
+    ): void {
         if (text === undefined || text === null) return;
         const entryType = type ?? 'mud';
         if (SKIP_TYPES.has(entryType)) return;
@@ -327,7 +356,7 @@ export class SessionLogger {
                     .concat(joinedTo!.map(line => ({ line, text: this.logText(line) })));
             } else {
                 this.commitPendingLine();
-                this.pendingLog = [{ line: buffer, text: this.logText(buffer) }];
+                this.pendingLog = [{ line: buffer, text: this.logText(buffer), isPrompt }];
             }
         }
         if (this.buffer.length >= FLUSH_AT) void this.flush();
@@ -336,13 +365,19 @@ export class SessionLogger {
     /**
      * Mudlet `appendLog(text)` — TBuffer::appendLog writes the text straight
      * into the log file: no newline added, nothing escaped or wrapped in HTML,
-     * ANSI codes left as the raw bytes they are, and ahead of the held-back
-     * line (which is only written once the next line arrives). The log browser
-     * still records it as an entry of its own, with type 'appendLog'.
+     * ANSI codes left as the raw bytes they are. A line still held back for a
+     * possible command echo arrived first, so the text waits behind it and goes
+     * out with it. The log browser still records it as an entry of its own,
+     * with type 'appendLog'.
      */
     appendLine(text: string): void {
         this.capture(text ?? '', 'appendLog');
-        if (this.logFilePath && text) this.fileBuffer.push(text);
+        if (!this.logFilePath || !text) return;
+        if (this.pendingLog.length > 0 || this.appendedToLog) this.appendedToLog += text;
+        else {
+            this.fileBuffer.push(text);
+            this.appendedSinceFlush = true;
+        }
     }
 
     /** Persist any buffered lines and bump the session's end time/count. */

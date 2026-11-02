@@ -376,6 +376,9 @@ type TempEntryBase = {
      *  match — Mudlet mKeepFiring, set by setTriggerStayOpen. Spent one line
      *  at a time, and only on lines the pattern did NOT match. */
     keepFiring?: number;
+    /** How many times setTriggerStayOpen has set {@link keepFiring} —
+     *  desktop's `mStayOpenSetsByScript`, see fireTempEntryInner. */
+    stayOpenSets?: number;
     /** Run when the ENGINE stops this trigger of its own accord (a runaway
      *  lineage), so its owner can tear down what it holds. */
     onStopped?: () => void;
@@ -1044,6 +1047,11 @@ export class TriggerEngine {
     private readonly stayOpenAfterScript = new WeakMap<TriggerMatch, {
         keep: { remaining: number } | undefined;
     }>();
+    /** How many times {@link setStayOpen} has been called on each trigger —
+     *  desktop's `mStayOpenSetsByScript`. A script that sets its own trigger's
+     *  window while it runs has the last word over the fire length its match
+     *  would otherwise put back. */
+    private readonly stayOpenSets = new Map<string, number>();
 
     // Filter state: chainHeadId → last matched/captured text
     private filterActiveText = new Map<string, string>();
@@ -1764,11 +1772,13 @@ export class TriggerEngine {
         const active = this.tempKeyActive(entry.key);
         this.pass?.active.set(entry.key, active);
         if (!active) return;
+        const stayOpenSetsBefore = entry.stayOpenSets ?? 0;
         if (this.fireTempEntryMatch(id, entry, line, isPrompt)) {
             // Desktop's `mKeepFiring = mStayOpen` once the script has run, and a
-            // temporary trigger's mStayOpen is 0: a match closes the window, and
-            // the callback cannot hold its own trigger open (mudlet-web#238).
-            entry.keepFiring = 0;
+            // temporary trigger's mStayOpen is 0: a match closes the window —
+            // unless the callback set it itself while it ran, which stands
+            // (TTrigger::match's mStayOpenSetsByScript check).
+            if ((entry.stayOpenSets ?? 0) === stayOpenSetsBefore) entry.keepFiring = 0;
             // A match lets the line through to its children — except a line
             // trigger's, which returns before TTrigger::match reaches them.
             if (entry.kind !== 'line') this.pass?.open.add(entry.key);
@@ -2260,6 +2270,8 @@ export class TriggerEngine {
     /** Run a permanent trigger's script inside its lineage, so what it creates
      *  is enrolled behind it rather than starting a lineage of its own. */
     private execPerm(m: TriggerMatch, exec: (match: TriggerMatch) => void): void {
+        const id = m.trigger.id;
+        const setsBefore = this.stayOpenSets.get(id) ?? 0;
         this.runAsTrigger(
             m.trigger.name,
             this.lineageOfRoot(this.rootIdOf(m.trigger)),
@@ -2267,7 +2279,9 @@ export class TriggerEngine {
         const after = this.stayOpenAfterScript.get(m);
         if (!after) return;
         this.stayOpenAfterScript.delete(m);
-        const id = m.trigger.id;
+        // The script has already run: a setTriggerStayOpen() it made must not
+        // be undone here (TTrigger::match).
+        if ((this.stayOpenSets.get(id) ?? 0) !== setsBefore) return;
         if (after.keep) this.keepFiring.set(id, after.keep);
         else this.keepFiring.delete(id);
     }
@@ -2740,6 +2754,7 @@ export class TriggerEngine {
     setStayOpen(ids: string[], lines: number): void {
         const count = Math.max(0, Math.trunc(lines));
         for (const id of ids) {
+            this.stayOpenSets.set(id, (this.stayOpenSets.get(id) ?? 0) + 1);
             // No match to replay: the trigger may never have matched at all, and
             // one opened this way is being fired by the caller, not by its own
             // pattern. applyFireLength fires it with nothing captured.
@@ -2765,7 +2780,10 @@ export class TriggerEngine {
             if (entry.name !== name) continue;
             // A complex one keeps its window where a permanent trigger does.
             if (entry.kind === 'complex') this.setStayOpen([entry.key], lines);
-            else entry.keepFiring = Math.max(0, Math.trunc(lines));
+            else {
+                entry.keepFiring = Math.max(0, Math.trunc(lines));
+                entry.stayOpenSets = (entry.stayOpenSets ?? 0) + 1;
+            }
             found = true;
         }
         return found;

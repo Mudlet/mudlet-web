@@ -98,7 +98,7 @@ describe('session log files match desktop (mudlet-web#357)', () => {
         await logger.stop();
     });
 
-    it('writes appendLog text verbatim, ahead of the held-back line', async () => {
+    it('writes appendLog text verbatim, behind the held-back line', async () => {
         const { session, logger, body } = logging();
         const echo = (text: string) => session.events.emit('message', new AnsiAwareBuffer(text), 'script');
         logger.appendLine('APP1-NO-NL');
@@ -107,7 +107,10 @@ describe('session log files match desktop (mudlet-web#357)', () => {
         logger.appendLine('');
         echo('ECHO2');
         logger.appendLine('APP3 \x1b[31mansi\x1b[0m\n');
-        expect(body()).toEqual(['APP1-NO-NL<b>APP2</b>', 'ECHO1', 'APP3 \x1b[31mansi\x1b[0m', 'ECHO2']);
+        // Nothing is held back when APP1 arrives, so it goes straight out;
+        // the rest wait behind the line held for a command echo, which
+        // arrived first (TBuffer::appendLog's mTextAppendedToLog).
+        expect(body()).toEqual(['APP1-NO-NLECHO1', '<b>APP2</b>', 'ECHO2', 'APP3 \x1b[31mansi\x1b[0m']);
     });
 
     it('writes appendLog markup as-is in an HTML log', async () => {
