@@ -127,27 +127,27 @@ describe('Mudlet 5.x host events', () => {
         it('is raised with false when the page loses focus and true when it gets it back', () => {
             pageHasFocus = false;
             fire('blur');
-            vi.runAllTimers();
+            vi.runOnlyPendingTimers();
             pageHasFocus = true;
             fire('focus');
-            vi.runAllTimers();
+            vi.runOnlyPendingTimers();
             expect(focusEvents()).toEqual(['sysApplicationFocusChangeEvent:false', 'sysApplicationFocusChangeEvent:true']);
         });
 
         it('is raised only on a change', () => {
             fire('focus');
-            vi.runAllTimers();
+            vi.runOnlyPendingTimers();
             pageHasFocus = false;
             fire('blur');
             fire('blur');
-            vi.runAllTimers();
+            vi.runOnlyPendingTimers();
             expect(focusEvents()).toEqual(['sysApplicationFocusChangeEvent:false']);
         });
 
         it('is not raised when focus only moves into a frame inside the page', () => {
             // The window blurs, but the document still holds focus.
             fire('blur');
-            vi.runAllTimers();
+            vi.runOnlyPendingTimers();
             expect(focusEvents()).toEqual([]);
         });
 
