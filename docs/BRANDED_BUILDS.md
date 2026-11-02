@@ -97,7 +97,22 @@ that file as the source of truth.
   first open, **replacing** Mudlet Web's stock defaults rather than adding to
   them. Leave it unset to get the stock defaults (`run-lua-code` plus one
   mapper); set `[]` to preinstall nothing; list packages to get exactly those.
+  Or pass a function: it is handed the stock defaults this game would get and
+  returns the exact list, so you can drop one without vendoring the rest —
+  `packages: stock => stock.filter(p => p.name !== 'mudlet-base-ui')`.
+  The function gets its own copy of the list and its entries, so editing them
+  does no harm, but keep it cheap and free of side effects: besides install, it
+  runs whenever the package list asks whether a package may be uninstalled —
+  once per row, on every render — and there it is handed *every* bundled
+  default (both mappers, every game loader), not just this game's. Decide by
+  package name rather than by what `stock` happens to contain, or the lock the
+  package list shows can disagree with what was installed.
   See [Bundling Lua packages](#bundling-lua-packages) below.
+- **`requestPersistentStorage`** — `false` stops the client from calling
+  `navigator.storage.persist()` when a profile is opened or imported (default
+  `true`). Firefox turns that call into a permission prompt; opt out if your
+  players' data lives server-side or you'd rather not show it. Profiles then
+  stay in best-effort storage, which the browser may evict under pressure.
 - **`themes`** / **`availableThemes`** / **`defaultTheme`** — brand color
   themes and picker configuration (see [Theming](#theming) below).
 - **`toolbar`** — hide stock buttons, place your own commands, rebuild or remove

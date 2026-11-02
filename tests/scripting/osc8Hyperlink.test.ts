@@ -115,3 +115,17 @@ describe('createOsc8Hyperlink — OSC 8 extension query never leaks into command
     expect(sent).toEqual(['equip sword&selected=true', 'equip sword&selected=false']);
   });
 });
+
+// TBuffer::decodeOSC builds `send([[cmd]], false)` for a `send:` link and for
+// a `send:` menu item, so Mudlet sends either without echoing the command.
+// (MXP <send> and label links use the echoing form and are not affected.)
+describe('createOsc8Hyperlink — send: links do not echo', () => {
+  it('sends a clicked link and a menu item with echo off', () => {
+    const { api } = makeApi();
+    const calls: [string, boolean | undefined][] = [];
+    (api as unknown as { send: (c: string, e?: boolean) => void }).send = (c, e) => { calls.push([c, e]); };
+    api.createOsc8Hyperlink('send:2?config={"style":{"color":"#66ccff"}}')?.onClick?.(new Event('click') as MouseEvent);
+    (api as unknown as { runHyperlinkUri: (u: string) => void }).runHyperlinkUri('send:strike');
+    expect(calls).toEqual([['2', false], ['strike', false]]);
+  });
+});

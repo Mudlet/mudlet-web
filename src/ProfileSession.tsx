@@ -6,6 +6,7 @@ import { normaliseShortcut, type AddonCommand } from './ui/commands/addonCommand
 import { boundShortcuts, shortcutPlatform } from './ui/commands/appShortcuts';
 import { useMudSession } from './hooks/useMudSession';
 import { useAutoReconnect } from './hooks/useAutoReconnect';
+import { useRecordLastPlayed } from './hooks/useRecordLastPlayed';
 import { useEngines } from './hooks/useEngines';
 import { claimedByAppShortcut } from './hooks/useKeyboardShortcuts';
 import { Toolbar } from './ui/Toolbar';
@@ -18,16 +19,18 @@ import { ScriptEditorModal } from './ui/windows/ScriptEditorModal';
 import { SettingsModal } from './ui/SettingsModal';
 import { FileBrowserModal } from './ui/FileBrowserModal';
 import { LogBrowserModal } from './ui/LogBrowserModal';
+import { NotepadModal } from './ui/NotepadModal';
 import { ScriptingDocsModal } from './ui/ScriptingDocsModal';
 import { HelpModal } from './ui/HelpModal';
 import { AboutModal } from './ui/AboutModal';
 import { CharLoginModal } from './ui/CharLoginModal';
+import { BrowserSignInModal } from './ui/BrowserSignInModal';
+import { openSignInPage } from './ui/openSignInPage';
+import { CharLoginController, type SignInOffer } from './mud/CharLoginController';
+import { clientOAuthSupported, defaultOAuthRedirectUri } from './mud/protocol/oauthClientFlow';
 import { TlsUpgradeModal } from './ui/TlsUpgradeModal';
 import { TlsAlertBanner } from './ui/TlsAlertBanner';
 import { applyMsspVariable, emptyMsspTlsFacts, shouldOfferTlsUpgrade } from './mud/protocol/msspTls';
-import {
-    CHAR_LOGIN_SILENT_DROP_MESSAGE, charLoginFailureMessage, decideCharLoginRequest,
-} from './mud/protocol/charLoginFlow';
 import { describeCertCode, describeTlsFailure } from './mud/protocol/tlsCodes';
 import { savedServerEncoding } from './mud/protocol/charset';
 import type { TlsStatus } from './mud/events';
@@ -41,7 +44,9 @@ import { setBaseTitle, flashTitle, clearTitleFlash } from './utils/documentTitle
 import { getBrand, isBrandedMode } from './branding';
 import { setSessionCredentials } from './utils/sessionCredentials';
 import { readStoredLogin, pruneVaultEntries } from './utils/storedCredentials';
-import { vaultNeedsUnlock } from './vault/vaultAccess';
+import {
+    getVaultUI, saveVaultSignIn, vaultCanStoreSignIn, vaultHasSignIn, vaultLocked, vaultMissing, vaultNeedsUnlock, vaultSignIn,
+} from './vault/vaultAccess';
 import { useVaultSaver } from './ui/useVaultSaver';
 import { VaultUnlockPrompt } from './ui/VaultUnlockPrompt';
 import { applyAnsiPalette, setServerRedefineColorsAllowed, resetAllPaletteColors } from './mud/text/colors';
@@ -49,6 +54,8 @@ import { setOsc8HyperlinksEnabled } from './mud/text/hyperlinkConfig';
 import { effectiveAmbiguousWidthWide, setAmbiguousWidthWide } from './mud/text/wcwidth';
 import { setExpectColorSpaceId } from './mud/text/colorSpaceId';
 import { MAIN_CONSOLE_BUFFER_SIZE } from './mud/text/Console';
+import { AnsiAwareBuffer } from './mud/text/FormatState';
+import { CHAR_LOGIN_NO_VAULT_LINK, CHAR_LOGIN_NO_VAULT_MESSAGE, CHAR_LOGIN_VAULT_READY_MESSAGE } from './mud/protocol/charLoginFlow';
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
 import type { FileDialogRequest } from './mud/events';
 import { replayFileName } from './mud/replay/replayFormat';
@@ -76,6 +83,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const [scriptsOpen, setScriptsOpen] = useState(false);
     const [filesOpen, setFilesOpen] = useState<false | { initialPath?: string; initialLine?: number; pickedAt?: number }>(false);
     const [logsOpen, setLogsOpen] = useState(false);
+    const [notepadOpen, setNotepadOpen] = useState(false);
     const [docsOpen, setDocsOpen] = useState(false);
     const [helpOpen, setHelpOpen] = useState(false);
     const [aboutOpen, setAboutOpen] = useState(false);
@@ -124,38 +132,20 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const lastSentRef = useRef('');
     // Text auto-login (Mudlet's mTimerLogin/mTimerPass — see mud/autoLogin.ts),
     // created by the auto-login effect below; cancelled when GMCP Char.Login
-    // takes the login over. `gmcpAutoTried` guards against re-sending stored
-    // GMCP credentials in a loop when they're wrong; reset on each connect.
+    // takes the login over.
     const textAutoLogin = useRef<TextAutoLogin | null>(null);
-    const gmcpAutoTried = useRef(false);
-    // Set when the user picks "Use text login" in the credentials popup. Servers
-    // may re-send Char.Login.Default while their text login runs (StickMUD does,
-    // once per menu step) — without this the form would keep re-appearing over
-    // the very prompts the user chose to answer by hand. Reset on each connect.
-    const gmcpLoginDeclined = useRef(false);
-    // The account last handed to the server this connection (typed or auto-sent),
-    // so a rejected attempt can re-open the popup on the account the player
-    // actually used. Without it the retry form is prefilled from storage — which
-    // is empty whenever "remember" was off — and they retype everything. The
-    // password is deliberately not kept: it was just rejected, so the retry form
-    // opens with it blank and the cursor already in that field.
-    const lastLoginAttempt = useRef<{ account: string; save: boolean } | null>(null);
+    // GMCP Char.Login, versions 1 and 2 — everything from the per-connection
+    // "already tried / declined / unanswered" guards to reconnect tokens and
+    // the browser sign-in lives in the controller (mud/CharLoginController);
+    // this component only supplies the UI. Created with the session's event
+    // subscriptions below.
+    const charLoginRef = useRef<CharLoginController | null>(null);
+    // A browser sign-in page waiting for the player to open it.
+    const [signInOffer, setSignInOffer] = useState<SignInOffer | null>(null);
     // Reason text while the credential vault's unlock prompt is up, else null.
     const [vaultUnlock, setVaultUnlock] = useState<string | null>(null);
-    // Set when the GMCP login request is the thing waiting on that unlock, so
-    // dismissing the prompt falls through to the manual credentials form rather
-    // than leaving the server waiting for a reply that never comes.
-    const vaultPendingCharLogin = useRef(false);
-    // "Not now" on the unlock prompt, remembered for this connection: a server
-    // that re-asks for credentials must not re-raise a prompt already refused.
-    // Cleared on each connect.
-    const vaultDeclined = useRef(false);
-    // Set while credentials are in flight and the server has said nothing back.
-    // Cleared by a Char.Login.Result, by any server output (a game that lets us
-    // in starts talking immediately), and by a disconnect the player asked for.
-    // Still set at a disconnect ⇒ the game hung up on the login without a word,
-    // which is worth saying out loud — see CHAR_LOGIN_SILENT_DROP_MESSAGE.
-    const charLoginUnanswered = useRef(false);
+    // Vault setup, opened from the "Set up saved logins" link in the output.
+    const [vaultSetupOpen, setVaultSetupOpen] = useState(false);
 
     const outputFont = useAppStore(s => selectProfileField(s, connection.id, 'outputFont'));
     const mapperSymbolFont = useAppStore(s => selectProfileField(s, connection.id, 'mapper')?.symbolFont);
@@ -747,94 +737,63 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         const unsub6 = session.events.on('script.selectcmd', () => {
             requestCmdLineSelection('all');
         });
-        // GMCP Char.Login: the server asks for credentials.
-        const unsub7 = session.events.on('charLogin.request', (methods) => {
-            // GMCP login takes over — cTelnet's cancelLoginTimers.
-            textAutoLogin.current?.cancel();
-            const stored = readStoredLogin(connection.id);
-            const action = decideCharLoginRequest({
-                methods,
-                declined: gmcpLoginDeclined.current,
-                attempted: gmcpAutoTried.current,
-                account: stored.account,
-                password: stored.password,
-                credentialsLocked: !vaultDeclined.current && vaultNeedsUnlock(connection.id),
-            });
-            if (action.kind === 'decline') {
-                session.sendCharLoginCredentials();
-                return;
-            }
-            if (action.kind === 'autofill') {
-                gmcpAutoTried.current = true;
-                // Saved credentials just went out, so a retry form should open
-                // with the save box still ticked — that is what "saved" means
-                // here, whether they came from the vault or from memory.
-                lastLoginAttempt.current = { account: action.account, save: true };
-                charLoginUnanswered.current = true;
-                session.sendCharLoginCredentials(action.account, action.password);
-                return;
-            }
-            // A locked vault holding this profile's password is the reason we
-            // have nothing to send: ask to open it rather than for a password
-            // the user already saved. Safe to do here and not at connect time —
-            // the server blocks until we answer, so there is no race to lose.
-            if (action.kind === 'unlock') {
-                vaultPendingCharLogin.current = true;
-                setVaultUnlock(`${connection.name} has a saved login. Unlock it to sign in.`);
-                return;
-            }
-            // Servers re-send Char.Login.Default to ask again after rejecting an
-            // attempt. If the popup is already up showing that rejection, keep it
-            // — replacing the state with a blank one wipes the message and the
-            // player is left staring at an unexplained second form.
-            setCharLogin(prev => prev ?? {});
+        // GMCP Char.Login, versions 1 and 2. The controller decides; the
+        // callbacks below are the only UI it touches.
+        const charLogin = new CharLoginController({
+            session,
+            readStoredLogin: () => readStoredLogin(connection.id),
+            oauthRedirectUri: () => (clientOAuthSupported() ? defaultOAuthRedirectUri() : null),
+            vault: {
+                needsUnlock: () => vaultNeedsUnlock(connection.id),
+                locked: () => vaultLocked(),
+                missing: () => vaultMissing(),
+                signIn: () => vaultSignIn(connection.id),
+                hasSignIn: () => vaultHasSignIn(connection.id),
+                canStore: () => vaultCanStoreSignIn(),
+                save: (entry) => saveVaultSignIn(connection.id, entry),
+            },
+            ui: {
+                // GMCP login takes over — cTelnet's cancelLoginTimers.
+                cancelTextAutoLogin: () => textAutoLogin.current?.cancel(),
+                // Servers re-send Char.Login.Default to ask again after
+                // rejecting an attempt. If the popup is already up showing that
+                // rejection, keep it — replacing the state with a blank one
+                // wipes the message and leaves an unexplained second form.
+                showPrompt: () => setCharLogin(prev => prev ?? {}),
+                showPromptError: (error) => setCharLogin(prev => ({ ...prev, error })),
+                closePrompt: () => setCharLogin(null),
+                requestUnlock: (reason) => setVaultUnlock(reason === 'store'
+                    ? `Unlock your saved logins to keep ${connection.name} signed in next time. Choose "Not now" to sign in without saving.`
+                    : `${connection.name} has a saved login. Unlock it to sign in.`),
+                // Open the page straight away when the browser lets us, as
+                // Mudlet does; the dialog is only for when it would not.
+                offerSignIn: (offer) => setSignInOffer(offer && openSignInPage(offer.url) ? null : offer),
+                post: (level, text) => postLoginMessage(text, level),
+                suggestVaultSetup: () => postVaultSetupLink(),
+            },
         });
-        // Char.Login.Result: on failure re-open the popup with the server's
-        // message; on success the popup was already dismissed on submit. Once the
-        // user has opted into the text login, the outcome is theirs to read in the
-        // output — a failure there must not resurrect the form.
-        const unsub8 = session.events.on('charLogin.result', (result) => {
-            charLoginUnanswered.current = false;
-            if (result.success) { setCharLogin(null); return; }
-            // Report the failure in the output too, the way Mudlet does
-            // (GMCPAuthenticator::handleAuthResult). The popup is not a reliable
-            // place for it on its own: a server that rejects a login commonly
-            // drops the connection straight after, which tears the popup down,
-            // and a server doing GMCP login withholds its text output — so
-            // without this the attempt fails with nothing on screen at all.
-            postLoginMessage(charLoginFailureMessage(result.message));
-            // Mudlet's GMCPAuthenticator::handleAuthResult sets mDontReconnect
-            // on a failed login (GMCPAuthenticator.cpp:613). Servers commonly
-            // hang up straight after rejecting one, and auto-reconnect would
-            // otherwise redial and re-offer the same wrong credentials for as
-            // long as the profile stayed open.
-            session.dontReconnect = true;
-            if (gmcpLoginDeclined.current) return;
-            setCharLogin(prev => ({ ...prev, error: result.message || 'Login failed.' }));
-        });
+        charLoginRef.current = charLogin;
+        const unsub7 = session.events.on('charLogin.request', (caps) => charLogin.request(caps));
+        const unsub7b = session.events.on('charLogin.url', (link) => charLogin.url(link));
+        const unsub7c = session.events.on('charLogin.token', (token) => charLogin.token(token));
+        const unsub8 = session.events.on('charLogin.result', (result) => charLogin.result(result));
         // A reconnect/disconnect invalidates any pending login prompt — and if
         // the credentials we sent are still unanswered, this drop *is* the
-        // game's answer. Say so before the popup goes, or the attempt ends as an
-        // unexplained disconnect (measured on Achaea; see the message's docs).
-        const unsub9 = session.events.on('client.disconnect', () => {
-            if (charLoginUnanswered.current) {
-                charLoginUnanswered.current = false;
-                postLoginMessage(CHAR_LOGIN_SILENT_DROP_MESSAGE);
-            }
-            setCharLogin(null);
-        });
+        // game's answer, which the controller says out loud before the popup
+        // goes (measured on Achaea; see CHAR_LOGIN_SILENT_DROP_MESSAGE).
+        const unsub9 = session.events.on('client.disconnect', () => charLogin.disconnected());
         // Any server output means the game is still talking to us, so the login
-        // was not answered with a silent hangup — whatever happens later is a
-        // normal disconnect.
-        const unsub11 = session.events.on('flushLines', () => {
-            charLoginUnanswered.current = false;
-        });
+        // was not answered with a silent hangup.
+        const unsub11 = session.events.on('flushLines', () => charLogin.serverOutput());
         // Lua invokeFileDialog: queue the request; the FilePickerModal below
         // shows the head of the queue and resolves it via onPick.
         const unsub10 = session.events.on('script.filedialog', (request: FileDialogRequest) => {
             setFileDialogs(prev => [...prev, request]);
         });
-        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub5b(); unsub5c(); unsub6(); unsub7(); unsub8(); unsub9(); unsub10(); unsub11(); };
+        return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub5b(); unsub5c(); unsub6(); unsub7(); unsub7b(); unsub7c(); unsub8(); unsub9(); unsub10(); unsub11();
+            charLogin.dispose();
+            if (charLoginRef.current === charLogin) charLoginRef.current = null;
+        };
     }, [session]);
 
     // MSSP-advertised secure port, plus the outcome of any TLS handshake.
@@ -964,10 +923,35 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         );
     };
 
-    /** Console notice about a GMCP Char.Login outcome, in Mudlet's house style
-     *  (`[ WARN ]  - Could not log in to the game…`). */
-    const postLoginMessage = (text: string) => {
-        session.events.emit('message', `\x1b[33m[ WARN ]  - ${text}\x1b[0m`, 'script', Date.now());
+    /** Console notice about GMCP Char.Login, in Mudlet's house style
+     *  (`[ WARN ]  - Could not log in to the game…`). cTelnet::postMessage
+     *  prints an INFO's prefix cyan and its body green. */
+    const postLoginMessage = (text: string, level: 'INFO' | 'WARN' = 'WARN') => {
+        session.events.emit(
+            'message',
+            level === 'INFO'
+                ? `\x1b[36m[ INFO ]\x1b[0m  - \x1b[32m${text}\x1b[0m`
+                : `\x1b[33m[ WARN ]  - ${text}\x1b[0m`,
+            'script',
+            Date.now(),
+        );
+    };
+
+    /** "Want to stay signed in next time? Set up saved logins", the last
+     *  words a link that opens vault setup. Built as a buffer rather than an
+     *  ANSI string because a click needs a handler, which ANSI cannot carry. */
+    const postVaultSetupLink = () => {
+        const lead = `\x1b[36m[ INFO ]\x1b[0m  - \x1b[32m${CHAR_LOGIN_NO_VAULT_MESSAGE}\x1b[0m `;
+        const line = new AnsiAwareBuffer(`${lead}\x1b[4;36m${CHAR_LOGIN_NO_VAULT_LINK}\x1b[0m`);
+        const end = line.text.length;
+        line.setHyperlink([end - CHAR_LOGIN_NO_VAULT_LINK.length, end], {
+            title: 'Keep game sign-ins encrypted on this device',
+            onClick: () => {
+                // A second click after the vault was made has nothing to set up.
+                if (vaultMissing()) setVaultSetupOpen(true);
+            },
+        });
+        session.events.emit('message', line, 'script', Date.now());
     };
 
     /** Console notice from the KaVir TTYPE-version auto-detect, in Mudlet's
@@ -1048,11 +1032,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         });
         textAutoLogin.current = autoLogin;
         const onConnect = () => {
-            gmcpAutoTried.current = false;
-            gmcpLoginDeclined.current = false;
-            lastLoginAttempt.current = null;
-            charLoginUnanswered.current = false;
-            vaultDeclined.current = false;
+            charLoginRef.current?.connected();
             // A text-login game gives no signal we can wait behind — the name
             // prompt arrives when it arrives — so a locked vault has to be
             // offered here, at connect, rather than at the moment its password
@@ -1154,33 +1134,19 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
 
     // Hanging up on ourselves is not the game refusing the login, so drop the
     // "unanswered credentials" latch before the disconnect event fires.
-    const handleDisconnect = () => { charLoginUnanswered.current = false; disconnect(); };
+    const handleDisconnect = () => { charLoginRef.current?.userDisconnecting(); disconnect(); };
 
     /**
      * The vault unlock prompt closed. When a GMCP `Char.Login` request was the
-     * thing waiting on it, answer that request now — with the credentials the
-     * unlock just made readable, or with the empty reply that hands the sign-in
-     * to the game's own prompt.
-     * Leaving it unanswered would hang the login: the server withholds its own
-     * prompt until we reply.
+     * thing waiting on it, the controller answers it now — with what the unlock
+     * just made readable, or the hand-off to the game's own sign-in. Leaving it
+     * unanswered would hang the login: the server withholds its own prompt
+     * until we reply.
      */
     const handleVaultUnlockDone = (result: 'created' | 'unlocked' | 'closed') => {
         setVaultUnlock(null);
-        if (result === 'closed') vaultDeclined.current = true;
-        else pruneVaultEntries();
-        if (!vaultPendingCharLogin.current) return;
-        vaultPendingCharLogin.current = false;
-        const stored = readStoredLogin(connection.id);
-        if (result !== 'closed' && stored.account && stored.password) {
-            gmcpAutoTried.current = true;
-            lastLoginAttempt.current = { account: stored.account, save: true };
-            charLoginUnanswered.current = true;
-            session.sendCharLoginCredentials(stored.account, stored.password);
-            return;
-        }
-        // Still nothing to send: hand the sign-in to the game's own prompt, as
-        // decideCharLoginRequest does when nothing is saved at all.
-        session.sendCharLoginCredentials();
+        if (result !== 'closed') pruneVaultEntries();
+        charLoginRef.current?.vaultUnlockDone(result);
     };
     // Reads the store rather than the `connection` snapshot, so a reconnect after
     // a TLS upgrade dials the new secure port instead of the original one.
@@ -1194,6 +1160,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         enabled: liveConnection.reconnectOnDrop ?? false,
         redial: () => redialFromStore(),
     });
+    useRecordLastPlayed(session, connection.id);
 
     /** Redial using the connection record as it stands in the store right now,
      *  rather than the `connection` prop captured at render — the TLS handlers
@@ -1276,6 +1243,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         // *before* splitting it and *before* the aliases can swallow it.
         // TCommandLine reads the box with toPlainText() first, so a NBSP goes
         // out as a space and U+2028/U+2029 split lines like a newline (#375).
+        charLoginRef.current?.playerInput();
         for (const line of cmdLineCommands(command)) {
             if (engineRef.current) {
                 engineRef.current.sendCommand(line);
@@ -1365,6 +1333,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 mapDisabled={mapButtonDisabled}
                 onOpenScripts={handleOpenScripts}
                 onOpenFiles={handleOpenFiles}
+                onOpenNotepad={() => setNotepadOpen(true)}
                 onOpenLogs={() => setLogsOpen(true)}
                 onOpenDocs={() => setDocsOpen(true)}
                 onOpenHelp={() => setHelpOpen(true)}
@@ -1443,6 +1412,18 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     onPlayReplay={handlePlayReplay}
                 />
             )}
+            {notepadOpen && (
+                <NotepadModal
+                    connectionId={connection.id}
+                    connectionName={connection.name}
+                    vfs={vfs}
+                    onSend={line => {
+                        if (engineRef.current) engineRef.current.sendCommand(line);
+                        else send(line, true);
+                    }}
+                    onClose={() => setNotepadOpen(false)}
+                />
+            )}
             {logsOpen && (
                 <LogBrowserModal
                     connectionId={connection.id}
@@ -1501,6 +1482,18 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 <VaultUnlockPrompt reason={vaultUnlock} onDone={handleVaultUnlockDone} />
             )}
             {vaultSaver.element}
+            {vaultSetupOpen && (() => {
+                const VaultUI = getVaultUI();
+                return VaultUI && (
+                    <VaultUI
+                        mode="setup"
+                        onDone={(result) => {
+                            setVaultSetupOpen(false);
+                            if (result === 'created') postLoginMessage(CHAR_LOGIN_VAULT_READY_MESSAGE, 'INFO');
+                        }}
+                    />
+                );
+            })()}
             {charLogin && !tlsOffer && !vaultUnlock && (
                 <CharLoginModal
                     connectionName={connection.name}
@@ -1509,12 +1502,12 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     // rejected rather than from storage (which holds nothing when
                     // the password was never saved) — and blank the password, so
                     // the field that most likely needs fixing takes focus.
-                    initialAccount={lastLoginAttempt.current?.account
+                    initialAccount={charLoginRef.current?.lastLoginAttempt?.account
                         || readStoredLogin(connection.id).account
                         || charLoginAccount}
-                    initialPassword={lastLoginAttempt.current
+                    initialPassword={charLoginRef.current?.lastLoginAttempt
                         ? '' : readStoredLogin(connection.id).password}
-                    initialSave={lastLoginAttempt.current?.save}
+                    initialSave={charLoginRef.current?.lastLoginAttempt?.save}
                     // Branded builds never persist credentials, and a build with
                     // no vault has nowhere to put one.
                     allowSave={!isBrandedMode() && vaultSaver.canSave}
@@ -1525,13 +1518,6 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                         // failure re-opens the popup via the charLogin.result
                         // handler with the server's message.
                         setCharLogin(null);
-                        // We have now spent this connection's one automatic
-                        // attempt. A Char.Login.Default that arrives after this
-                        // (servers re-ask after rejecting) must raise the form
-                        // again rather than silently replay what just failed.
-                        gmcpAutoTried.current = true;
-                        lastLoginAttempt.current = { account, save };
-                        charLoginUnanswered.current = true;
                         if (isBrandedMode()) {
                             // Branded builds never persist credentials — keep
                             // them in memory for this page's reconnects only.
@@ -1548,14 +1534,29 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                             });
                             vaultSaver.save(connection.id, save ? password : null);
                         }
-                        session.sendCharLoginCredentials(account, password);
+                        // Spends this connection's one automatic attempt, so a
+                        // re-ask after a rejection raises the form again rather
+                        // than silently replaying what just failed.
+                        charLoginRef.current?.promptSubmitted(account, password, save);
                     }}
                     onCancel={() => {
                         // Empty reply → server falls back to its text login.
                         setCharLogin(null);
-                        gmcpLoginDeclined.current = true;
-                        session.sendCharLoginCredentials();
+                        charLoginRef.current?.promptDeclined();
                     }}
+                />
+            )}
+            {signInOffer && !charLogin && !tlsOffer && !vaultUnlock && (
+                <BrowserSignInModal
+                    connectionName={connection.name}
+                    offer={signInOffer}
+                    onClose={() => {
+                        setSignInOffer(null);
+                        charLoginRef.current?.dismissOffer();
+                    }}
+                    onUseGameSignIn={signInOffer.flow === 'client'
+                        ? () => charLoginRef.current?.useGameSignIn()
+                        : undefined}
                 />
             )}
         </ViewportModeProvider>

@@ -437,12 +437,20 @@ export class WindowManager {
         }
         this.onDockExtentsChange?.({ ...this.dockExtents });
 
-        // 2) Replace the hint cache. structuredClone so subsequent saveHint
-        //    mutations don't write back into the snapshot object.
-        this.windowHints = structuredClone(snapshot.hints);
+        // 2) Lay the snapshot over the hint cache. structuredClone so
+        //    subsequent saveHint mutations don't write back into the snapshot
+        //    object. Merged rather than replaced: like QMainWindow::restoreState
+        //    the load touches only the windows the layout names, so a window
+        //    opened since the save keeps its hint — openUserWindow now loads the
+        //    layout as each new window opens, and that window is never in it.
+        this.windowHints = { ...this.windowHints, ...structuredClone(snapshot.hints) };
+        // Steps 3-5 walk the layout's windows alone: a hint the cache kept for
+        // a window since deleted is no reason to bring it back.
+        const restored = Object.keys(snapshot.hints);
 
         // 3) Re-apply hints to currently open windows.
-        for (const [id, hint] of Object.entries(this.windowHints)) {
+        for (const id of restored) {
+            const hint = this.windowHints[id];
             const win = this.windows.get(id);
             if (!win) continue;
 
@@ -485,7 +493,8 @@ export class WindowManager {
         //    semantics — pass the hint directly via options so open() lays the
         //    window out from the snapshot rather than from any stale prior
         //    state. autoOpen is preserved by spreading the saved hint.
-        for (const [id, hint] of Object.entries(this.windowHints)) {
+        for (const id of restored) {
+            const hint = this.windowHints[id];
             if (this.windows.has(id)) continue;
             if (hint.hidden === true) continue;
             if (!hint.kind) continue;
@@ -494,11 +503,27 @@ export class WindowManager {
 
         // 5) Persist the restored hints (so the live store mirrors the
         //    snapshot, and a later save without intervening edits is a no-op).
-        for (const [id, hint] of Object.entries(this.windowHints)) {
-            this.onWindowHint?.(id, hint);
+        for (const id of restored) {
+            this.onWindowHint?.(id, this.windowHints[id]);
         }
 
         this.notify();
+        this.reportLayoutSizes(restored.filter(id => this.windows.has(id)));
+    }
+
+    /**
+     * Raise the resize events for windows a layout load just placed, before the
+     * load returns. Desktop's restoreState resizes each dock there and then, so
+     * a sysUserWindowResizeEvent handler runs INSIDE loadWindowLayout() — which
+     * is what lets saveWindowLayout refuse to run mid-load, and openUserWindow
+     * notice a window a handler deleted as the layout loaded. Left to the
+     * ResizeObserver, those events would arrive a turn later, after the load.
+     */
+    private reportLayoutSizes(ids: string[]): void {
+        if (ids.length === 0 || !this.onRaiseEvent) return;
+        this.settleLayout();
+        for (const id of ids) this.createdSizesDue.add(id);
+        this.pumpCreatedSizes();
     }
 
     // ── Portal target ─────────────────────────────────────────────────────────
@@ -3559,6 +3584,9 @@ export class WindowManager {
 
     focus(id: string): void { this.bringToFront(id); }
     has(id: string): boolean { return this.windows.has(id); }
+    /** The record behind `id`, compared by identity to tell a window from one
+     *  put in its place under the same name. */
+    record(id: string): object | undefined { return this.windows.get(id); }
     getElement(id: string): HTMLElement | null { return this.elements.get(id) ?? null; }
 
     /** Mudlet getUserWindowSize. Reports the live rendered size of a userwindow

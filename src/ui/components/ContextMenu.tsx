@@ -17,6 +17,9 @@ interface ContextMenuProps {
      *  console (it is a tab stop), but the player types into the command line, so
      *  returning focus to the opener would send their next keystroke nowhere. */
     returnFocusTo?: () => HTMLElement | null | undefined;
+    /** Extra class on the menu box, for a screen that styles its menus to
+     *  match its own layout (the launcher's are larger than the app's). */
+    className?: string;
     children: React.ReactNode;
 }
 
@@ -44,7 +47,7 @@ export function nextMenuIndex(count: number, current: number, key: string): numb
     }
 }
 
-export function ContextMenu({ x, y, onClose, label = 'Context menu', role = 'menu', returnFocusTo, children }: ContextMenuProps) {
+export function ContextMenu({ x, y, onClose, label = 'Context menu', role = 'menu', returnFocusTo, className, children }: ContextMenuProps) {
     const ref = useRef<HTMLDivElement>(null);
 
     // ARIA roles are stamped on here rather than written at each call site. The
@@ -128,7 +131,7 @@ export function ContextMenu({ x, y, onClose, label = 'Context menu', role = 'men
     return createPortal(
         <div
             ref={ref}
-            className="ctx-menu"
+            className={className ? `ctx-menu ${className}` : 'ctx-menu'}
             role={role}
             aria-label={label}
             style={{ left: x, top: y }}

@@ -17,7 +17,7 @@
  */
 
 import type { ComponentType } from 'react';
-import type { CredentialVault, VaultSnapshot } from './CredentialVault';
+import type { CredentialVault, VaultSignIn, VaultSnapshot } from './CredentialVault';
 
 /** Props of the vault's modal. Declared here, not in the component, so this
  *  module can describe the UI it hands out without importing it. */
@@ -41,7 +41,9 @@ export const NO_VAULT: VaultSnapshot = Object.freeze({
     exists: false,
     locked: false,
     entryIds: Object.freeze([]) as readonly string[],
+    signInIds: Object.freeze([]) as readonly string[],
     unlockers: Object.freeze([]) as VaultSnapshot['unlockers'],
+    rememberedUntil: null,
 });
 
 let active: CredentialVault | null = null;
@@ -104,9 +106,57 @@ export function vaultHasEntry(connectionId: string): boolean {
     return !!active?.hasEntry(connectionId);
 }
 
-/** Whether opening this profile should ask for an unlock first. */
+/** Whether opening this profile should ask for an unlock first — it has a
+ *  saved password or a saved GMCP sign-in token, and the vault is shut. */
 export function vaultNeedsUnlock(connectionId: string): boolean {
-    return !!active?.locked && !!active.hasEntry(connectionId);
+    return !!active?.locked && (active.hasEntry(connectionId) || active.hasSignIn(connectionId));
+}
+
+/** The profile's saved GMCP `Char.Login` sign-in, or `undefined` when there is
+ *  no vault, no entry, or the vault is locked. */
+export function vaultSignIn(connectionId: string): VaultSignIn | undefined {
+    return active?.getSignIn(connectionId);
+}
+
+/** Whether a vault could be set up here but none exists yet. False with no
+ *  vault installed (a branded build) or no crypto (an insecure context). */
+export function vaultMissing(): boolean {
+    return !!active && !active.exists && active.available;
+}
+
+/** Whether a vault exists and is locked. */
+export function vaultLocked(): boolean {
+    return !!active?.locked;
+}
+
+/** Whether this profile has a saved sign-in token — true even while locked. */
+export function vaultHasSignIn(connectionId: string): boolean {
+    return !!active?.hasSignIn(connectionId);
+}
+
+/**
+ * Whether a sign-in token handed to us right now would be kept — the honest
+ * answer to GMCP's `token_storage`. With no vault (a branded build, or a player
+ * who never set one up) or a locked one, a token would be thrown away, and the
+ * standard asks the client to say so up front, so the game does not offer the
+ * player a "remember me" that cannot happen.
+ */
+export function vaultCanStoreSignIn(): boolean {
+    return !!active?.canStore;
+}
+
+/** Save (or with `null` forget) a profile's sign-in. Resolves `false` when it
+ *  could not — no vault, locked, or the write failed. */
+export async function saveVaultSignIn(connectionId: string, entry: VaultSignIn | null): Promise<boolean> {
+    if (!active) return entry === null;
+    if (active.locked) return false;
+    try {
+        await active.setSignIn(connectionId, entry);
+        return true;
+    } catch (error) {
+        console.warn('Saving the GMCP sign-in to the vault failed:', error instanceof Error ? error.message : 'unknown error');
+        return false;
+    }
 }
 
 function notify(): void {

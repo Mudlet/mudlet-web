@@ -5,6 +5,7 @@ import {
     persistenceSupported,
     resetPersistenceRequest,
 } from '../../src/storage/persistentStorage';
+import { setBrand } from '../../src/branding';
 
 const original = Object.getOwnPropertyDescriptor(navigator, 'storage');
 
@@ -19,6 +20,7 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks();
+    setBrand();
     if (original) Object.defineProperty(navigator, 'storage', original);
     else Reflect.deleteProperty(navigator as object, 'storage');
 });
@@ -72,5 +74,21 @@ describe('persistentStorage', () => {
         });
         await expect(isPersisted()).resolves.toBe(false);
         await expect(ensurePersistentStorage()).resolves.toBe(false);
+    });
+
+    it('never requests when the brand opts out', async () => {
+        setBrand({ appName: 'Test', requestPersistentStorage: false });
+        const persist = vi.fn(async () => true);
+        stubStorage({ persisted: async () => false, persist });
+        await expect(ensurePersistentStorage()).resolves.toBe(false);
+        expect(persist).not.toHaveBeenCalled();
+    });
+
+    it('still reports already-granted persistence when the brand opts out', async () => {
+        setBrand({ appName: 'Test', requestPersistentStorage: false });
+        const persist = vi.fn(async () => true);
+        stubStorage({ persisted: async () => true, persist });
+        await expect(ensurePersistentStorage()).resolves.toBe(true);
+        expect(persist).not.toHaveBeenCalled();
     });
 });

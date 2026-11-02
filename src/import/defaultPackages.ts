@@ -311,19 +311,42 @@ export function isNewProfile(conn?: { createdAt?: string }): boolean {
 /** A default or brand package as the install loop sees it. */
 export type InstallablePackage = DefaultPackage & { removable?: boolean };
 
+/** A brand `packages` function's input: a fresh array of fresh entries, so a
+ *  function that edits what it is handed (`stock.push(...)`, `p.removable = false`)
+ *  changes only its own copy — never `ALL_DEFAULTS` or the package constants,
+ *  which every later call (one per package row on each render of the package
+ *  list, via {@link isPackageRemovable}) would otherwise see. */
+function brandInput(stock: readonly DefaultPackage[]): InstallablePackage[] {
+    return stock.map(p => ({ ...p }));
+}
+
+/** Whether the user may uninstall the named package. Only brand packages
+ *  marked `removable: false` are locked; everything else — stock defaults
+ *  included — is removable. A brand `packages` function is handed every bundled
+ *  default, not one game's pick, so a stock package it locks is caught
+ *  whichever host the profile is on. */
+export function isPackageRemovable(name: string): boolean {
+    const brandPackages = getBrand().packages;
+    const packages = typeof brandPackages === 'function' ? brandPackages(brandInput(ALL_DEFAULTS)) : brandPackages;
+    return packages?.find(p => p.name === name)?.removable !== false;
+}
+
 /**
  * The packages to preinstall into a profile.
  *
  * A brand's list is exact and replaces the stock defaults rather than adding to
  * them — `[]` preinstalls nothing, and a brand shipping its own mapper simply
- * doesn't list ours. Unset means no opinion: the stock defaults for this game.
+ * doesn't list ours. A brand function is handed this game's stock defaults and
+ * returns the exact list. Unset means no opinion: the stock defaults for this
+ * game.
  */
 export function resolveDefaultPackages(
-    brandPackages: InstallablePackage[] | undefined,
+    brandPackages: InstallablePackage[] | ((stock: InstallablePackage[]) => InstallablePackage[]) | undefined,
     host?: string,
     conn?: { createdAt?: string },
     serverGuiAccepted = true,
 ): InstallablePackage[] {
+    if (typeof brandPackages === 'function') return brandPackages(brandInput(stockDefaults(host, conn, serverGuiAccepted)));
     return brandPackages ?? stockDefaults(host, conn, serverGuiAccepted);
 }
 

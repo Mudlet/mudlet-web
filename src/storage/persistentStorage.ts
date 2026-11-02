@@ -5,7 +5,10 @@
 // history with the origin, Firefox raises a permission prompt, and a browser
 // without the API can't grant it at all. So this is best-effort by construction
 // — the honest fallback is still "export your profiles", which is what
-// docs/help/storage.md tells people.
+// docs/help/storage.md tells people. A branded build can opt out of asking at
+// all with `BrandConfig.requestPersistentStorage: false`.
+
+import { getBrand } from '../branding';
 
 type Persistable = Pick<StorageManager, 'persist' | 'persisted'>;
 
@@ -38,8 +41,11 @@ let attempt: Promise<boolean> | null = null;
 
 /** Ask the browser to exempt this origin's storage from eviction, at most once
  *  per page session. Resolves to whether storage is persistent afterwards —
- *  `false` on refusal or on a browser without the API. Never throws. */
+ *  `false` on refusal or on a browser without the API. Never throws. When the
+ *  brand opts out (`requestPersistentStorage: false`) nothing is requested and
+ *  this only reports the current state. */
 export function ensurePersistentStorage(): Promise<boolean> {
+    if (getBrand().requestPersistentStorage === false) return isPersisted();
     attempt ??= runRequest();
     return attempt;
 }

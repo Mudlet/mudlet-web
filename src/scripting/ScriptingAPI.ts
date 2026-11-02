@@ -1,7 +1,7 @@
 import type { MudSession, ScriptLogSource, ShowSentTextMode, BlankLinesBehaviour } from '../mud/MudSession';
 import type { TelnetNegotiatorFlags } from '../mud/connection/TelnetNegotiator';
 import { splitSentCommands } from '../mud/commandSplit';
-import { mxpLinkOpens } from '../mud/protocol/mxp';
+import { mxpOpenableAddress } from '../mud/protocol/mxp';
 import type { AliasEngine } from '../mud/aliases/AliasEngine';
 import type { TriggerEngine } from '../mud/triggers/TriggerEngine';
 import type { TimerEngine } from '../mud/timers/TimerEngine';
@@ -276,6 +276,10 @@ function parseRgba(hex: string): [number, number, number, number] {
         m[4] === undefined ? 255 : parseInt(m[4], 16),
     ];
 }
+
+/** The sizes `setConfig("editorFontSize", …)` takes, as desktop bounds it. */
+const EDITOR_FONT_SIZE_MIN = 1;
+const EDITOR_FONT_SIZE_MAX = 1000;
 
 /** Parse the "r,g,b,a" string the Bridge hands `setConfig("mapInfoColor", …)`
  *  (it flattens the Lua table before crossing into JS). Each channel must be a
@@ -769,6 +773,12 @@ class ScriptingWindowsAPI {
 
     has(id: string): boolean {
         return this.session.windows.has(id);
+    }
+
+    /** The window's record, compared by identity to tell it from one a
+     *  handler put in its place under the same name. */
+    record(id: string): object | undefined {
+        return this.session.windows.record(id);
     }
 
     /** Whether a mapper has been created this session (see WindowManager.hasMapper). */
@@ -1871,6 +1881,30 @@ export class ScriptingAPI {
         useAppStore.getState().patchConnectionProfile(this.connectionId, { config: { ...prev, [key]: value } });
     }
 
+    /** Shallow-merge several keys into the config bag in one store write, so
+     *  a watcher sees them change together rather than one at a time. */
+    private patchConfigBagFields(fields: Record<string, unknown>): void {
+        const prev = this.configBag();
+        useAppStore.getState().patchConnectionProfile(this.connectionId, { config: { ...prev, ...fields } });
+    }
+
+    /**
+     * The font the script editor reads code in (Mudlet's editorFont,
+     * editorFontSize and editorFontFollowsDisplay). A profile that never chose
+     * one follows the main console's font; one that did keeps its own, which a
+     * display font moving leaves alone.
+     */
+    editorFontState(): { follows: boolean; family: string; size: number } {
+        const bag = this.configBag();
+        const mainFamily = this.getFont() ?? DEFAULT_OUTPUT_FONT_FAMILY;
+        const mainSize = this.getFontSize() ?? 0;
+        if (bag.editorFontFollowsDisplay !== false) return { follows: true, family: mainFamily, size: mainSize };
+        const family = typeof bag.editorFont === 'string' && bag.editorFont ? bag.editorFont : mainFamily;
+        const size = typeof bag.editorFontSize === 'number' && bag.editorFontSize >= EDITOR_FONT_SIZE_MIN
+            && bag.editorFontSize <= EDITOR_FONT_SIZE_MAX ? bag.editorFontSize : mainSize;
+        return { follows: false, family, size };
+    }
+
     /** The negotiator flag each profile protocol toggle drives. MCCP is
      *  absent on purpose: its handler owns its own switch and isn't part of
      *  the negotiator flag set. */
@@ -2028,6 +2062,10 @@ export class ScriptingAPI {
             case 'lazyCaptureGlobals':  return false;
             case 'muteMediaAPI':       return this.session.sounds.isOriginMuted('api');
             case 'muteMediaGame':      return this.session.sounds.isOriginMuted('game');
+            // The script editor's font — the display font's while it follows it
+            case 'editorFontFollowsDisplay': return this.editorFontState().follows;
+            case 'editorFont':               return this.editorFontState().family;
+            case 'editorFontSize':           return this.editorFontState().size;
             // read-only
             case 'logDirectory':       return '/profiles/' + this.connectionId + '/log';
             case 'specialForceMXPProcessorOn':
@@ -2191,10 +2229,12 @@ export class ScriptingAPI {
             case 'mapRoundRooms': case 'mapShowRoomBorders':
             case 'mapShowGrid': case 'muteMediaAPI': case 'muteMediaGame':
             case 'mapperPanelVisible': case 'undoServerWrap':
-            case 'lazyCaptureGlobals':
+            case 'lazyCaptureGlobals': case 'editorFontFollowsDisplay':
                 return 'bool';
             case 'mapRoomSize': case 'mapExitSize': case 'undoServerWrapWidth':
+            case 'editorFontSize':
                 return 'num';
+            case 'editorFont':
             case 'blankLinesBehaviour':
             case 'ambiguousEAsianWidthCharacters':
             // Set-only in Mudlet: they name a map-info overlay to switch on/off
@@ -2444,6 +2484,38 @@ export class ScriptingAPI {
             }
             // Only the value it already has: see getConfig
             case 'lazyCaptureGlobals': return !configBool(value);
+            // The script editor's font. Following, it reads code in the display
+            // font; a family or a size other than the one on show is a font of
+            // its own, which starts from the other half of the one on show. A
+            // family or size it already reads code in changes nothing, so a
+            // script handing back what getConfig gave it keeps it following.
+            // Bridge.lua vets the empty family and the size's bounds.
+            case 'editorFontFollowsDisplay': {
+                const follows = configBool(value);
+                const now = this.editorFontState();
+                if (follows === now.follows) return true;
+                // Leaving the display font keeps the font on show, as its own
+                this.patchConfigBagFields(follows
+                    ? { editorFontFollowsDisplay: true }
+                    : { editorFontFollowsDisplay: false, editorFont: now.family, editorFontSize: now.size });
+                return true;
+            }
+            case 'editorFont': {
+                const family = this.resolveFontFamily(String(value));
+                if (!family) return false;
+                const now = this.editorFontState();
+                if (family === now.family) return true;
+                this.patchConfigBagFields({ editorFontFollowsDisplay: false, editorFont: family, editorFontSize: now.size });
+                return true;
+            }
+            case 'editorFontSize': {
+                const size = Math.trunc(Number(value));
+                if (!(size >= EDITOR_FONT_SIZE_MIN && size <= EDITOR_FONT_SIZE_MAX)) return false;
+                const now = this.editorFontState();
+                if (size === now.size) return true;
+                this.patchConfigBagFields({ editorFontFollowsDisplay: false, editorFont: now.family, editorFontSize: size });
+                return true;
+            }
             // Mudlet Host::mUndoServerWrap — rejoin the lines the game wrapped
             // itself. Live: the line assembler judges the next server line under
             // the new setting, and turning it off commits anything held.
@@ -3608,7 +3680,10 @@ export class ScriptingAPI {
             // a page of this app, and `javascript:` would run in it — those do
             // nothing, as an address the desktop cannot open does nothing.
             return {
-                onClick: () => { if (isLive() && mxpLinkOpens(payload)) this.openUrl(payload); },
+                onClick: () => {
+                    const address = mxpOpenableAddress(payload);
+                    if (isLive() && address) this.openUrl(address);
+                },
                 title: hint || undefined,
                 autoUnderline: true,
             };
@@ -3640,7 +3715,9 @@ export class ScriptingAPI {
     private runHyperlinkUri(uri: string): void {
         const action = classifyHyperlinkUri(uri);
         if (!action) return;
-        if (action.kind === 'send') this.send(action.command);
+        // TBuffer::decodeOSC builds `send([[cmd]], false)`: an OSC 8 link or
+        // menu item sends without echoing (MXP <send> and label links echo).
+        if (action.kind === 'send') this.send(action.command, false);
         else if (action.kind === 'prompt') this.printCmdLine(action.command, true);
         else this.openUrl(action.url);
     }
@@ -3711,7 +3788,8 @@ export class ScriptingAPI {
                 if (action.kind === 'send') selectedSuffix = `&selected=${now}`;
             }
             this.oscLinks.markVisited(command);
-            if (action.kind === 'send') this.send(action.command + selectedSuffix);
+            // No echo — `send([[cmd]], false)`, as TBuffer::decodeOSC builds it.
+            if (action.kind === 'send') this.send(action.command + selectedSuffix, false);
             else if (action.kind === 'prompt') this.printCmdLine(action.command, true);
             else this.openUrl(action.url);
             const doc = (ev?.currentTarget as HTMLElement | undefined)?.ownerDocument
@@ -7078,6 +7156,11 @@ export class ScriptingAPI {
      * message, or null on success, for the binding to shape.
      */
     setMapZoom(zoom: number, areaID?: number, viewId?: number): string | null {
+        // Without a view the call is the primary mapper's, and desktop asks for
+        // that before the mapper gets to vet the zoom or the area.
+        if (!(viewId !== undefined && viewId > 0) && !this.session.windows.hasMapper()) {
+            return 'no active mapper';
+        }
         // T2DMap::setMapZoom: NaN would pass the minimum check (every
         // comparison with it is false) and an infinite zoom shows nothing, so
         // both are refused first — named as QString::number writes them.
@@ -7320,7 +7403,11 @@ export class ScriptingAPI {
      * layout file cannot be written — what desktop reports when it cannot open
      * `windowLayout.dat`.
      */
-    saveWindowLayout(): boolean {
+    saveWindowLayout(): boolean | string {
+        // Desktop refuses outright while a load is running: a handler the load
+        // raises would otherwise save the windows it has yet to reach where
+        // they were, and the load would then put them back there.
+        if (this.layoutLoading) return 'cannot save the window layout while it is being loaded';
         if (!this.connectionId) return false;
         const snapshot = this.session.windows.captureLayoutSnapshot();
         useAppStore.getState().saveLayoutSnapshot(this.connectionId, snapshot);
@@ -7388,9 +7475,21 @@ export class ScriptingAPI {
         const snapshot = this.readWindowLayoutFile()
             ?? useAppStore.getState().connectionLayoutSnapshots[this.connectionId];
         if (!snapshot) return false;
-        this.session.windows.applyLayoutSnapshot(snapshot as Parameters<typeof this.session.windows.applyLayoutSnapshot>[0]);
+        // mudlet::loadWindowLayout refuses a load started from a handler that
+        // a load is running.
+        if (this.layoutLoading) return false;
+        this.layoutLoading = true;
+        try {
+            this.session.windows.applyLayoutSnapshot(snapshot as Parameters<typeof this.session.windows.applyLayoutSnapshot>[0]);
+        } finally {
+            this.layoutLoading = false;
+        }
         return true;
     }
+
+    /** True while {@link loadWindowLayout} is placing windows — the resize
+     *  events it raises run handlers before it returns. */
+    private layoutLoading = false;
 
     // ── Misc ──────────────────────────────────────────────────────────────────
 
@@ -8723,6 +8822,12 @@ export class ScriptingAPI {
         const con = this.getConsole(sel.windowName);
         if (!con) return null;
         if (sel.line && con.holdsLine(sel.line)) return sel.line;
+        if (sel.line && con.wasTrimmed(sel.line)) {
+            // A trim that takes the selected line deselects: desktop's
+            // P_begin/P_end go back to the start of line 0, an empty
+            // selection there (TBuffer::shrinkBuffer → deselect()).
+            Object.assign(sel, { start: 0, length: 0, line: null, y: 0 });
+        }
         return con.lineBuffer(sel.y);
     }
 

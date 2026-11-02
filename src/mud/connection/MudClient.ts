@@ -38,6 +38,13 @@ import {
     TELNET_GA,
     TTYPE_COMMAND_CODE,
 } from "../protocol";
+import {
+    CHAR_LOGIN_CLIENT_VERSION,
+    parseCharLoginDefault,
+    parseCharLoginResult,
+    parseCharLoginToken,
+    parseCharLoginUrl,
+} from "../protocol/charLoginFlow";
 import type { MudClientEvents, TlsEstablished, TlsError } from "../events";
 import { LineAssembler } from "./LineAssembler";
 import { TelnetNegotiator, type TelnetNegotiatorFlags } from "./TelnetNegotiator";
@@ -369,6 +376,17 @@ export class MudClient {
      *  arrived (which can only happen through a working tunnel). */
     private tlsResolved = false;
     private tlsDeadline: ReturnType<typeof setTimeout> | null = null;
+    /** The proxy reported a completed TLS handshake with the game on this
+     *  socket. Half of {@link gameTransportSecure}. */
+    private tlsEstablishedThisSocket = false;
+    /** The negotiated `Char.Login` version — `min(client, server)`, learned
+     *  from `Char.Login.Default` and echoed back on every client→server message
+     *  so both ends agree on it even though base GMCP negotiation is
+     *  one-directional. 1 until a server says otherwise, which is also the
+     *  right answer for a version 1 server. Per socket: reset on connect, not on
+     *  each `Char.Login.Default` (Mudlet splits resetForNewConnection and
+     *  resetPerConnectionState the same way). */
+    private charLoginVersion = 1;
     /** True once `client.established` has been emitted for the current socket —
      *  the several signals that can prove the game leg is up all funnel through
      *  {@link markEstablished}, and only the first of them counts. */
@@ -724,6 +742,8 @@ export class MudClient {
         this.latencyStartedAt = null;
         // Redialling re-runs the handshake, so the previous verdict is stale.
         this.tlsResolved = false;
+        this.tlsEstablishedThisSocket = false;
+        this.charLoginVersion = 1;
         this.gameEstablished = false;
         this.telnetSeen = false;
         this.stopIdleProbe();
@@ -908,6 +928,7 @@ export class MudClient {
 
         if (msg.type === 'tls.established') {
             this.resolveTls();
+            this.tlsEstablishedThisSocket = true;
             // A completed handshake is a connected socket by definition, so an
             // older proxy that sends only this one still dates the session.
             this.markEstablished();
@@ -1219,11 +1240,8 @@ export class MudClient {
             // Mudlet's default Core.Supports.Set, minus "External.Discord 1"
             // (Mudlet only sends that when its Discord integration is active —
             // we have none) and minus the modules gated on Discord. Char.Login
-            // stays at version 1 where Mudlet now says 2: version 2 is the
-            // OAuth / sign-in-token flow (Char.Login.URL, .AuthCode, .Token,
-            // .Reconnect — Mudlet's GMCPAuthenticator), none of which is
-            // implemented here, and a server told we speak it may hand the
-            // login to a flow we would silently drop.
+            // 2 is the browser sign-in / reconnect-token flow (Char.Login.URL,
+            // .AuthCode, .Token, .Reconnect — see CharLoginController).
             this.sendBytes(encodeGmcp('Core.Supports.Set', [
                 'Char 1',
                 'Char.Skills 1',
@@ -1232,7 +1250,7 @@ export class MudClient {
                 'IRE.Rift 1',
                 'IRE.Composer 1',
                 'Client.Media 2',
-                'Char.Login 1',
+                `Char.Login ${CHAR_LOGIN_CLIENT_VERSION}`,
             ]));
         } catch (error) {
             console.error('Error sending GMCP handshake:', error);
@@ -1240,45 +1258,136 @@ export class MudClient {
         }
     }
 
-    /** Route GMCP `Char.Login.*` messages. The server sends `Char.Login.Default
-     *  { "type": [...] }` to request login and then *waits* for the client to
-     *  supply credentials — withholding the normal text "By what name…" prompt
-     *  until it hears back (servers that do this gate on the `Char.Login` module
-     *  we advertise in `Core.Supports.Set`). We surface it as `charLogin.request`
-     *  so the UI can pop a credentials form; the UI replies via
-     *  `sendCharLoginCredentials`, or an empty reply (cancel) to fall back to the
-     *  text login (the behaviour Mudlet/Mudlet#7377 is about). `Char.Login.Result`
-     *  carries the outcome. Path match is case-insensitive — GMCP module casing
-     *  varies between servers. */
+    /**
+     * Whether the link to the *game* is encrypted — Mudlet's
+     * `cTelnet::currentlySecure()`, and the gate on every `Char.Login` bearer
+     * secret. Not "is the WebSocket wss:": in proxy mode a `wss://` proxy URL
+     * only secures the browser↔proxy hop, and the proxy↔game leg is plaintext
+     * telnet unless the proxy reports a completed TLS handshake with the game.
+     * A direct websocket connection is the game, so its scheme is the answer.
+     */
+    get gameTransportSecure(): boolean {
+        if (this.viaProxy) return this.tlsRequested && this.tlsEstablishedThisSocket;
+        return /^wss:/i.test(this.url);
+    }
+
+    /** The `Char.Login` version negotiated on this socket. */
+    get negotiatedCharLoginVersion(): number {
+        return this.charLoginVersion;
+    }
+
+    /** Route GMCP `Char.Login.*` messages. The server sends `Char.Login.Default`
+     *  to request login and then *waits* for the client to answer — withholding
+     *  its normal text "By what name…" prompt until it hears back (servers that
+     *  do this gate on the `Char.Login` module we advertise in
+     *  `Core.Supports.Set`). Each message is parsed here and surfaced as a
+     *  `charLogin.*` event; `CharLoginController` decides what to answer. Path
+     *  match is case-insensitive — GMCP module casing varies between servers.
+     *
+     *  `Char.Login.Token` carries a bearer token that signs the profile in
+     *  without a password. It is never logged — a malformed frame reports
+     *  nothing of its body. It does still reach the Lua `gmcp` table like any
+     *  other message, as it does in Mudlet (cTelnet calls setGMCPTable for
+     *  Char.Login too); profile scripts already run with full access to this
+     *  profile. JS strings are immutable and garbage-collected, so Mudlet's
+     *  SecureStringUtils scrubbing has no equivalent here. */
     private handleCharLogin(path: string, value: unknown): void {
         const p = path.toLowerCase();
         if (p === 'char.login.default') {
-            const type = (value as { type?: unknown } | null)?.type;
-            const methods = Array.isArray(type) ? type.map(String) : [];
-            this.eventBus.emit('charLogin.request', methods);
+            // Re-read from scratch on every ask: the version and method list
+            // belong to *this* advertisement, and a later frame that is
+            // malformed or drops a method must not leave the previous one's
+            // answers driving the decision (Mudlet's saveSupportsSet).
+            const caps = parseCharLoginDefault(value, this.gameTransportSecure);
+            this.charLoginVersion = caps.version;
+            this.eventBus.emit('charLogin.request', caps);
+        } else if (p === 'char.login.url') {
+            this.eventBus.emit('charLogin.url', parseCharLoginUrl(value));
+        } else if (p === 'char.login.token') {
+            const token = parseCharLoginToken(value, this.gameTransportSecure);
+            if (!token) {
+                console.warn('GMCP Char.Login.Token: missing account or token (payload withheld, as it may contain a token)');
+                return;
+            }
+            this.eventBus.emit('charLogin.token', token);
         } else if (p === 'char.login.result') {
-            const v = (value ?? {}) as { success?: unknown; message?: unknown };
-            // `success` may arrive as the string "true" rather than a JSON
-            // boolean: some game drivers (LPMud/FluffOS and friends — StickMUD
-            // does this) parse booleans but can't serialise them back out.
-            // Mudlet accepts both spellings (GMCPAuthenticator::handleAuthResult);
-            // reading only `=== true` reports a successful login as a failure.
-            const success = v.success === true || v.success === 'true';
-            this.eventBus.emit('charLogin.result', {
-                success,
-                message: typeof v.message === 'string' ? v.message : undefined,
-            });
+            this.eventBus.emit('charLogin.result', parseCharLoginResult(value));
         }
     }
 
-    /** Send the GMCP `Char.Login.Credentials` reply. With an account, sends
-     *  `{ account, password }` (account may be `"account:character"` for games
-     *  with both); with no account it sends the empty `{}` form — the spec's
-     *  "no credentials, fall back to your next auth method" signal, used when the
-     *  user cancels the popup. Mudlet Web never stores the password; it only relays it. */
-    sendCharLoginCredentials(account?: string, password?: string): void {
-        const payload = account ? { account, password: password ?? '' } : {};
-        this.sendGmcp('Char.Login.Credentials', payload);
+    /** The two fields every client→server `Char.Login` message may carry: the
+     *  negotiated version we are acting on, and `token_storage` — whether a
+     *  reconnect token minted on this connection would actually be kept. A
+     *  version 1 server gets them too: an unknown member is inert to it. */
+    private charLoginCommonFields(tokenStorage: boolean): { version: number; token_storage: boolean } {
+        return { version: this.charLoginVersion, token_storage: tokenStorage };
+    }
+
+    /**
+     * Send `Char.Login.Credentials`. With an account, `{account, password}`
+     * (account may be `"account:character"` on games with both) plus the common
+     * fields. Without one it is the hand-off: from version 2 the message with no
+     * account — carrying `token_storage` is the point, since it reaches the game
+     * before it writes its sign-in screen, the last moment it can decide whether
+     * to offer to remember the player — and on version 1 the bare `{}` Mudlet
+     * has always sent such servers. Mudlet Web never stores the password here;
+     * it only relays it.
+     */
+    sendCharLoginCredentials(account?: string, password?: string, tokenStorage = false): void {
+        if (account) {
+            this.sendGmcp('Char.Login.Credentials', {
+                account, password: password ?? '', ...this.charLoginCommonFields(tokenStorage),
+            });
+        } else if (this.charLoginVersion >= 2) {
+            this.sendGmcp('Char.Login.Credentials', this.charLoginCommonFields(tokenStorage));
+        } else {
+            this.sendGmcp('Char.Login.Credentials', {});
+        }
+    }
+
+    /**
+     * Replay a saved password-less sign-in — `Char.Login.Reconnect`. Returns
+     * false when it refused: a token the issuing server scoped to an encrypted
+     * transport (`secureOnly`) never goes out in the clear. Re-checked here, at
+     * send time, as well as in the decision, in case the transport changed.
+     */
+    sendCharLoginReconnect(account: string, token: string, secureOnly: boolean, tokenStorage = false): boolean {
+        if (secureOnly && !this.gameTransportSecure) {
+            console.warn('GMCP Char.Login.Reconnect: refusing to replay the saved sign-in token over an unencrypted connection.');
+            return false;
+        }
+        this.sendGmcp('Char.Login.Reconnect', { account, token, ...this.charLoginCommonFields(tokenStorage) });
+        return true;
+    }
+
+    /** Ask the game to restart a provider's browser sign-in — the *resume* form
+     *  of `Char.Login.Credentials`, `{account, provider}` and no password. */
+    sendCharLoginResume(account: string, provider: string, tokenStorage = false): void {
+        this.sendGmcp('Char.Login.Credentials', { account, provider, ...this.charLoginCommonFields(tokenStorage) });
+    }
+
+    /**
+     * Complete a client-driven OAuth sign-in — `Char.Login.AuthCode`. Returns
+     * false when it refused: the standard forbids it on a cleartext connection,
+     * since the code and PKCE verifier together let an eavesdropper redeem the
+     * code at the provider.
+     */
+    sendCharLoginAuthCode(
+        auth: { code: string; codeVerifier: string; redirectUri: string; nonce?: string },
+        tokenStorage = false,
+    ): boolean {
+        if (!this.gameTransportSecure) {
+            console.warn('GMCP Char.Login.AuthCode: refusing to send the authorization code over an unencrypted connection.');
+            return false;
+        }
+        this.sendGmcp('Char.Login.AuthCode', {
+            code: auth.code,
+            code_verifier: auth.codeVerifier,
+            redirect_uri: auth.redirectUri,
+            ...(auth.nonce ? { nonce: auth.nonce } : {}),
+            ...this.charLoginCommonFields(tokenStorage),
+        });
+        return true;
     }
 
     sendGmcpRaw(message: string): void {

@@ -13,7 +13,7 @@ import type {ButtonNode, ProfileSettings, ScriptNode, TimerNode} from '../storag
 import {buildEffectivelyEnabledIds, isColorizing, isEffectivelyEnabled, isTempParentRef, tempParentRef, tempRefId, tempRootOf} from '../storage/schema';
 import {MAIN_CONSOLE_BUFFER_SIZE} from '../mud/text/Console';
 import {useAppStore, connectionUrl, selectProfileField} from '../storage';
-import {isPackageRemovable} from '../branding';
+import {isPackageRemovable} from '../import/defaultPackages';
 import {saveProfileData} from '../storage/profileVfsData';
 import type {BufferSegment, FormatColor, FormatStateSnapshot} from '../mud/text/FormatState';
 import {AnsiAwareBuffer, computeTrailingState} from '../mud/text/FormatState';
@@ -194,6 +194,15 @@ function globToRegExp(glob: string): RegExp {
     const body = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
     return new RegExp(`^${body}$`);
 }
+
+/** Incoming GMCP paths whose bodies are secrets, so `mudlet.debugGmcp` logs
+ *  only their size: `Char.Login.Token` is a bearer token, and some games echo
+ *  `Char.Login.Credentials` back with the pair still in it. Lowercased — GMCP
+ *  module casing varies between servers. */
+const SECRET_GMCP_PATHS = new Set([
+    'char.login.token',
+    'char.login.credentials',
+]);
 
 /** `mudlet.debugGmcp` — log each incoming GMCP message's path + truncated body,
  *  so we can see exactly which modules a server drives (e.g. whether audio
@@ -6545,6 +6554,10 @@ export class ScriptingEngine implements EngineHost {
                                 const now = Date.now();
                                 pieces.forEach((piece, i) => this.session.events.emit(
                                     'message', piece, type, now, isPrompt && i === pieces.length - 1));
+                            } else if (buffer.deleted && type === 'mud') {
+                                // The log still has to hear of it: text a gagging
+                                // trigger appendLog()s waits behind the line before.
+                                this.session.events.emit('line.gagged');
                             }
 
                             // Flush this line's trigger echoes right after it renders so
@@ -6783,6 +6796,12 @@ export class ScriptingEngine implements EngineHost {
         // lands on the same font raises nothing, as setDisplayFont does not.
         const mainFont = (): [string, number] => [this.api.getFont() ?? '', this.api.getFontSize() ?? 0];
         let lastMainFont = mainFont().join('\u0000');
+        // The script editor's font is reported the same way, by what it reads
+        // code in: ("editorFontFollowsDisplay", bool) when it starts or stops
+        // following the display font, then ("editor font", family, size) when
+        // the font it shows moved — which a display font moving is, only while
+        // the editor follows it.
+        let lastEditorFont = this.api.editorFontState();
         this.unsubs.push(useAppStore.subscribe((state) => {
             const next = (state.connectionProfile[this.connectionId] ?? {}) as Record<string, unknown>;
             if (next === lastProfile) return;
@@ -6792,6 +6811,9 @@ export class ScriptingEngine implements EngineHost {
             const fontNow = `${family}\u0000${size}`;
             const fontChanged = fontNow !== lastMainFont;
             lastMainFont = fontNow;
+            const prevEditorFont = lastEditorFont;
+            const editorFont = this.api.editorFontState();
+            lastEditorFont = editorFont;
             // Adopted before anything is raised, not after: a handler is allowed
             // to write a setting back from inside the event, and that write
             // re-enters this subscriber. Diffing it against the pre-change
@@ -6806,6 +6828,12 @@ export class ScriptingEngine implements EngineHost {
                 // raises it before Host::updateConsolesFont reports the setting.
                 this.raiseEvent('sysFontChangeEvent', ['main', family, size]);
                 this.raiseEvent('sysSettingChanged', ['main window font', family, size]);
+            }
+            if (editorFont.follows !== prevEditorFont.follows) {
+                this.raiseEvent('sysSettingChanged', ['editorFontFollowsDisplay', editorFont.follows]);
+            }
+            if (editorFont.family !== prevEditorFont.family || editorFont.size !== prevEditorFont.size) {
+                this.raiseEvent('sysSettingChanged', ['editor font', editorFont.family, editorFont.size]);
             }
         }));
 
@@ -6955,9 +6983,13 @@ export class ScriptingEngine implements EngineHost {
                 // gmcp.Client.GUI table and no event (mudlet-web#362).
                 if (path.toLowerCase().startsWith('client.gui') && !this.serverGuiAccepted()) return;
                 if (debugGmcpEnabled()) {
-                    const body = JSON.stringify(value);
-                    console.debug(`[mudlet.gmcp] ${path}`,
-                        body.length > 200 ? body.slice(0, 200) + '…' : body);
+                    const body = JSON.stringify(value) ?? '';
+                    if (SECRET_GMCP_PATHS.has(path.toLowerCase())) {
+                        console.debug(`[mudlet.gmcp] ${path}`, `<redacted ${body.length}-char body>`);
+                    } else {
+                        console.debug(`[mudlet.gmcp] ${path}`,
+                            body.length > 200 ? body.slice(0, 200) + '…' : body);
+                    }
                 }
                 this.runtimes.lua?.setGmcpValue(path, value);
                 const fullKey = `gmcp.${path}`;

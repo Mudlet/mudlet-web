@@ -33,10 +33,13 @@ export function VaultManageButton({ connections, variant = 'icon' }: VaultManage
 
     // The icon is the same either way; the state goes in the tooltip rather than
     // into a second glyph, so the row doesn't shift shape as the vault locks.
-    const count = snapshot.entryIds.length;
+    // Profiles with anything saved — a password, a GMCP sign-in, or both.
+    const count = new Set([...snapshot.entryIds, ...snapshot.signInIds]).size;
     const title = !snapshot.exists
         ? 'Saved logins — store game passwords encrypted on this device'
-        : `Saved logins (${count}) — ${snapshot.locked ? 'locked' : 'unlocked for this visit'}`;
+        : `Saved logins (${count}) — ${snapshot.locked
+            ? 'locked'
+            : snapshot.rememberedUntil !== null ? 'kept unlocked on this device' : 'unlocked for this visit'}`;
 
     return (
         <>

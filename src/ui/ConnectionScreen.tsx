@@ -1,11 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import { CircleHelp, Info } from 'lucide-react';
-import { Button, useConfirm } from './components';
+import { ChevronDown, CircleHelp, Info, Settings } from 'lucide-react';
+import { useConfirm } from './components';
 import { ConnectionFormModal } from './ConnectionFormModal';
-import { ConnectionGrid } from './ConnectionGrid';
-import { BundledGameGrid, connectionFromGame } from './BundledGameGrid';
+import { LauncherHero, ProfileShelf, type ProfileHandlers } from './launcher/ProfileSection';
+import { GameSection } from './launcher/GameSection';
+import { GameDetails } from './launcher/GameDetails';
+import { LauncherSearch } from './launcher/LauncherSearch';
+import { ActionMenu, type MenuAction } from './launcher/ActionMenu';
+import { ProfileArt } from './launcher/ProfileArt';
+import { mergeGridOrder, pickHero, type TypedAddress } from './launcher/launcherModel';
+import './launcher/launcher.css';
 import { GameLinkPrompt } from './GameLinkPrompt';
-import { profilesForGame } from '../mud/games/gameLinks';
+import { PLAYABLE_GAMES, connectionFromGame, profilesForGame } from '../mud/games/gameLinks';
 import type { BundledGame } from '../mud/games/bundledGames';
 import { useOpenProfiles } from './useOpenProfiles';
 import { AboutModal } from './AboutModal';
@@ -41,7 +47,6 @@ interface Props {
 
 export function ConnectionScreen({ connections, connecting, connectingId, onConnect, onOpen, onAdd, onUpdate, onDelete, onOpenSettings, linkedGame, onLinkedGameHandled }: Props) {
     const confirm = useConfirm();
-    const reorderConnections = useAppStore(s => s.reorderConnections);
     const brand = getBrand();
     // Which profiles other tabs currently hold open, so the grid can mark them
     // instead of letting a click land on the "waiting for the other tab" screen.
@@ -59,6 +64,8 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
     } | null>(null);
     // The game a `?play=` link named, waiting on the "existing or new?" choice.
     const [gamePrompt, setGamePrompt] = useState<BundledGame | null>(null);
+    // The game whose details card is open, from a tile or a search result.
+    const [detailsGame, setDetailsGame] = useState<BundledGame | null>(null);
     const vaultSaver = useVaultSaver();
     const [aboutOpen, setAboutOpen] = useState(false);
     // Opened either from the tools row (default topic) or from the import row's
@@ -269,86 +276,97 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
         });
     };
 
+    const busy = connecting || importing;
+    const reorderConnections = useAppStore(s => s.reorderConnections);
+    // The banner leads with the profile played last; the grid keeps the
+    // player's own arrangement, which they set by dragging.
+    const hero = pickHero(connections);
+    const gridConnections = connections.filter(c => c.id !== hero?.id);
+    const handlers: ProfileHandlers = {
+        connecting, connectingId, openIds, onConnect, onOpen,
+        onEdit: (c) => setEditor({ connection: c }),
+        onDuplicate: handleDuplicate,
+        onDelete: (c) => { void handleDelete(c); },
+    };
+
+    // A server typed into the search box becomes a new profile, filled in but
+    // not dialled — the same "Add, not Connect" the catalogue follows.
+    const handleTypedAddress = (a: TypedAddress) => {
+        const preset: Omit<MudConnection, 'id'> = a.mode === 'mud'
+            ? { name: uniqueConnectionName(a.host, connections), mode: 'mud', host: a.host, port: a.port }
+            : { name: uniqueConnectionName(new URL(a.url).hostname || 'New profile', connections), mode: 'websocket', url: a.url };
+        setEditor({ connection: null, preset });
+    };
+
+    const importActions: MenuAction[] = [
+        ...(dirPicker ? [{ label: 'Import Mudlet folder…', onSelect: handleImportFolder, disabled: busy }] : []),
+        { label: 'Import .zip…', onSelect: () => zipInputRef.current?.click(), disabled: busy },
+        ...(dirPicker ? [{ label: 'Link Mudlet folder…', onSelect: handleLinkFolder, disabled: busy }] : []),
+        { label: 'Import backup…', onSelect: () => backupInputRef.current?.click(), disabled: busy },
+        ...(connections.length > 0 ? [{ label: 'Export profiles…', onSelect: () => setExportOpen(true), disabled: busy }] : []),
+        { label: 'How do I bring a Mudlet profile?', onSelect: () => setHelpTopic('migrating') },
+    ];
+    const importMenu = (
+        <ActionMenu label="Import or export profiles" actions={importActions} disabled={connecting}>
+            {importing ? 'Importing…' : 'Import'}
+            <ChevronDown size={14} aria-hidden="true" />
+        </ActionMenu>
+    );
+
     return (
         <>
-        <div className="connection-screen">
-            <div className="connection-panel">
-                <div className="connection-panel-tools">
-                    {/* Renders nothing in a build with no credential vault. */}
-                    <VaultManageButton connections={connections} />
-                    <button className="connection-settings-btn" onClick={onOpenSettings} type="button" aria-label="Settings">
-                        ⚙
-                    </button>
-                    <button className="connection-help-btn" onClick={() => setHelpTopic('migrating')} type="button" aria-label="Help">
-                        <CircleHelp size={16} />
-                    </button>
-                    <button className="connection-about-btn" onClick={() => setAboutOpen(true)} type="button" aria-label={`About ${brand.appName}`}>
-                        <Info size={16} />
-                    </button>
-                </div>
-                <div className="connection-brand">
-                    {brand.logoUrl && (
-                        <img className="connection-brand-logo" src={brand.logoUrl} alt="" aria-hidden="true" />
-                    )}
-                    {brand.appName}
-                </div>
+        <div className="launcher">
+            <div className="launcher__inner">
+                <header className="launcher-top">
+                    <div className="launcher-brand">
+                        {brand.logoUrl && <img className="launcher-brand__logo" src={brand.logoUrl} alt="" aria-hidden="true" />}
+                        <span className="launcher-brand__name">{brand.appName}</span>
+                    </div>
+                    <LauncherSearch
+                        connections={connections}
+                        games={brand.mud ? [] : PLAYABLE_GAMES}
+                        disabled={connecting}
+                        onConnect={onConnect}
+                        onSelectGame={setDetailsGame}
+                        onAddress={handleTypedAddress}
+                    />
+                    <div className="launcher-tools">
+                        {/* Renders nothing in a build with no credential vault. */}
+                        <VaultManageButton connections={connections} />
+                        <button className="launcher-tool" onClick={onOpenSettings} type="button" aria-label="Settings" title="Settings">
+                            <Settings size={18} aria-hidden="true" />
+                        </button>
+                        <button className="launcher-tool" onClick={() => setHelpTopic('migrating')} type="button" aria-label="Help" title="Help">
+                            <CircleHelp size={18} aria-hidden="true" />
+                        </button>
+                        <button className="launcher-tool" onClick={() => setAboutOpen(true)} type="button" aria-label={`About ${brand.appName}`} title={`About ${brand.appName}`}>
+                            <Info size={18} aria-hidden="true" />
+                        </button>
+                    </div>
+                </header>
 
-                <ConnectionGrid
-                    connections={connections}
-                    connecting={connecting}
-                    connectingId={connectingId}
-                    editingId={editor?.connection?.id ?? null}
-                    openIds={openIds}
-                    onConnect={onConnect}
-                    onOpen={onOpen}
-                    onEdit={(c) => setEditor({ connection: c })}
-                    onDuplicate={handleDuplicate}
-                    onDelete={(c) => { void handleDelete(c); }}
-                    onReorder={reorderConnections}
-                    onAddClick={() => setEditor({ connection: null })}
-                />
+                {hero
+                    ? <LauncherHero connection={hero} handlers={handlers} />
+                    : (
+                        <section className="launcher-welcome">
+                            <ProfileArt icon={null} name={brand.appName} />
+                            <div className="launcher-hero__scrim" />
+                            <div className="launcher-welcome__inner">
+                                <h1 className="launcher-welcome__title">Welcome to {brand.appName}</h1>
+                                <p className="launcher-welcome__text">
+                                    {brand.mud
+                                        ? 'Set up a profile to start playing.'
+                                        : 'Pick a game below, or type any server’s address into the search box above.'}
+                                    {' '}Already play in Mudlet? Bring your profile — triggers, scripts, packages and map — across with{' '}
+                                    <strong>Import</strong>.{' '}
+                                    <button type="button" className="launcher-link" onClick={() => setHelpTopic('migrating')}>How?</button>
+                                </p>
+                            </div>
+                        </section>
+                    )}
 
-                {/* Profile-level actions belong with the profiles, above the
-                    game catalogue rather than below the length of it. A bare row
-                    of buttons doesn't say what a "Mudlet folder" is or where to
-                    find one, so it's captioned and linked to the guide. */}
-                <div className="connection-import-caption">
-                    Already play in Mudlet? Bring your profile — triggers, scripts, packages
-                    and map — across.{' '}
-                    <button type="button" className="connection-import-help" onClick={() => setHelpTopic('migrating')}>
-                        How?
-                    </button>
-                </div>
-                <div className="connection-import-row" style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-                    {dirPicker && (
-                        <Button variant="secondary" size="sm" onClick={handleImportFolder} disabled={connecting || importing}
-                            title="Copy a desktop Mudlet profile folder in — usually ~/.config/mudlet/profiles/<name>. Your folder on disk is left untouched">
-                            {importing ? 'Importing…' : 'Import Mudlet folder…'}
-                        </Button>
-                    )}
-                    <Button variant="secondary" size="sm" onClick={() => zipInputRef.current?.click()} disabled={connecting || importing}
-                        title="Import a zipped Mudlet profile folder, or a .zip exported from Mudlet Web">
-                        {importing && !dirPicker ? 'Importing…' : 'Import .zip…'}
-                    </Button>
-                    {dirPicker && (
-                        <Button variant="secondary" size="sm" onClick={handleLinkFolder} disabled={connecting || importing}
-                            title="Link a Mudlet profile folder — it stays the source of truth and is re-read from its newest save on every open">
-                            Link Mudlet folder…
-                        </Button>
-                    )}
-                    <Button variant="secondary" size="sm" onClick={() => backupInputRef.current?.click()} disabled={connecting || importing}
-                        title="Restore a .json backup downloaded from a previous Mudlet Web address. Profiles are added alongside anything already here">
-                        Import backup…
-                    </Button>
-                    {connections.length > 0 && (
-                        <Button variant="secondary" size="sm" onClick={() => setExportOpen(true)} disabled={connecting || importing}
-                            title="Download profiles as a Mudlet-format .zip — importable here, on another Mudlet Web address, or in desktop Mudlet">
-                            Export profiles…
-                        </Button>
-                    )}
-                </div>
                 {importError && (
-                    <div className="connection-import-error" style={{ color: 'var(--danger, #e06c75)', fontSize: 12, textAlign: 'center' }}>
+                    <div className="launcher-notice launcher-notice--error" role="alert">
                         Import failed: {importError}
                     </div>
                 )}
@@ -357,30 +375,17 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                     what it is missing. Dismissible, and replaced wholesale by the
                     next import. */}
                 {importWarnings.length > 0 && (
-                    <div
-                        className="connection-import-warnings"
-                        role="status"
-                        style={{
-                            fontSize: 12, border: '1px solid var(--border, #2a2a2a)', borderRadius: 6,
-                            padding: '8px 10px', maxHeight: 200, overflowY: 'auto',
-                        }}
-                    >
-                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-                            <strong style={{ flex: 1 }}>
+                    <div className="launcher-notice" role="status">
+                        <div className="launcher-notice__head">
+                            <strong>
                                 Imported, but {importWarningCount} thing{importWarningCount === 1 ? '' : 's'} could not be carried over
                             </strong>
-                            <button
-                                type="button"
-                                onClick={() => setImportWarnings([])}
-                                style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', opacity: 0.7 }}
-                            >
-                                Dismiss
-                            </button>
+                            <button type="button" className="launcher-link" onClick={() => setImportWarnings([])}>Dismiss</button>
                         </div>
                         {importWarnings.map(entry => (
-                            <div key={entry.profile} style={{ marginBottom: 4 }}>
-                                <div style={{ opacity: 0.7 }}>{entry.profile}</div>
-                                <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
+                            <div key={entry.profile} className="launcher-notice__entry">
+                                <div className="launcher-notice__profile">{entry.profile}</div>
+                                <ul>
                                     {entry.warnings.map((w, i) => <li key={i}>{w}</li>)}
                                 </ul>
                             </div>
@@ -388,20 +393,33 @@ export function ConnectionScreen({ connections, connecting, connectingId, onConn
                     </div>
                 )}
 
+                <ProfileShelf
+                    connections={gridConnections}
+                    handlers={handlers}
+                    editingId={editor?.connection?.id ?? null}
+                    onAddClick={() => setEditor({ connection: null })}
+                    onReorder={(ids) => reorderConnections(mergeGridOrder(connections.map(c => c.id), ids))}
+                    importMenu={importMenu}
+                />
+
                 {/* Only the stock client offers them: a branded build targets
                     one MUD and has no use for a directory of others. */}
-                {!brand.mud && (
-                    <BundledGameGrid
-                        connections={connections}
-                        busy={connecting || importing}
-                        onPlay={openGameForm}
-                    />
-                )}
+                {!brand.mud && <GameSection connections={connections} onSelect={setDetailsGame} />}
 
                 <input ref={zipInputRef} type="file" accept=".zip" style={{ display: 'none' }} onChange={handleZipChange} />
                 <input ref={backupInputRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={handleBackupChange} />
             </div>
         </div>
+        {detailsGame && (
+            <GameDetails
+                game={detailsGame}
+                connections={connections}
+                busy={busy}
+                onPlay={(g) => { setDetailsGame(null); openGameForm(g); }}
+                onConnect={(c) => { setDetailsGame(null); onConnect(c); }}
+                onClose={() => setDetailsGame(null)}
+            />
+        )}
         {editor && (
             <ConnectionFormModal
                 connection={editor.connection}

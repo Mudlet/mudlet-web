@@ -98,7 +98,7 @@ export const STOCK_THEMES: { value: string; label: string }[] = [
  *  Every id also gates the matching menu-bar entry, so a brand that removed a
  *  feature does not find it again in a menu. */
 export type StockToolbarButton =
-    | 'scripts' | 'files' | 'map' | 'logs' | 'docs' | 'help' | 'reportBug' | 'settings'
+    | 'scripts' | 'files' | 'notepad' | 'map' | 'logs' | 'docs' | 'help' | 'reportBug' | 'settings'
     | 'record' | 'mute' | 'connection' | 'close';
 
 /** What a brand toolbar button can do when clicked. */
@@ -242,13 +242,21 @@ export interface BrandConfig {
      *   mapper, chosen per game — see `stockDefaults`).
      * - `[]` — nothing is preinstalled.
      * - a list — exactly these, and none of the stock ones.
+     * - a function — handed the stock defaults this profile would get (already
+     *   chosen per game), returns the exact list to install. Use it to drop or
+     *   add to the stock set without vendoring it, e.g.
+     *   `stock => stock.filter(p => p.name !== 'mudlet-base-ui')`.
+     *   It is handed its own copy, so editing it is harmless, but keep it cheap
+     *   and side-effect free: `isPackageRemovable` calls it once per package row
+     *   on every render of the package list, there handing it *every* bundled
+     *   default (both mappers, every game loader) rather than one game's pick.
      *
      * So a brand shipping its own mapper just lists it here and ours never
      * appears; nothing arbitrates between them at install time, which is why the
      * list is exact rather than additive (two mappers would both drive
      * `centerview` off the same movement).
      */
-    packages?: BrandPackage[];
+    packages?: BrandPackage[] | ((stock: BrandPackage[]) => BrandPackage[]);
     /** Brand-defined themes, offered in the picker alongside (or instead of)
      *  the stock ones. A theme reusing a stock id overrides it. */
     themes?: BrandTheme[];
@@ -271,6 +279,21 @@ export interface BrandConfig {
      *  `config` is the `setConfig` option bag (e.g. `versionInTTYPE`,
      *  `enableBlinkText`). */
     profileDefaults?: Partial<ProfileSettings>;
+    /** Whether to ask the browser to exempt this origin's storage from
+     *  eviction (`navigator.storage.persist()`) when a profile is opened or
+     *  imported. Default `true`. Firefox shows that request as a permission
+     *  prompt; set `false` to never make it — a brand that keeps its players'
+     *  data server-side, or that doesn't want the prompt, opts out here. */
+    requestPersistentStorage?: boolean;
+    /** Where an OpenID provider sends the player back after a client-driven
+     *  GMCP `Char.Login` browser sign-in. Default: `oauth-callback.html` beside
+     *  the app, which the `Mudlet Web/vite` plugin emits into your build. Set
+     *  this when your site serves that page somewhere else. It must be
+     *  **same-origin** with the app (the page reports back over a
+     *  `BroadcastChannel`) and run the shipped `oauth-callback.html`, and the
+     *  game's provider must have this exact address registered for its
+     *  `client_id`. Relative values resolve against the app's base URL. */
+    oauthRedirectUrl?: string;
 }
 
 export const DEFAULT_BRAND: BrandConfig = {
@@ -305,13 +328,6 @@ export function getBrand(): BrandConfig {
  *  (single profile, login-form landing, no persisted credentials). */
 export function isBrandedMode(): boolean {
     return !!current.mud;
-}
-
-/** Whether the user may uninstall the named package. Only brand-bundled
- *  packages marked `removable: false` are locked; everything else — stock
- *  defaults included — is removable. */
-export function isPackageRemovable(name: string): boolean {
-    return current.packages?.find(p => p.name === name)?.removable !== false;
 }
 
 /** Theme options for the settings picker: brand themes first (one overriding

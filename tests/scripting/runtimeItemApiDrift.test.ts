@@ -118,6 +118,10 @@ describe('mudlet-web#238 item 1 — multi-pattern perm triggers in a group', () 
     });
 });
 
+// Desktop used to undo a trigger's own setTriggerStayOpen() with the fire
+// length its match applied after the script; it no longer does, so what the
+// script sets on its own trigger is what holds (Trigger_spec, "keeps the
+// length a matching trigger's own script sets").
 describe('mudlet-web#238 item 2 — setTriggerStayOpen on the trigger itself', () => {
     const node = (id: string, name: string, pattern: string, extra: Partial<TriggerNode> = {}): TriggerNode => ({
         id, name, isGroup: false, parentId: null, enabled: true, language: 'lua', code: 'x()',
@@ -138,13 +142,13 @@ describe('mudlet-web#238 item 2 — setTriggerStayOpen on the trigger itself', (
         return fired;
     }
 
-    it('does not keep a trigger firing that opened its own window', () => {
+    it('keeps a trigger firing that opened its own window', () => {
         const engine = new TriggerEngine();
         engine.loadPerm([node('vself', 'vself', '^VOPEN')]);
-        const fired = feed(engine, ['VOPEN', 'y1', 'y2'], m => {
-            if (m.trigger.id === 'vself') engine.setStayOpen(['vself'], 2);
+        const fired = feed(engine, ['VOPEN', 'y1', 'y2', 'y3'], (m, line) => {
+            if (m.trigger.id === 'vself' && line === 'VOPEN') engine.setStayOpen(['vself'], 2);
         });
-        expect(fired).toEqual(['vself@VOPEN']);
+        expect(fired).toEqual(['vself@VOPEN', 'vself@y1', 'vself@y2']);
     });
 
     it('still opens ANOTHER trigger\'s window', () => {
@@ -169,31 +173,35 @@ describe('mudlet-web#238 item 2 — setTriggerStayOpen on the trigger itself', (
         expect(fired).toEqual(['opener@VOPEN', 'target@y1', 'target@y2']);
     });
 
-    it('keeps the trigger\'s own fire length when the script re-arms itself', () => {
+    it('lets the script re-arm its trigger over its own fire length', () => {
         const engine = new TriggerEngine();
         engine.loadPerm([node('vlen', 'vlen', '^VOPEN', { fireLength: 1 })]);
-        // Only the run on the matching line re-arms: a run the fire length
-        // replays is not a match, and desktop decrements mKeepFiring BEFORE
-        // that run, so a call from it does stand.
-        const fired = feed(engine, ['VOPEN', 'y1', 'y2', 'y3'], (m, line) => {
+        const fired = feed(engine, ['VOPEN', 'y1', 'y2', 'y3', 'y4'], (m, line) => {
             if (m.trigger.id === 'vlen' && line === 'VOPEN') engine.setStayOpen(['vlen'], 3);
         });
+        expect(fired).toEqual(['vlen@VOPEN', 'vlen@y1', 'vlen@y2', 'vlen@y3']);
+    });
+
+    it('still applies the fire length when the script leaves the window alone', () => {
+        const engine = new TriggerEngine();
+        engine.loadPerm([node('vlen', 'vlen', '^VOPEN', { fireLength: 1 })]);
+        const fired = feed(engine, ['VOPEN', 'y1', 'y2'], () => {});
         expect(fired).toEqual(['vlen@VOPEN', 'vlen@y1']);
     });
 
-    it('does not keep a temporary trigger firing that opened its own window', () => {
+    it('keeps a temporary trigger firing that opened its own window', () => {
         const engine = new TriggerEngine();
         const fired: string[] = [];
         let current = '';
         engine.addTemp('VOPEN', () => {
             fired.push(current);
-            engine.setTempStayOpen('selfTemp', 2);
+            if (current === 'VOPEN') engine.setTempStayOpen('selfTemp', 2);
         }, 'substring', { name: 'selfTemp' });
-        for (const line of ['VOPEN', 'y1', 'y2']) {
+        for (const line of ['VOPEN', 'y1', 'y2', 'y3']) {
             current = line;
             engine.process(line, false, () => {});
         }
-        expect(fired).toEqual(['VOPEN']);
+        expect(fired).toEqual(['VOPEN', 'y1', 'y2']);
     });
 
     it('closes a temporary trigger\'s window when it matches', () => {

@@ -86,3 +86,16 @@ export function profilesForGame(game: BundledGame, connections: MudConnection[])
 export function findGameForConnection(connection: MudConnection): BundledGame | null {
     return PLAYABLE_GAMES.find(g => matchesGame(g, connection)) ?? null;
 }
+
+/** The connection record a game turns into. Mudlet's catalogue is host/port, so
+ *  these are proxied `mud` profiles — the same thing the Add form builds. */
+export function connectionFromGame(game: BundledGame): Omit<MudConnection, 'id'> {
+    return {
+        name: game.name,
+        mode: 'mud',
+        host: game.hostUrl,
+        port: game.port,
+        tls: game.tlsEnabled || undefined,
+        description: game.description || undefined,
+    };
+}

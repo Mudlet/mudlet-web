@@ -6,6 +6,7 @@ import { ProxyWhyModal } from './ProxyWhyModal';
 import { connectionNameTaken, connectionUrl, DEFAULT_MUD_PORT, DEFAULT_PROXY_URL, proxyCanInspectCertificates, useAppStore, validateHost, validatePort, validateProxyUrl, validateWsUrl, type ConnectionMode, type MudConnection } from '../storage';
 import type { VaultSaver } from './useVaultSaver';
 import { useVault } from '../vault/useVault';
+import { saveVaultSignIn } from '../vault/vaultAccess';
 
 /** Preview of the proxy URL the profile will dial. Runs the fields through
  *  `connectionUrl()` itself rather than a parallel copy of it, so the preview
@@ -108,9 +109,14 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
     const [password, setPassword] = useState('');
     // Whether the vault already holds one for this profile. Answerable while
     // the vault is locked, so the field can say "saved" without opening it.
-    const vaultEntries = useVault().entryIds;
+    const vaultState = useVault();
+    const vaultEntries = vaultState.entryIds;
     const savedId = connection?.id;
     const hasSavedPassword = !!savedId && vaultEntries.includes(savedId);
+    // A GMCP Char.Login reconnect token the game issued after a browser
+    // sign-in. Listed while locked, but only removable once the vault is open.
+    const hasSavedSignIn = !!savedId && vaultState.signInIds.includes(savedId);
+    const [signInForgotten, setSignInForgotten] = useState(false);
     const [description, setDescription] = useState(initial?.description ?? '');
 
     const [proxyModalOpen, setProxyModalOpen] = useState(false);
@@ -553,6 +559,30 @@ export function ConnectionFormModal({ connection, preset, firstConnection, title
                                         prompt instead.
                                     </p>
                                 )}
+                            {(hasSavedSignIn || signInForgotten) && (
+                                <div className="vault-save-row">
+                                    <span className="vault-save-note" role="status">
+                                        {signInForgotten
+                                            ? 'Saved sign-in forgotten. You will sign in again next time.'
+                                            : vaultState.locked
+                                                ? 'This profile has a saved sign-in from the game. Unlock saved logins to forget it.'
+                                                : 'This profile signs in automatically with a saved sign-in from the game.'}
+                                    </span>
+                                    {hasSavedSignIn && !vaultState.locked && (
+                                        <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="ghost"
+                                            onClick={() => {
+                                                if (!savedId) return;
+                                                void saveVaultSignIn(savedId, null).then(ok => setSignInForgotten(ok));
+                                            }}
+                                        >
+                                            Forget saved sign-in
+                                        </Button>
+                                    )}
+                                </div>
+                            )}
                         </div>
 
                         <div className="connection-form-actions">
