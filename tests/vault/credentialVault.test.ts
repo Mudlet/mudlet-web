@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach } from 'vitest';
 import { CredentialVault, VaultError } from '../../src/vault/CredentialVault';
+import { REMEMBER_UNLOCK_DAYS, type DeviceUnlockStore, type RememberedUnlock } from '../../src/vault/deviceUnlock';
 import { parseVaultRecord, type VaultRecord } from '../../src/vault/vaultRecord';
 import {
     decryptJson, deriveKeyFromPassphrase, encryptJson, generateMasterKey, randomBytes,
@@ -328,3 +329,95 @@ describe('parseVaultRecord', () => {
         expect(parsed?.unlockers).toHaveLength(1);
     });
 });
+
+/** IndexedDB stand-in. Holds the entry by reference, as structured clone keeps
+ *  a CryptoKey usable — which a JSON round-trip could not. */
+function memoryDevice() {
+    const box: { entry: RememberedUnlock | null } = { entry: null };
+    const store: DeviceUnlockStore = {
+        load: async () => box.entry,
+        save: async (e) => { box.entry = e; },
+        clear: async () => { box.entry = null; },
+    };
+    return { box, store };
+}
+
+describe('keep unlocked on this device', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+
+    async function rememberedVault() {
+        const { io } = memoryIO();
+        const device = memoryDevice();
+        const first = new CredentialVault(io, device.store);
+        await first.createWithPassphrase(PASS);
+        await first.setPassword('c1', 'hunter2');
+        await first.rememberOnThisDevice();
+        return { io, device, first };
+    }
+
+    it('opens the vault on the next visit without asking', async () => {
+        const { io, device, first } = await rememberedVault();
+        expect(first.getSnapshot().rememberedUntil).toBeGreaterThan(Date.now() + (REMEMBER_UNLOCK_DAYS - 1) * DAY);
+        const next = new CredentialVault(io, device.store);
+        expect(next.locked).toBe(true);
+        expect(await next.restoreOnThisDevice()).toBe(true);
+        expect(next.locked).toBe(false);
+        expect(next.getPassword('c1')).toBe('hunter2');
+        expect(next.getSnapshot().rememberedUntil).toBe(device.box.entry!.expiresAt);
+    });
+
+    it('keeps the device key unreadable', async () => {
+        const { device } = await rememberedVault();
+        expect(device.box.entry!.deviceKey.extractable).toBe(false);
+        await expect(crypto.subtle.exportKey('raw', device.box.entry!.deviceKey)).rejects.toThrow();
+    });
+
+    it('drops an expired entry and stays locked', async () => {
+        const { io, device } = await rememberedVault();
+        device.box.entry = { ...device.box.entry!, expiresAt: Date.now() - 1 };
+        const next = new CredentialVault(io, device.store);
+        expect(await next.restoreOnThisDevice()).toBe(false);
+        expect(next.locked).toBe(true);
+        expect(device.box.entry).toBeNull();
+    });
+
+    it('does not open a vault set up again since', async () => {
+        const { device } = await rememberedVault();
+        // A different vault on the same device: its own record, the old entry.
+        const other = memoryIO();
+        await new CredentialVault(other.io, null).createWithPassphrase('another passphrase');
+        const replaced = new CredentialVault(other.io, device.store);
+        expect(await replaced.restoreOnThisDevice()).toBe(false);
+        expect(replaced.locked).toBe(true);
+        expect(device.box.entry).toBeNull();
+    });
+
+    it('forgets on lock, on request, and when the vault is deleted', async () => {
+        const locked = await rememberedVault();
+        locked.first.lock();
+        await Promise.resolve();
+        expect(locked.device.box.entry).toBeNull();
+
+        const asked = await rememberedVault();
+        await asked.first.forgetOnThisDevice();
+        expect(asked.device.box.entry).toBeNull();
+        expect(asked.first.locked).toBe(false);
+        expect(asked.first.getSnapshot().rememberedUntil).toBeNull();
+
+        const deleted = await rememberedVault();
+        deleted.first.deleteVault();
+        await Promise.resolve();
+        expect(deleted.device.box.entry).toBeNull();
+    });
+
+    it('cannot remember without a device store, and refuses while locked', async () => {
+        const plain = new CredentialVault(memoryIO().io, null);
+        expect(plain.canRemember).toBe(false);
+        await plain.createWithPassphrase(PASS);
+        await expect(plain.rememberOnThisDevice()).rejects.toThrow(VaultError);
+        const { first } = await rememberedVault();
+        first.lock();
+        await expect(first.rememberOnThisDevice()).rejects.toThrow(VaultError);
+    });
+});
+

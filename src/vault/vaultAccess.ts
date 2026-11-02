@@ -43,6 +43,7 @@ export const NO_VAULT: VaultSnapshot = Object.freeze({
     entryIds: Object.freeze([]) as readonly string[],
     signInIds: Object.freeze([]) as readonly string[],
     unlockers: Object.freeze([]) as VaultSnapshot['unlockers'],
+    rememberedUntil: null,
 });
 
 let active: CredentialVault | null = null;

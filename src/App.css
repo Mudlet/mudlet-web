@@ -5811,6 +5811,15 @@ html, body, #root {
     gap: 10px;
 }
 
+.vault-status--remember {
+    margin-top: 6px;
+}
+
+.vault-status--remember .vault-hint {
+    flex: 1;
+    margin: 0;
+}
+
 .vault-badge {
     font-size: 11px;
     text-transform: uppercase;
