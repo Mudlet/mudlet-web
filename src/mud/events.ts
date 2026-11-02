@@ -165,6 +165,9 @@ export type MudClientEvents = {
      *  line of its own — a command echoed onto the GA prompt line it was typed
      *  at (TConsole::printCommand's insertInLine branch). */
     'message': [text?: string | AnsiAwareBuffer, type?: string, timestamp?: number, isPrompt?: boolean, joinedTo?: AnsiAwareBuffer[]];
+    /** A line from the game that a trigger deleted before it was shown, so
+     *  no `message` carries it (TBuffer::commitLine's gagged branch). */
+    'line.gagged': [];
     'flushLines': [groups: { text: string; type: string }[]];
     'gmcp': [payload: { path: string; value: unknown }];
     /** A `Client.GUI` server package-install request, in either wire format:

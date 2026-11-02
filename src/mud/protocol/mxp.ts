@@ -297,7 +297,32 @@ const SEND_FLAGS = new Set(["prompt", "hint", "expire"]);
  *  in this page; a scheme-less address opens nothing
  *  (TMxpLinkTagHandler::actionFor). */
 export function mxpLinkOpens(href: string): boolean {
-    return /^(https?|ftp|mailto):/i.test(href);
+    return mxpOpenableAddress(href) !== "";
+}
+
+/** The address an `<A>` to `href` opens, or `""` when it opens nothing (see
+ *  {@link mxpLinkOpens}). A mail address keeps only its recipients and its
+ *  `subject` and `body` fields: mail clients attach the local files an
+ *  `attach`/`attachment` field names, and the game chose them. The fragment
+ *  goes with the rest, so `#?attachment=` cannot smuggle one past the check
+ *  (TMxpLinkTagHandler::openableAddress). */
+export function mxpOpenableAddress(href: string): string {
+    const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(href)?.[1].toLowerCase();
+    if (scheme !== "http" && scheme !== "https" && scheme !== "ftp" && scheme !== "mailto") return "";
+    if (scheme !== "mailto") return href;
+    const rest = href.slice(scheme.length + 1).split("#", 1)[0];
+    const q = rest.indexOf("?");
+    const recipients = `mailto:${q < 0 ? rest : rest.slice(0, q)}`;
+    if (q < 0) return recipients;
+    const kept = rest.slice(q + 1).split("&").filter(item => {
+        const eq = item.indexOf("=");
+        const name = eq < 0 ? item : item.slice(0, eq);
+        let field = name;
+        try { field = decodeURIComponent(name); } catch { /* keep it as written */ }
+        field = field.toLowerCase();
+        return field === "subject" || field === "body";
+    });
+    return kept.length ? `${recipients}?${kept.join("&")}` : recipients;
 }
 
 const MAX_PENDING = 256;
@@ -1302,7 +1327,10 @@ export class MxpParser {
      *  end the string it is put in (TMxpSendTagHandler::actionFor). */
     private linkActions(link: LinkState, text: string): string[] {
         const target = link.href.replace(/&text;/gi, text);
-        if (link.tag === "a") return [mxpLinkOpens(target) ? `openUrl(${quoteLuaLiteral(target)})` : ""];
+        if (link.tag === "a") {
+            const address = mxpOpenableAddress(target);
+            return [address ? `openUrl(${quoteLuaLiteral(address)})` : ""];
+        }
         const command = link.kind === "prompt" ? "printCmdLine" : "send";
         const cmds = target.split("|").filter(c => c.trim().length > 0);
         return (cmds.length > 0 ? cmds : [text]).map(c => `${command}(${quoteLuaLiteral(c)})`);

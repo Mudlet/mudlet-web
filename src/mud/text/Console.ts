@@ -395,10 +395,22 @@ export class Console {
         const removed = Math.min(
             wanted >= this._maxLines ? overflow : Math.ceil(overflow / wanted) * wanted,
             this.history.length);
-        if (removed > 0) AnsiAwareBuffer.removeAllFromDom(this.history.splice(0, removed));
-        // The user cursor keeps the index it was given rather than following the
-        // line it was parked on — the known limitation sysBufferShrinkEvent
-        // exists to work around, and what Mudlet does.
+        if (removed > 0) {
+            const gone = this.history.splice(0, removed);
+            for (const line of gone) this.trimmed.add(line);
+            AnsiAwareBuffer.removeAllFromDom(gone);
+        }
+        // A script's cursor names its line by number, so it moves up with that
+        // line, or to the top when the line went (TBuffer::shrinkBuffer). One
+        // following the end (-1) has no line of its own to follow.
+        if (removed > 0 && this.cursorIdx >= 0) {
+            if (this.cursorIdx < removed) {
+                this.cursorIdx = 0;
+                this.cursorCol = 0;
+            } else {
+                this.cursorIdx -= removed;
+            }
+        }
         if (removed > 0) this.onBufferShrink?.(removed);
     }
 
@@ -575,6 +587,16 @@ export class Console {
     /** Whether `buf` is still one of this console's lines — the open one or a
      *  complete one — rather than one a clear, a deletion or the scrollback
      *  limit has taken away. */
+    /** Lines the scrollback limit has trimmed away, as opposed to ones a
+     *  clear or a delete took — see {@link wasTrimmed}. */
+    private readonly trimmed = new WeakSet<AnsiAwareBuffer>();
+
+    /** Whether `buf` was one of this console's lines until the scrollback
+     *  limit trimmed it. */
+    wasTrimmed(buf: AnsiAwareBuffer): boolean {
+        return this.trimmed.has(buf);
+    }
+
     holdsLine(buf: AnsiAwareBuffer): boolean {
         return buf === this.partial || this.history[this.cursor] === buf || this.history.includes(buf);
     }
@@ -1253,7 +1275,6 @@ function wrapInfo(text: string, isNewline: boolean, startsIndented: boolean, max
     };
 
     let xPos = 0;
-    let totalWidth = 0;
     let firstChar = 0;
     let needsIndent = indentToCome;
     let hasNewline = false;
@@ -1301,7 +1322,6 @@ function wrapInfo(text: string, isNewline: boolean, startsIndented: boolean, max
                 // no room for even one grapheme: keep one on the line, or the
                 // scan would never move on
                 index = next > firstChar ? next : firstChar + 1;
-                totalWidth += charWidth;
             }
             output.push({ isNewline, needsIndent, first: firstChar, last: index });
             isNewline = false;
@@ -1311,10 +1331,30 @@ function wrapInfo(text: string, isNewline: boolean, startsIndented: boolean, max
             continue;
         }
         xPos += charWidth;
-        totalWidth += charWidth;
         index = next;
     }
-    if (totalWidth <= maxWidth && !hasNewline) return [];
+    // A line that already fits is not broken to make room for the indent, so
+    // one read back out of the buffer, indent and all, echoes back unchanged.
+    // Trailing spaces don't count: a break drops them.
+    if (!hasNewline && output.length > 0) {
+        let textEnd = text.length;
+        while (textEnd > 0 && text[textEnd - 1] === ' ') textEnd--;
+        let width = 0;
+        if (!cellEnd) {
+            width = textEnd;
+        } else {
+            for (let position = 0; position < textEnd && width <= maxWidth;) {
+                let next = cellEnd[position];
+                if (next < 0) {
+                    next = position + 1;
+                    while (next < text.length && cellEnd[next] < 0) next++;
+                }
+                width += codePointWidth(text.codePointAt(position)!);
+                position = next;
+            }
+        }
+        if (width <= maxWidth) return [];
+    }
     if (output.length > 0) output.push({ isNewline, needsIndent: !isNewline, first: firstChar, last: text.length });
     return output;
 }

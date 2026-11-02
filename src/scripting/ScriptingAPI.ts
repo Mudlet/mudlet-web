@@ -1,7 +1,7 @@
 import type { MudSession, ScriptLogSource, ShowSentTextMode, BlankLinesBehaviour } from '../mud/MudSession';
 import type { TelnetNegotiatorFlags } from '../mud/connection/TelnetNegotiator';
 import { splitSentCommands } from '../mud/commandSplit';
-import { mxpLinkOpens } from '../mud/protocol/mxp';
+import { mxpOpenableAddress } from '../mud/protocol/mxp';
 import type { AliasEngine } from '../mud/aliases/AliasEngine';
 import type { TriggerEngine } from '../mud/triggers/TriggerEngine';
 import type { TimerEngine } from '../mud/timers/TimerEngine';
@@ -3650,7 +3650,10 @@ export class ScriptingAPI {
             // a page of this app, and `javascript:` would run in it — those do
             // nothing, as an address the desktop cannot open does nothing.
             return {
-                onClick: () => { if (isLive() && mxpLinkOpens(payload)) this.openUrl(payload); },
+                onClick: () => {
+                    const address = mxpOpenableAddress(payload);
+                    if (isLive() && address) this.openUrl(address);
+                },
                 title: hint || undefined,
                 autoUnderline: true,
             };
@@ -8789,6 +8792,12 @@ export class ScriptingAPI {
         const con = this.getConsole(sel.windowName);
         if (!con) return null;
         if (sel.line && con.holdsLine(sel.line)) return sel.line;
+        if (sel.line && con.wasTrimmed(sel.line)) {
+            // A trim that takes the selected line deselects: desktop's
+            // P_begin/P_end go back to the start of line 0, an empty
+            // selection there (TBuffer::shrinkBuffer → deselect()).
+            Object.assign(sel, { start: 0, length: 0, line: null, y: 0 });
+        }
         return con.lineBuffer(sel.y);
     }
 
