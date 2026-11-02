@@ -25,6 +25,7 @@ import { HelpModal } from './ui/HelpModal';
 import { AboutModal } from './ui/AboutModal';
 import { CharLoginModal } from './ui/CharLoginModal';
 import { BrowserSignInModal } from './ui/BrowserSignInModal';
+import { openSignInPage } from './ui/openSignInPage';
 import { CharLoginController, type SignInOffer } from './mud/CharLoginController';
 import { clientOAuthSupported, defaultOAuthRedirectUri } from './mud/protocol/oauthClientFlow';
 import { TlsUpgradeModal } from './ui/TlsUpgradeModal';
@@ -745,7 +746,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 showPromptError: (error) => setCharLogin(prev => ({ ...prev, error })),
                 closePrompt: () => setCharLogin(null),
                 requestUnlock: () => setVaultUnlock(`${connection.name} has a saved login. Unlock it to sign in.`),
-                offerSignIn: (offer) => setSignInOffer(offer),
+                // Open the page straight away when the browser lets us, as
+                // Mudlet does; the dialog is only for when it would not.
+                offerSignIn: (offer) => setSignInOffer(offer && openSignInPage(offer.url) ? null : offer),
                 post: (level, text) => postLoginMessage(text, level),
             },
         });

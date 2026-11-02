@@ -17,8 +17,10 @@ interface Props {
 /**
  * A GMCP `Char.Login` browser sign-in waiting for the player to open it.
  *
- * Mudlet launches the system browser itself. A web page may only open a tab
- * from a user gesture, so the address becomes this button — a plain link with
+ * Mudlet launches the system browser itself, and so do we while the player's
+ * last gesture is fresh (`openSignInPage`). This dialog is the fallback for
+ * when it is not: a web page may only open a tab from a user gesture, so the
+ * address becomes this button — a plain link with
  * `noopener`, which no popup blocker stops and which gives the provider's page
  * no handle back on ours. The same link is in the console, for a player who
  * closes this.
