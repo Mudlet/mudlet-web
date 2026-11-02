@@ -5384,6 +5384,38 @@ html, body, #root {
     gap: 8px;
 }
 
+/* ── GMCP Char.Login browser sign-in ───────────────────────── */
+
+.browser-signin-modal {
+    width: 400px;
+    max-width: calc(100vw - 32px);
+}
+
+.browser-signin-lead {
+    margin: 0 0 10px;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.browser-signin-note {
+    margin: 0 0 12px;
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.browser-signin-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.browser-signin-actions a.btn {
+    text-decoration: none;
+}
+
 .tls-alert-banner {
     display: flex;
     align-items: center;

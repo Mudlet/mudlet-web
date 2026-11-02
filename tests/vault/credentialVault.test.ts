@@ -226,6 +226,83 @@ describe('CredentialVault', () => {
     });
 });
 
+describe('CredentialVault — GMCP sign-ins', () => {
+    let store: ReturnType<typeof memoryIO>;
+    let vault: CredentialVault;
+
+    beforeEach(() => {
+        store = memoryIO();
+        vault = new CredentialVault(store.io);
+    });
+
+    const SIGN_IN = { account: 'rahj', provider: 'discord', token: 'tok-SECRET-1', secureOnly: true };
+
+    it('cannot store with no vault or a locked one', async () => {
+        expect(vault.canStore).toBe(false);
+        await vault.createWithPassphrase(PASS);
+        expect(vault.canStore).toBe(true);
+        vault.lock();
+        expect(vault.canStore).toBe(false);
+        await expect(vault.setSignIn('c1', SIGN_IN)).rejects.toBeInstanceOf(VaultError);
+    });
+
+    it('stores a sign-in encrypted, and lists only profiles holding a token', async () => {
+        await vault.createWithPassphrase(PASS);
+        await vault.setSignIn('c1', SIGN_IN);
+        await vault.setSignIn('c2', { account: 'other', provider: 'google' });
+        expect(vault.getSignIn('c1')).toEqual(SIGN_IN);
+        expect(vault.hasSignIn('c1')).toBe(true);
+        // A resume hint alone is not worth an unlock prompt.
+        expect(vault.hasSignIn('c2')).toBe(false);
+        expect(vault.getSnapshot().signInIds).toEqual(['c1']);
+        const raw = JSON.stringify(store.box.record);
+        expect(raw).not.toContain('tok-SECRET-1');
+        expect(raw).not.toContain('rahj');
+    });
+
+    it('survives a reload and an unlock, alongside the passwords', async () => {
+        await vault.createWithPassphrase(PASS);
+        await vault.setPassword('c1', 'hunter2');
+        await vault.setSignIn('c1', SIGN_IN);
+        const reopened = new CredentialVault(store.io);
+        expect(reopened.locked).toBe(true);
+        expect(reopened.hasSignIn('c1')).toBe(true);
+        expect(reopened.getSignIn('c1')).toBeUndefined();
+        expect(await reopened.unlockWithPassphrase(PASS)).toBe(true);
+        expect(reopened.getSignIn('c1')).toEqual(SIGN_IN);
+        expect(reopened.getPassword('c1')).toBe('hunter2');
+    });
+
+    it('a password write does not roll back a sign-in written meanwhile', async () => {
+        await vault.createWithPassphrase(PASS);
+        await Promise.all([vault.setPassword('c1', 'pw'), vault.setSignIn('c1', SIGN_IN)]);
+        const reopened = new CredentialVault(store.io);
+        await reopened.unlockWithPassphrase(PASS);
+        expect(reopened.getPassword('c1')).toBe('pw');
+        expect(reopened.getSignIn('c1')).toEqual(SIGN_IN);
+    });
+
+    it('forgets a sign-in with its profile, and prunes it with missing profiles', async () => {
+        await vault.createWithPassphrase(PASS);
+        await vault.setSignIn('c1', SIGN_IN);
+        await vault.setSignIn('gone', SIGN_IN);
+        expect(await vault.forgetConnection('c1')).toBe(true);
+        expect(vault.getSignIn('c1')).toBeUndefined();
+        await vault.pruneMissing(['c1']);
+        expect(vault.getSignIn('gone')).toBeUndefined();
+        expect(vault.getSnapshot().signInIds).toEqual([]);
+    });
+
+    it('reads a record written before sign-ins existed', () => {
+        const legacy = parseVaultRecord(JSON.stringify({
+            version: 1, prfSalt: 'AAAA', entryIds: ['c1'], payload: null,
+            unlockers: [{ id: 'u', kind: 'passphrase', label: 'P', createdAt: '', salt: 'AA', iterations: 1, wrapped: { iv: 'a', ct: 'b' } }],
+        }));
+        expect(legacy?.signInIds).toEqual([]);
+        expect(legacy?.signInPayload).toBeNull();
+    });
+});
+
 describe('parseVaultRecord', () => {
     it('treats junk as "no vault" rather than throwing', () => {
         expect(parseVaultRecord(null)).toBeNull();

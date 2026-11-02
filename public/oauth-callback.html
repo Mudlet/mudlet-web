@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Sign-in</title>
+<!--
+  Redirect target for the client-driven GMCP Char.Login OAuth flow
+  (src/mud/protocol/oauthClientFlow.ts). The identity provider sends the
+  player here with ?code=…&state=… (or ?error=…). This page reports those
+  over a same-origin BroadcastChannel to the app tab that started the
+  sign-in, strips them from the address bar, and says how it went. It
+  never renders anything taken from the URL.
+
+  Desktop Mudlet's equivalent is the loopback listener in OAuthClientFlow.cpp,
+  whose response pages these messages follow.
+-->
+<style>
+  :root { color-scheme: light dark; --bg: #f6f6f4; --fg: #1f2328; --muted: #59636e; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16181d; --fg: #e6e6e6; --muted: #9aa4af; } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { min-height: 100%; display: grid; place-items: center; padding: 16px; box-sizing: border-box; }
+  p { max-width: 32em; text-align: center; margin: 0; }
+  small { display: block; margin-top: 8px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main><p id="msg" role="status" aria-live="polite">Finishing your sign-in…</p></main>
+<script>
+(function () {
+  'use strict';
+  var CHANNEL = 'mudlet-web-oauth';
+  var msg = document.getElementById('msg');
+  function show(text, hint) {
+    msg.textContent = text;
+    if (hint) {
+      var s = document.createElement('small');
+      s.textContent = hint;
+      msg.appendChild(s);
+    }
+  }
+
+  // Providers answer in the query (the default response_mode) and, rarely, the
+  // fragment. Read both, then take them out of the address bar and history.
+  var params = new URLSearchParams(location.search);
+  if (!params.has('state') && location.hash.length > 1) {
+    params = new URLSearchParams(location.hash.slice(1));
+  }
+  var state = params.get('state') || '';
+  var code = params.get('code') || '';
+  var error = params.get('error') || '';
+  try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignore */ }
+
+  if (!state || (!code && !error)) {
+    show('There is no sign-in to finish here.', 'You can close this tab.');
+    return;
+  }
+  if (typeof BroadcastChannel === 'undefined') {
+    show('This browser cannot hand the sign-in back to Mudlet.', 'Please return to the game and try again.');
+    return;
+  }
+
+  var channel = new BroadcastChannel(CHANNEL);
+  var settled = false;
+  function finish(ok) {
+    if (settled) return;
+    settled = true;
+    channel.close();
+    if (ok === true) {
+      show('You are signed in. You can close this tab and return to the game.');
+      setTimeout(function () { try { window.close(); } catch (e) { /* ignore */ } }, 1500);
+    } else if (ok === false) {
+      show(error ? 'The sign-in was not completed.' : 'The sign-in did not complete.',
+           'You can close this tab and return to the game.');
+    } else {
+      show('The game tab that started this sign-in did not answer.',
+           'If it is still open, return to it; otherwise reconnect and try again.');
+    }
+  }
+  channel.onmessage = function (ev) {
+    var d = ev.data;
+    if (d && d.type === 'ack' && d.state === state) finish(d.ok === true);
+  };
+  var payload = { type: 'callback', state: state };
+  if (code) payload.code = code;
+  if (error) payload.error = error;
+  channel.postMessage(payload);
+  setTimeout(function () { finish(null); }, 4000);
+})();
+</script>
+</body>
+</html>

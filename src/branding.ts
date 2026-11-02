@@ -285,6 +285,15 @@ export interface BrandConfig {
      *  prompt; set `false` to never make it — a brand that keeps its players'
      *  data server-side, or that doesn't want the prompt, opts out here. */
     requestPersistentStorage?: boolean;
+    /** Where an OpenID provider sends the player back after a client-driven
+     *  GMCP `Char.Login` browser sign-in. Default: `oauth-callback.html` beside
+     *  the app, which the `Mudlet Web/vite` plugin emits into your build. Set
+     *  this when your site serves that page somewhere else. It must be
+     *  **same-origin** with the app (the page reports back over a
+     *  `BroadcastChannel`) and run the shipped `oauth-callback.html`, and the
+     *  game's provider must have this exact address registered for its
+     *  `client_id`. Relative values resolve against the app's base URL. */
+    oauthRedirectUrl?: string;
 }
 
 export const DEFAULT_BRAND: BrandConfig = {

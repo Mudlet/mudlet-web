@@ -1,6 +1,9 @@
 import type { AnsiAwareBuffer } from './text/FormatState';
 import type { MspCommand } from './protocol';
 import type { ScriptLogSource } from './MudSession';
+import type {
+    CharLoginCapabilities, CharLoginResult, CharLoginToken, CharLoginUrl,
+} from './protocol/charLoginFlow';
 
 export type SessionStatus = 'disconnected' | 'connecting' | 'connected';
 
@@ -180,16 +183,24 @@ export type MudClientEvents = {
      *  `setATCPVariables` does: `name` keys the Lua `atcp` table and is the
      *  event raised, `value` the string both carry. */
     'atcp': [payload: { name: string; value: string }];
-    /** Fires when the server requests GMCP login (Char.Login.Default). The
-     *  argument is the list of supported authentication methods it advertised
-     *  (e.g. `["password-credentials"]`). The UI shows a credentials popup and
-     *  replies via `sendCharLoginCredentials` — or an empty reply (cancel) to
-     *  fall back to the server's text login prompt. */
-    'charLogin.request': [methods: string[]];
+    /** Fires when the server requests GMCP login (Char.Login.Default), with
+     *  everything the frame advertised: the negotiated version, the methods
+     *  (e.g. `["password-credentials", "oauth"]`) and any client-driven OAuth
+     *  capability. `CharLoginController` decides how to answer. */
+    'charLogin.request': [capabilities: CharLoginCapabilities];
+    /** Fires on `Char.Login.URL` — the game offering a page to sign in on.
+     *  `null` when the address was missing, unparseable or not http(s), which
+     *  is reported rather than rendered: it arrives unauthenticated. Can arrive
+     *  at any point in a session, not just at login. */
+    'charLogin.url': [link: CharLoginUrl | null];
+    /** Fires on `Char.Login.Token` — a password-less reconnect token, issued at
+     *  the game's discretion. A bearer secret: never log it. A malformed frame
+     *  raises nothing. */
+    'charLogin.token': [token: CharLoginToken];
     /** Fires when the server reports a GMCP login outcome (Char.Login.Result).
      *  `success` is true on a successful authentication; on failure `message`
      *  carries the server's human-readable reason (e.g. "Invalid credentials"). */
-    'charLogin.result': [result: { success: boolean; message?: string }];
+    'charLogin.result': [result: CharLoginResult];
     /** Fires when the command input should switch in/out of password masking.
      *  True only for a genuine password prompt (server enabled ECHO *after* it
      *  began sending output); a connect-time server-wide ECHO suppresses local

@@ -25,10 +25,11 @@ const require = createRequire(import.meta.url);
 
 const POLYFILLS: ('buffer' | 'stream' | 'events' | 'util')[] = ['buffer', 'stream', 'events', 'util'];
 
-/** vfs-sw.js ships next to the compiled plugin in dist-lib (consumers) and in
- *  public/ when running from the Mudlet Web repo itself (source import). */
-function resolveVfsSwPath(): string | null {
-    for (const rel of ['./vfs-sw.js', '../public/vfs-sw.js']) {
+/** The static files the app needs at its root (vfs-sw.js, oauth-callback.html)
+ *  ship next to the compiled plugin in dist-lib (consumers) and in public/ when
+ *  running from the Mudlet Web repo itself (source import). */
+function resolveStaticPath(name: string): string | null {
+    for (const rel of [`./${name}`, `../public/${name}`]) {
         const p = fileURLToPath(new URL(rel, import.meta.url));
         if (existsSync(p)) return p;
     }
@@ -74,34 +75,36 @@ function pcre2WasmPlugin(): Plugin {
     };
 }
 
-/** Serves/emits the VFS service worker at the site root so
- *  `registerVfsServiceWorker()` (called by MudletWebApp) finds it. Skipped when
- *  the consumer already ships its own copy in public/ — as the standalone
- *  Mudlet Web app does. */
-function vfsServiceWorkerPlugin(): Plugin {
-    const swPath = resolveVfsSwPath();
+/** Serves/emits a static file at the site root. Used for the VFS service
+ *  worker, so `registerVfsServiceWorker()` (called by MudletWebApp) finds it,
+ *  and for `oauth-callback.html`, the redirect target of the client-driven GMCP
+ *  `Char.Login` browser sign-in (see oauthClientFlow.ts). Skipped when the
+ *  consumer already ships its own copy in public/ — as the standalone Mudlet
+ *  Web app does. */
+function rootStaticFilePlugin(name: string, contentType: string): Plugin {
+    const filePath = resolveStaticPath(name);
     let skip = false;
     return {
-        name: 'mudlet:vfs-sw',
+        name: `mudlet:static:${name}`,
         configResolved(config) {
-            skip = !swPath || (!!config.publicDir && existsSync(join(config.publicDir, 'vfs-sw.js')));
+            skip = !filePath || (!!config.publicDir && existsSync(join(config.publicDir, name)));
         },
         configureServer(server) {
             server.middlewares.use((req, res, next) => {
-                if (!skip && swPath && req.url?.split('?')[0] === '/vfs-sw.js') {
-                    res.setHeader('Content-Type', 'text/javascript');
-                    res.end(readFileSync(swPath));
+                if (!skip && filePath && req.url?.split('?')[0] === `/${name}`) {
+                    res.setHeader('Content-Type', contentType);
+                    res.end(readFileSync(filePath));
                     return;
                 }
                 next();
             });
         },
         generateBundle() {
-            if (skip || !swPath) return;
+            if (skip || !filePath) return;
             this.emitFile({
                 type: 'asset',
-                fileName: 'vfs-sw.js',
-                source: readFileSync(swPath, 'utf8'),
+                fileName: name,
+                source: readFileSync(filePath, 'utf8'),
             });
         },
     };
@@ -198,6 +201,7 @@ export default function mudlet(): PluginOption[] {
         },
         nodePolyfills({ include: POLYFILLS }),
         pcre2WasmPlugin(),
-        vfsServiceWorkerPlugin(),
+        rootStaticFilePlugin('vfs-sw.js', 'text/javascript'),
+        rootStaticFilePlugin('oauth-callback.html', 'text/html; charset=utf-8'),
     ];
 }

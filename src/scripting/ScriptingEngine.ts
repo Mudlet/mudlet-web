@@ -195,6 +195,15 @@ function globToRegExp(glob: string): RegExp {
     return new RegExp(`^${body}$`);
 }
 
+/** Incoming GMCP paths whose bodies are secrets, so `mudlet.debugGmcp` logs
+ *  only their size: `Char.Login.Token` is a bearer token, and some games echo
+ *  `Char.Login.Credentials` back with the pair still in it. Lowercased — GMCP
+ *  module casing varies between servers. */
+const SECRET_GMCP_PATHS = new Set([
+    'char.login.token',
+    'char.login.credentials',
+]);
+
 /** `mudlet.debugGmcp` — log each incoming GMCP message's path + truncated body,
  *  so we can see exactly which modules a server drives (e.g. whether audio
  *  arrives over `Client.Media.*` GMCP or MSP tags). */
@@ -6929,9 +6938,13 @@ export class ScriptingEngine implements EngineHost {
                 // gmcp.Client.GUI table and no event (mudlet-web#362).
                 if (path.toLowerCase().startsWith('client.gui') && !this.serverGuiAccepted()) return;
                 if (debugGmcpEnabled()) {
-                    const body = JSON.stringify(value);
-                    console.debug(`[mudlet.gmcp] ${path}`,
-                        body.length > 200 ? body.slice(0, 200) + '…' : body);
+                    const body = JSON.stringify(value) ?? '';
+                    if (SECRET_GMCP_PATHS.has(path.toLowerCase())) {
+                        console.debug(`[mudlet.gmcp] ${path}`, `<redacted ${body.length}-char body>`);
+                    } else {
+                        console.debug(`[mudlet.gmcp] ${path}`,
+                            body.length > 200 ? body.slice(0, 200) + '…' : body);
+                    }
                 }
                 this.runtimes.lua?.setGmcpValue(path, value);
                 const fullKey = `gmcp.${path}`;
