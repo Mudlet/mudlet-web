@@ -276,8 +276,12 @@ export type CharLoginAction =
     | { kind: 'oauth' }
     /** Raise the credentials popup. Version 1 only. */
     | { kind: 'prompt' }
-    /** Ask to unlock the vault holding this profile's saved login or sign-in. */
-    | { kind: 'unlock' };
+    /**
+     * Ask to unlock the vault. `read`: it holds this profile's saved login or
+     * sign-in. `store`: it holds nothing for this profile yet, but only an open
+     * vault lets the game hand over a token to keep (`token_storage`).
+     */
+    | { kind: 'unlock'; reason: 'read' | 'store' };
 
 /** A saved sign-in as the decision sees it — the vault's `VaultSignIn`. */
 export interface StoredSignInView {
@@ -302,6 +306,10 @@ export interface CharLoginRequestState {
     /** A saved password or sign-in exists but sits in a locked vault, so it
      *  can't be read yet. Mudlet Web only — desktop has no vault to unlock. */
     credentialsLocked?: boolean;
+    /** A vault exists but is locked, and holds nothing for this profile — so
+     *  the game would be told `token_storage: false`. False once the player
+     *  said "Not now". Mudlet Web only. */
+    storageLocked?: boolean;
     /** The saved version 2 sign-in, if the vault holds one and is open. */
     signIn?: StoredSignInView;
     /** Whether the link to the *game* is encrypted. */
@@ -364,7 +372,7 @@ export function decideCharLoginRequest(state: CharLoginRequestState): CharLoginA
     }
     // The password is saved, just not readable until the vault is opened.
     if (state.credentialsLocked) {
-        return { kind: 'unlock' };
+        return { kind: 'unlock', reason: 'read' };
     }
     // Nothing to send: hand the sign-in to the game's own login prompt with the
     // empty reply, straight away, as Mudlet does (GMCPAuthenticator::
@@ -379,7 +387,8 @@ export function decideCharLoginRequest(state: CharLoginRequestState): CharLoginA
  * rederived; each rung has a reason:
  *
  * 0. A locked vault that holds this profile's password or token is opened
- *    first — every later rung reads from it. (Mudlet Web only.)
+ *    first — every later rung reads from it. A locked vault holding nothing
+ *    for it is offered too, so a new sign-in can be kept. (Mudlet Web only.)
  * 1. A complete stored account **and** password, when the game accepts
  *    `password-credentials`, is the player's explicit choice — they typed both
  *    into this profile — so it outranks a token, which names whatever account
@@ -401,7 +410,13 @@ export function decideCharLoginRequest(state: CharLoginRequestState): CharLoginA
  */
 function decideCharLoginV2(state: CharLoginRequestState): CharLoginAction {
     if (state.credentialsLocked) {
-        return { kind: 'unlock' };
+        return { kind: 'unlock', reason: 'read' };
+    }
+    // A sign-in that may end in a token, with a vault that could keep it if
+    // the player opened it: ask before answering, because `token_storage` is
+    // sent now and a token refused for it never arrives later.
+    if (state.storageLocked && state.methods.length > 0) {
+        return { kind: 'unlock', reason: 'store' };
     }
     const canAutofill = !!state.account && !!state.password && !state.attempted
         && acceptsPasswordCredentials(state);
@@ -496,6 +511,15 @@ export function charLoginResumeMessage(provider: string): string {
 export const CHAR_LOGIN_TOKEN_SAVED_MESSAGE =
     "You'll be signed in automatically next time. "
     + 'Undo this with "Forget saved sign-in" in the profile\'s connection settings.';
+
+/** Mudlet Web only: the game can hand over a sign-in to keep, but there is no
+ *  vault to keep it in, so it was told `token_storage: false`. The line ends
+ *  in {@link CHAR_LOGIN_NO_VAULT_LINK}, a link that opens vault setup. */
+export const CHAR_LOGIN_NO_VAULT_MESSAGE = 'Want to stay signed in next time?';
+export const CHAR_LOGIN_NO_VAULT_LINK = 'Set up saved logins';
+/** Vault setup, opened from that link, finished. */
+export const CHAR_LOGIN_VAULT_READY_MESSAGE =
+    'Saved logins are set up. The next time you sign in, it will be kept.';
 
 export const CHAR_LOGIN_TOKEN_SAVE_FAILED_MESSAGE =
     'Could not save your sign-in for next time; you may need to sign in again.';

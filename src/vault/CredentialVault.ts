@@ -21,7 +21,8 @@
  * sync, another user on the machine, an extension trawling localStorage. It does
  * not defend against script running in the page *while the vault is unlocked* —
  * no in-page vault can, and neither can a password manager with an open vault.
- * The unlocked state is per page load and lives only in memory.
+ * The unlocked state is per page load and lives only in memory — unless the
+ * player opts into keeping it unlocked on this device (see `deviceUnlock`).
  *
  * State changes notify `subscribe` listeners so React can render off
  * `getSnapshot` through `useSyncExternalStore`.
@@ -32,6 +33,9 @@ import {
     fromBase64, generateMasterKey, PBKDF2_ITERATIONS, randomBytes, toBase64,
     unwrapMasterKey, wrapMasterKey,
 } from './vaultCrypto';
+import {
+    idbDeviceUnlockStore, recallMasterKey, rememberMasterKey, type DeviceUnlockStore,
+} from './deviceUnlock';
 import { evaluateVaultPrf, passkeysAvailable, registerVaultPasskey, type PasskeyRegistration } from './passkeyPrf';
 import {
     loadVaultRecord, saveVaultRecord, type PasskeyUnlocker, type VaultRecord, type VaultSignIn, type VaultUnlocker,
@@ -52,6 +56,9 @@ export interface VaultSnapshot {
     signInIds: readonly string[];
     /** Unlock methods, without their key material. */
     unlockers: readonly { id: string; kind: VaultUnlocker['kind']; label: string; createdAt: string }[];
+    /** Epoch ms until which this device opens the vault by itself, when the
+     *  player chose that. Known only once the vault is open. */
+    rememberedUntil: number | null;
 }
 
 /** Failure modes worth telling apart in the UI. */
@@ -75,7 +82,9 @@ interface VaultIO {
     save(record: VaultRecord | null): void;
 }
 
-const EMPTY_SNAPSHOT: VaultSnapshot = { exists: false, locked: false, entryIds: [], signInIds: [], unlockers: [] };
+const EMPTY_SNAPSHOT: VaultSnapshot = {
+    exists: false, locked: false, entryIds: [], signInIds: [], unlockers: [], rememberedUntil: null,
+};
 
 function newId(): string {
     return toBase64(randomBytes(9));
@@ -91,8 +100,13 @@ export class CredentialVault {
     private signIns: Record<string, VaultSignIn> | null = null;
     private listeners = new Set<() => void>();
     private snapshot: VaultSnapshot = EMPTY_SNAPSHOT;
+    /** See {@link VaultSnapshot.rememberedUntil}. */
+    private rememberedUntil: number | null = null;
 
-    constructor(private io: VaultIO = { load: loadVaultRecord, save: saveVaultRecord }) {
+    constructor(
+        private io: VaultIO = { load: loadVaultRecord, save: saveVaultRecord },
+        private device: DeviceUnlockStore | null = idbDeviceUnlockStore(),
+    ) {
         this.record = io.load();
         this.snapshot = this.buildSnapshot();
     }
@@ -141,6 +155,9 @@ export class CredentialVault {
         const entry = this.signIns?.[connectionId];
         return entry ? { ...entry } : undefined;
     }
+
+    /** Whether this browser can keep the vault unlocked between visits. */
+    get canRemember(): boolean { return this.device !== null; }
 
     /** Whether a secret written now would actually be kept: a vault exists and
      *  is open. What the GMCP `token_storage` field reports. */
@@ -222,8 +239,11 @@ export class CredentialVault {
         return true;
     }
 
-    /** Drop the master key and every decrypted secret. The record stays. */
+    /** Drop the master key and every decrypted secret. The record stays. A
+     *  vault kept unlocked on this device stops being so: "Lock" means locked
+     *  on the next visit too. */
     lock(): void {
+        void this.forgetOnThisDevice();
         if (!this.masterKey && !this.secrets) return;
         this.masterKey = null;
         this.secrets = null;
@@ -231,8 +251,63 @@ export class CredentialVault {
         this.emit();
     }
 
+    // ── keep unlocked on this device ─────────────────────────────────────
+
+    /**
+     * Open the vault from a remembered unlock, if this device has one for it.
+     * Called once at startup, before anything reads a password. A stale entry —
+     * expired, for a vault since replaced, or one that will not decrypt — is
+     * dropped. Never throws: the worst case is the usual unlock prompt.
+     */
+    async restoreOnThisDevice(): Promise<boolean> {
+        if (!this.device || !this.record || this.masterKey) return false;
+        try {
+            const entry = await this.device.load();
+            if (!entry) return false;
+            const master = await recallMasterKey(entry, this.record.prfSalt);
+            if (!master) {
+                await this.device.clear();
+                return false;
+            }
+            // The record may have been deleted while IndexedDB answered.
+            if (!this.record || this.masterKey) return false;
+            this.rememberedUntil = entry.expiresAt;
+            await this.adoptMasterKey(master);
+            return true;
+        } catch (e) {
+            console.warn('Could not reopen the credential vault from this device:', e);
+            this.rememberedUntil = null;
+            return false;
+        }
+    }
+
+    /** Keep the open vault unlocked on this device until the expiry. Asking
+     *  again renews it. Requires unlocked. */
+    async rememberOnThisDevice(): Promise<void> {
+        if (!this.device) throw new VaultError('unavailable', 'This browser cannot keep the vault unlocked.');
+        const master = this.requireMaster();
+        const entry = await rememberMasterKey(master, this.requireRecord().prfSalt);
+        await this.device.save(entry);
+        this.rememberedUntil = entry.expiresAt;
+        this.emit();
+    }
+
+    /** Stop keeping the vault unlocked on this device. It stays open for the
+     *  rest of this visit. */
+    async forgetOnThisDevice(): Promise<void> {
+        const had = this.rememberedUntil !== null;
+        this.rememberedUntil = null;
+        if (had) this.emit();
+        try {
+            await this.device?.clear();
+        } catch (e) {
+            console.warn('Could not forget the remembered vault unlock:', e);
+        }
+    }
+
     /** Remove the vault and everything in it, irreversibly. */
     deleteVault(): void {
+        void this.forgetOnThisDevice();
         this.record = null;
         this.masterKey = null;
         this.secrets = null;
@@ -468,6 +543,7 @@ export class CredentialVault {
             unlockers: this.record.unlockers.map(u => ({
                 id: u.id, kind: u.kind, label: u.label, createdAt: u.createdAt,
             })),
+            rememberedUntil: this.masterKey === null ? null : this.rememberedUntil,
         };
     }
 

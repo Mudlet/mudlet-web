@@ -6,6 +6,7 @@ import { getVault, type VaultUIProps } from '../vault/vaultAccess';
 import { useVault } from '../vault/useVault';
 import { VaultError } from '../vault/CredentialVault';
 import { passkeysAvailable } from '../vault/passkeyPrf';
+import { REMEMBER_UNLOCK_DAYS } from '../vault/deviceUnlock';
 import { describeThrown } from '../utils/describeThrown';
 
 /**
@@ -50,6 +51,8 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
     const [error, setError] = useState<string | null>(null);
     const [passphrase, setPassphrase] = useState('');
     const [confirm, setConfirm] = useState('');
+    // "Keep unlocked on this device" — opt-in, and asked again at each unlock.
+    const [remember, setRemember] = useState(false);
     const passphraseRef = useRef<HTMLInputElement>(null);
     // Named apart from the setup form's confirm-passphrase field.
     const askConfirm = useConfirm();
@@ -60,6 +63,16 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
     const settle = (result: 'created' | 'unlocked') => {
         if (mode === 'manage') { setView('manage'); setError(null); }
         else onDone(result);
+    };
+    /** Act on the "keep unlocked" box once the vault is open. Failing to
+     *  remember is not failing to unlock: say so, and carry on. */
+    const keepIfAsked = async () => {
+        if (!remember || !vault?.canRemember) return;
+        try {
+            await vault.rememberOnThisDevice();
+        } catch (e) {
+            console.warn('Could not keep the vault unlocked on this device:', e);
+        }
     };
     const modalRef = useModalFocus<HTMLDivElement>(close, { autoFocus: false, closeOnEscape: true });
 
@@ -100,6 +113,7 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
     const createWithPasskey = () => run(async () => {
         if (!vault) return;
         await vault.createWithPasskey(getBrand().appName, `${getBrand().appName} vault`, seed);
+        await keepIfAsked();
         settle('created');
     });
 
@@ -116,6 +130,7 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
         void run(async () => {
             if (!vault) return;
             await vault.createWithPassphrase(passphrase, seed);
+            await keepIfAsked();
             setPassphrase('');
             setConfirm('');
             settle('created');
@@ -124,8 +139,10 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
 
     const unlockWithPasskey = () => run(async () => {
         if (!vault) return;
-        if (await vault.unlockWithPasskey()) settle('unlocked');
-        else setError('That passkey could not unlock the vault.');
+        if (await vault.unlockWithPasskey()) {
+            await keepIfAsked();
+            settle('unlocked');
+        } else setError('That passkey could not unlock the vault.');
     });
 
     const unlockWithPassphrase = (e: FormEvent) => {
@@ -133,6 +150,7 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
         void run(async () => {
             if (!vault) return;
             if (await vault.unlockWithPassphrase(passphrase)) {
+                await keepIfAsked();
                 setPassphrase('');
                 settle('unlocked');
             } else {
@@ -192,6 +210,23 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
 
     const errorBox = error && <div className="char-login-error" role="alert">{error}</div>;
 
+    /* Applies to whichever way in is used below, so it sits above them all. */
+    const rememberRow = vault?.canRemember && (
+        <>
+            <label className="vault-save-row">
+                <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
+                <span>Keep unlocked on this device for {REMEMBER_UNLOCK_DAYS} days</span>
+            </label>
+            {remember && (
+                <p className="vault-save-note" role="note">
+                    You won't be asked on this device until then. Anyone who can use this browser
+                    can then open your saved logins, as with the browser's own saved passwords.
+                    Only tick it on a device that is yours alone.
+                </p>
+            )}
+        </>
+    );
+
     const body = () => {
         if (!vault) {
             return <p className="vault-hint">Saved logins are not available in this build.</p>;
@@ -214,7 +249,8 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
     const setupView = () => (
         <div className="vault-body">
             <p className="vault-hint">
-                Passwords are encrypted on this device and unlocked once per visit. Your browser's
+                Passwords are encrypted on this device and unlocked once per visit, unless you
+                keep them unlocked here. Your browser's
                 password manager only ever sees the one way in below — not a separate login for
                 every game, which is what makes its list impossible to tell apart.
             </p>
@@ -225,6 +261,7 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
                 </p>
             )}
             {errorBox}
+            {rememberRow}
             {canOfferPasskey && (
                 <>
                     <div className="vault-option">
@@ -285,6 +322,7 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
                 {reason ?? 'Unlock your saved logins for this visit.'}
             </p>
             {errorBox}
+            {rememberRow}
             {hasPasskey && (
                 <div className="vault-option">
                     <Button variant="primary" onClick={unlockWithPasskey} disabled={busy}>
@@ -373,6 +411,35 @@ export function VaultModal({ mode, reason, seed, connectionNames, onDone }: Vaul
                             )
                             : <Button size="sm" onClick={() => vault?.lock()}>Lock now</Button>}
                     </div>
+                    {!snapshot.locked && vault?.canRemember && (
+                        <div className="vault-status vault-status--remember">
+                            {snapshot.rememberedUntil !== null
+                                ? (
+                                    <>
+                                        <span className="vault-hint vault-hint--small">
+                                            Stays unlocked on this device until{' '}
+                                            {new Date(snapshot.rememberedUntil).toLocaleDateString()}.
+                                        </span>
+                                        <Button size="sm" variant="ghost" disabled={busy}
+                                            onClick={() => void run(() => vault.forgetOnThisDevice())}>
+                                            Ask every visit
+                                        </Button>
+                                    </>
+                                )
+                                : (
+                                    <>
+                                        <span className="vault-hint vault-hint--small">
+                                            Asks to unlock on every visit.
+                                        </span>
+                                        <Button size="sm" variant="ghost" disabled={busy}
+                                            title="Anyone who can use this browser can then open your saved logins."
+                                            onClick={() => void run(() => vault.rememberOnThisDevice())}>
+                                            Keep unlocked for {REMEMBER_UNLOCK_DAYS} days
+                                        </Button>
+                                    </>
+                                )}
+                        </div>
+                    )}
 
                     <div className="vault-section">
                         <div className="form-section-title form-section-title--sub">Ways in</div>

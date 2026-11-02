@@ -45,7 +45,7 @@ import { getBrand, isBrandedMode } from './branding';
 import { setSessionCredentials } from './utils/sessionCredentials';
 import { readStoredLogin, pruneVaultEntries } from './utils/storedCredentials';
 import {
-    saveVaultSignIn, vaultCanStoreSignIn, vaultHasSignIn, vaultNeedsUnlock, vaultSignIn,
+    getVaultUI, saveVaultSignIn, vaultCanStoreSignIn, vaultHasSignIn, vaultLocked, vaultMissing, vaultNeedsUnlock, vaultSignIn,
 } from './vault/vaultAccess';
 import { useVaultSaver } from './ui/useVaultSaver';
 import { VaultUnlockPrompt } from './ui/VaultUnlockPrompt';
@@ -54,6 +54,8 @@ import { setOsc8HyperlinksEnabled } from './mud/text/hyperlinkConfig';
 import { effectiveAmbiguousWidthWide, setAmbiguousWidthWide } from './mud/text/wcwidth';
 import { setExpectColorSpaceId } from './mud/text/colorSpaceId';
 import { MAIN_CONSOLE_BUFFER_SIZE } from './mud/text/Console';
+import { AnsiAwareBuffer } from './mud/text/FormatState';
+import { CHAR_LOGIN_NO_VAULT_LINK, CHAR_LOGIN_NO_VAULT_MESSAGE, CHAR_LOGIN_VAULT_READY_MESSAGE } from './mud/protocol/charLoginFlow';
 import type { MudSession, ControlCharacterMode } from './mud/MudSession';
 import type { FileDialogRequest } from './mud/events';
 import { replayFileName } from './mud/replay/replayFormat';
@@ -142,6 +144,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const [signInOffer, setSignInOffer] = useState<SignInOffer | null>(null);
     // Reason text while the credential vault's unlock prompt is up, else null.
     const [vaultUnlock, setVaultUnlock] = useState<string | null>(null);
+    // Vault setup, opened from the "Set up saved logins" link in the output.
+    const [vaultSetupOpen, setVaultSetupOpen] = useState(false);
 
     const outputFont = useAppStore(s => selectProfileField(s, connection.id, 'outputFont'));
     const mapperSymbolFont = useAppStore(s => selectProfileField(s, connection.id, 'mapper')?.symbolFont);
@@ -730,6 +734,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             oauthRedirectUri: () => (clientOAuthSupported() ? defaultOAuthRedirectUri() : null),
             vault: {
                 needsUnlock: () => vaultNeedsUnlock(connection.id),
+                locked: () => vaultLocked(),
+                missing: () => vaultMissing(),
                 signIn: () => vaultSignIn(connection.id),
                 hasSignIn: () => vaultHasSignIn(connection.id),
                 canStore: () => vaultCanStoreSignIn(),
@@ -745,11 +751,14 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 showPrompt: () => setCharLogin(prev => prev ?? {}),
                 showPromptError: (error) => setCharLogin(prev => ({ ...prev, error })),
                 closePrompt: () => setCharLogin(null),
-                requestUnlock: () => setVaultUnlock(`${connection.name} has a saved login. Unlock it to sign in.`),
+                requestUnlock: (reason) => setVaultUnlock(reason === 'store'
+                    ? `Unlock your saved logins to keep ${connection.name} signed in next time. Choose "Not now" to sign in without saving.`
+                    : `${connection.name} has a saved login. Unlock it to sign in.`),
                 // Open the page straight away when the browser lets us, as
                 // Mudlet does; the dialog is only for when it would not.
                 offerSignIn: (offer) => setSignInOffer(offer && openSignInPage(offer.url) ? null : offer),
                 post: (level, text) => postLoginMessage(text, level),
+                suggestVaultSetup: () => postVaultSetupLink(),
             },
         });
         charLoginRef.current = charLogin;
@@ -915,6 +924,23 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
             'script',
             Date.now(),
         );
+    };
+
+    /** "Want to stay signed in next time? Set up saved logins", the last
+     *  words a link that opens vault setup. Built as a buffer rather than an
+     *  ANSI string because a click needs a handler, which ANSI cannot carry. */
+    const postVaultSetupLink = () => {
+        const lead = `\x1b[36m[ INFO ]\x1b[0m  - \x1b[32m${CHAR_LOGIN_NO_VAULT_MESSAGE}\x1b[0m `;
+        const line = new AnsiAwareBuffer(`${lead}\x1b[4;36m${CHAR_LOGIN_NO_VAULT_LINK}\x1b[0m`);
+        const end = line.text.length;
+        line.setHyperlink([end - CHAR_LOGIN_NO_VAULT_LINK.length, end], {
+            title: 'Keep game sign-ins encrypted on this device',
+            onClick: () => {
+                // A second click after the vault was made has nothing to set up.
+                if (vaultMissing()) setVaultSetupOpen(true);
+            },
+        });
+        session.events.emit('message', line, 'script', Date.now());
     };
 
     /** Console notice from the KaVir TTYPE-version auto-detect, in Mudlet's
@@ -1441,6 +1467,18 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 <VaultUnlockPrompt reason={vaultUnlock} onDone={handleVaultUnlockDone} />
             )}
             {vaultSaver.element}
+            {vaultSetupOpen && (() => {
+                const VaultUI = getVaultUI();
+                return VaultUI && (
+                    <VaultUI
+                        mode="setup"
+                        onDone={(result) => {
+                            setVaultSetupOpen(false);
+                            if (result === 'created') postLoginMessage(CHAR_LOGIN_VAULT_READY_MESSAGE, 'INFO');
+                        }}
+                    />
+                );
+            })()}
             {charLogin && !tlsOffer && !vaultUnlock && (
                 <CharLoginModal
                     connectionName={connection.name}

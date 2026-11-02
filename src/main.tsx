@@ -20,8 +20,17 @@ import { installVaultHelpTopic } from './vault/vaultHelpTopic';
 installVault(credentialVault, VaultModal);
 installVaultHelpTopic();
 
-createRoot(document.getElementById('root')!).render(
-    <StrictMode>
-        <MudletWebApp />
-    </StrictMode>,
-);
+// A vault the player kept unlocked on this device opens before the first
+// render, so a cold auto-connect reads its passwords instead of asking. It is
+// one IndexedDB read; the cap only guards against a wedged database.
+const REMEMBERED_UNLOCK_WAIT_MS = 1500;
+void Promise.race([
+    credentialVault.restoreOnThisDevice(),
+    new Promise(resolve => setTimeout(resolve, REMEMBERED_UNLOCK_WAIT_MS)),
+]).finally(() => {
+    createRoot(document.getElementById('root')!).render(
+        <StrictMode>
+            <MudletWebApp />
+        </StrictMode>,
+    );
+});

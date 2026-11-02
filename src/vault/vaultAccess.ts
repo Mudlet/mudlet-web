@@ -43,6 +43,7 @@ export const NO_VAULT: VaultSnapshot = Object.freeze({
     entryIds: Object.freeze([]) as readonly string[],
     signInIds: Object.freeze([]) as readonly string[],
     unlockers: Object.freeze([]) as VaultSnapshot['unlockers'],
+    rememberedUntil: null,
 });
 
 let active: CredentialVault | null = null;
@@ -115,6 +116,17 @@ export function vaultNeedsUnlock(connectionId: string): boolean {
  *  no vault, no entry, or the vault is locked. */
 export function vaultSignIn(connectionId: string): VaultSignIn | undefined {
     return active?.getSignIn(connectionId);
+}
+
+/** Whether a vault could be set up here but none exists yet. False with no
+ *  vault installed (a branded build) or no crypto (an insecure context). */
+export function vaultMissing(): boolean {
+    return !!active && !active.exists && active.available;
+}
+
+/** Whether a vault exists and is locked. */
+export function vaultLocked(): boolean {
+    return !!active?.locked;
 }
 
 /** Whether this profile has a saved sign-in token — true even while locked. */
