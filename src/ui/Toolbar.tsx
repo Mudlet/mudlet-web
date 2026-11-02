@@ -29,6 +29,8 @@ interface ToolbarProps {
     onOpenMap: () => void;
     onOpenScripts: () => void;
     onOpenFiles: () => void;
+    /** Mudlet's Notepad: the profile's notes.txt. */
+    onOpenNotepad: () => void;
     onOpenLogs: () => void;
     onOpenDocs: () => void;
     onOpenHelp: () => void;
@@ -83,6 +85,7 @@ function Icon({ children }: { children: ReactNode }) {
 
 const IconScripts = () => <Icon><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></Icon>;
 const IconFiles = () => <Icon><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></Icon>;
+const IconNotepad = () => <Icon><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="14" y2="17" /></Icon>;
 const IconMap = () => <Icon><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6" /><line x1="8" y1="3" x2="8" y2="18" /><line x1="16" y1="6" x2="16" y2="21" /></Icon>;
 const IconLogs = () => <Icon><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></Icon>;
 const IconDocs = () => <Icon><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></Icon>;
@@ -130,7 +133,7 @@ function useBrandCommands(commands: BrandCommand[] | undefined, ctx: BrandToolba
     }, [commands, ctx?.connectionId]);
 }
 
-export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnect, onNewConnection, onOpenMap, onOpenScripts, onOpenFiles, onOpenLogs, onOpenDocs, onOpenHelp, onOpenSettings, onOpenAbout, onFocusInputLine, replayRecording, onToggleReplayRecording, replaySpeed, onReplaySpeedChange, onReplayStop, onContextMenu, brandContext, addonCommands, addonMenuCommands, onAddonCommandClick }: ToolbarProps) {
+export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnect, onNewConnection, onOpenMap, onOpenScripts, onOpenFiles, onOpenNotepad, onOpenLogs, onOpenDocs, onOpenHelp, onOpenSettings, onOpenAbout, onFocusInputLine, replayRecording, onToggleReplayRecording, replaySpeed, onReplaySpeedChange, onReplayStop, onContextMenu, brandContext, addonCommands, addonMenuCommands, onAddonCommandClick }: ToolbarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
     const hamburgerRef = useRef<HTMLDivElement>(null);
     const hamburgerMenuRef = useRef<HTMLDivElement>(null);
@@ -308,6 +311,7 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
             onOpenScripts,
             onOpenMap,
             onOpenFiles,
+            onOpenNotepad,
             onOpenLogs,
             onToggleReplayRecording,
             onReplayStop,
@@ -359,6 +363,7 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
         closeProfile: show('close') ? handleCloseProfile : null,
         scriptEditor: show('scripts') ? onOpenScripts : null,
         map: show('map') ? onOpenMap : null,
+        notepad: show('notepad') ? onOpenNotepad : null,
         files: show('files') ? onOpenFiles : null,
         logs: show('logs') ? onOpenLogs : null,
         toggleReplay: show('record') ? onToggleReplayRecording : null,
@@ -399,8 +404,8 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
     // Mudlet's main-toolbar order (mudlet.cpp, `mpMainToolBar->addAction` and
     // `addWidget` in sequence), with this client's buttons standing in for the
     // ones it has: the seven editor actions (Triggers … Variables) are one
-    // Script editor here, Manual is the Docs/Help pair, Notepad and Packages
-    // are the Files browser, and Replay is the recorder. Mudlet's Discord,
+    // Script editor here, Manual is the Docs/Help pair, Packages is the
+    // Files browser, and Replay is the recorder. Mudlet's Discord,
     // MultiView and Full Screen buttons have no counterpart — the first two do
     // not exist here and the third is a menu entry now.
     //
@@ -440,6 +445,7 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
         show('docs') ? { kind: 'button', id: 'docs', icon: <IconDocs />, label: 'Docs', title: 'Lua scripting reference', run: onOpenDocs } : null,
         show('help') ? { kind: 'button', id: 'help', icon: <IconHelp />, label: 'Help', title: 'Profiles, connecting, storage and browser limits', run: onOpenHelp } : null,
         show('settings') ? { kind: 'button', id: 'settings', icon: <IconSettings />, label: 'Settings', run: onOpenSettings } : null,
+        show('notepad') ? { kind: 'button', id: 'notepad', icon: <IconNotepad />, label: 'Notepad', title: 'Notes for this profile, kept in notes.json', run: onOpenNotepad } : null,
         show('files') ? { kind: 'button', id: 'files', icon: <IconFiles />, label: 'Files', run: onOpenFiles } : null,
         show('logs') ? { kind: 'button', id: 'logs', icon: <IconLogs />, label: 'Logs', run: onOpenLogs } : null,
         show('record') ? {

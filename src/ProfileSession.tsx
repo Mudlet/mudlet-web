@@ -19,6 +19,7 @@ import { ScriptEditorModal } from './ui/windows/ScriptEditorModal';
 import { SettingsModal } from './ui/SettingsModal';
 import { FileBrowserModal } from './ui/FileBrowserModal';
 import { LogBrowserModal } from './ui/LogBrowserModal';
+import { NotepadModal } from './ui/NotepadModal';
 import { ScriptingDocsModal } from './ui/ScriptingDocsModal';
 import { HelpModal } from './ui/HelpModal';
 import { AboutModal } from './ui/AboutModal';
@@ -79,6 +80,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     const [scriptsOpen, setScriptsOpen] = useState(false);
     const [filesOpen, setFilesOpen] = useState<false | { initialPath?: string; initialLine?: number; pickedAt?: number }>(false);
     const [logsOpen, setLogsOpen] = useState(false);
+    const [notepadOpen, setNotepadOpen] = useState(false);
     const [docsOpen, setDocsOpen] = useState(false);
     const [helpOpen, setHelpOpen] = useState(false);
     const [aboutOpen, setAboutOpen] = useState(false);
@@ -1285,6 +1287,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 onOpenMap={handleOpenMap}
                 onOpenScripts={handleOpenScripts}
                 onOpenFiles={handleOpenFiles}
+                onOpenNotepad={() => setNotepadOpen(true)}
                 onOpenLogs={() => setLogsOpen(true)}
                 onOpenDocs={() => setDocsOpen(true)}
                 onOpenHelp={() => setHelpOpen(true)}
@@ -1361,6 +1364,18 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                     initialLine={filesOpen.initialLine}
                     onClose={() => setFilesOpen(false)}
                     onPlayReplay={handlePlayReplay}
+                />
+            )}
+            {notepadOpen && (
+                <NotepadModal
+                    connectionId={connection.id}
+                    connectionName={connection.name}
+                    vfs={vfs}
+                    onSend={line => {
+                        if (engineRef.current) engineRef.current.sendCommand(line);
+                        else send(line, true);
+                    }}
+                    onClose={() => setNotepadOpen(false)}
                 />
             )}
             {logsOpen && (
