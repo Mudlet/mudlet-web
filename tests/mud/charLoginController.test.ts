@@ -71,6 +71,7 @@ function harness(opts: { secure?: boolean; vaultOpen?: boolean; redirect?: strin
         showPromptError: vi.fn(),
         closePrompt: vi.fn(),
         requestUnlock: vi.fn(),
+        suggestVaultSetup: vi.fn(),
         offerSignIn: vi.fn((o: SignInOffer | null) => { offers.push(o); }),
         post: vi.fn((level: string, text: string) => { posts.push([level, text]); }),
     };
@@ -81,6 +82,8 @@ function harness(opts: { secure?: boolean; vaultOpen?: boolean; redirect?: strin
         oauthRedirectUri: () => (opts.redirect === undefined ? 'https://web.mudlet.org/oauth-callback.html' : opts.redirect),
         vault: {
             needsUnlock: () => vault.locked && !!vault.entry?.token,
+            locked: () => vault.locked,
+            missing: () => !vault.open,
             signIn: () => (vault.open && !vault.locked ? vault.entry && { ...vault.entry } : undefined),
             hasSignIn: () => !!vault.entry?.token,
             canStore: () => vault.open && !vault.locked,
@@ -382,5 +385,64 @@ describe('CharLoginController — client-driven OAuth', () => {
         h.controller.request(v2(['oauth'], { oauth: OAUTH }));
         h.controller.disconnected();
         expect(h.flows[0].aborted).toBe(true);
+    });
+});
+
+describe('CharLoginController — a locked vault with nothing saved for this profile', () => {
+    it('asks to open it before answering, then tells the game it can keep a token', () => {
+        const h = harness();
+        h.vault.locked = true;
+        h.controller.request(v2(['oauth']));
+        expect(h.ui.requestUnlock).toHaveBeenCalledWith('store');
+        expect(h.session.sent).toEqual([]);
+        h.vault.locked = false;
+        h.controller.vaultUnlockDone('unlocked');
+        expect(h.session.sent).toEqual([['credentials', undefined, undefined, true]]);
+    });
+
+    it('signs in without saving on "Not now", and does not ask again this visit', () => {
+        const h = harness();
+        h.vault.locked = true;
+        h.controller.request(v2(['oauth']));
+        h.controller.vaultUnlockDone('closed');
+        expect(h.session.sent).toEqual([['credentials', undefined, undefined, false]]);
+        h.controller.disconnected();
+        h.controller.connected();
+        h.tick(SIGN_IN_ATTEMPT_INTERVAL_MS);
+        h.controller.request(v2(['oauth']));
+        expect(h.ui.requestUnlock).toHaveBeenCalledTimes(1);
+        expect(h.session.sent).toHaveLength(2);
+    });
+
+    it('does not ask when there is no vault at all', () => {
+        const h = harness({ vaultOpen: false });
+        h.controller.request(v2(['oauth']));
+        expect(h.ui.requestUnlock).not.toHaveBeenCalled();
+        expect(h.session.sent).toEqual([['credentials', undefined, undefined, false]]);
+    });
+});
+
+describe('CharLoginController — no vault set up', () => {
+    it('says once a visit where to set one up', () => {
+        const h = harness({ vaultOpen: false });
+        h.controller.request(v2(['oauth']));
+        expect(h.ui.suggestVaultSetup).toHaveBeenCalledTimes(1);
+        h.controller.disconnected();
+        h.controller.connected();
+        h.tick(SIGN_IN_ATTEMPT_INTERVAL_MS);
+        h.controller.request(v2(['oauth']));
+        expect(h.ui.suggestVaultSetup).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays quiet on a version 1 game, a game naming no method, or with a vault', () => {
+        const v1 = harness({ vaultOpen: false });
+        v1.controller.request({ version: 1, methods: ['password-credentials'] });
+        const none = harness({ vaultOpen: false });
+        none.controller.request(v2([]));
+        const open = harness();
+        open.controller.request(v2(['oauth']));
+        for (const h of [v1, none, open]) {
+            expect(h.ui.suggestVaultSetup).not.toHaveBeenCalled();
+        }
     });
 });

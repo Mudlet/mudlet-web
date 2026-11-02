@@ -81,6 +81,11 @@ export interface CharLoginVault {
     needsUnlock(): boolean;
     /** The saved sign-in, when there is one and the vault is open. */
     signIn(): VaultSignIn | undefined;
+    /** A vault exists and is locked. */
+    locked(): boolean;
+    /** No vault exists, but one could be set up here. False in a build that
+     *  ships no vault, which must not be pointed at one. */
+    missing(): boolean;
     /** Whether the vault holds a token for this profile — answerable locked. */
     hasSignIn(): boolean;
     /** Whether a token handed to us now would be kept (`token_storage`). */
@@ -98,7 +103,10 @@ export interface CharLoginUi {
     showPromptError(message: string): void;
     closePrompt(): void;
     /** Ask to unlock the vault; answer with {@link CharLoginController.vaultUnlockDone}. */
-    requestUnlock(): void;
+    requestUnlock(reason: 'read' | 'store'): void;
+    /** Offer to set up a vault — once a visit, when none exists and the game
+     *  could have handed over a sign-in to keep. */
+    suggestVaultSetup(): void;
     /** Show (or with null, withdraw) a sign-in page for the player to open. */
     offerSignIn(offer: SignInOffer | null): void;
     /** A console notice in Mudlet's house style. */
@@ -140,6 +148,14 @@ export class CharLoginController {
     private vaultDeclined = false;
     /** A Char.Login request is parked behind the vault unlock prompt. */
     private vaultPending = false;
+    /** Why the parked request asked. */
+    private vaultPendingReason: 'read' | 'store' = 'read';
+    /** The player said "Not now" to opening the vault just to keep a new
+     *  sign-in. Lasts the visit, not the connection: the vault stays locked
+     *  across reconnects, and asking at every one would nag. */
+    private storeDeclined = false;
+    /** The "set up saved logins" hint went out. Once a visit. */
+    private noVaultHinted = false;
     /** Credentials went out and the game has said nothing since. */
     private unanswered = false;
     /** Any `Char.Login.Default` this connection named a way to sign in. A token
@@ -314,6 +330,8 @@ export class CharLoginController {
             account: stored.account,
             password: stored.password,
             credentialsLocked: !this.vaultDeclined && this.opts.vault.needsUnlock(),
+            storageLocked: caps.version >= 2 && !this.vaultDeclined && !this.storeDeclined
+                && this.opts.vault.locked(),
             signIn: caps.version >= 2 ? this.opts.vault.signIn() : undefined,
             secureTransport: this.opts.session.gameTransportSecure,
             tokenRejected: this.tokenRejected,
@@ -333,6 +351,13 @@ export class CharLoginController {
         this.tokenRejected = false;
         if (charLoginTokenRefusedForCleartext(state)) {
             this.opts.ui.post('WARN', CHAR_LOGIN_INSECURE_RECONNECT_MESSAGE);
+        }
+        // A sign-in that could be kept, and nowhere to keep it: say where to
+        // set that up, since the game is told `token_storage: false` silently.
+        if ((state.version ?? 1) >= 2 && state.methods.length > 0 && !state.declined
+            && !this.noVaultHinted && this.opts.vault.missing()) {
+            this.noVaultHinted = true;
+            this.opts.ui.suggestVaultSetup();
         }
         this.execute(decideCharLoginRequest(state), state);
     }
@@ -388,7 +413,8 @@ export class CharLoginController {
                 // Safe to ask now rather than at connect: the server blocks
                 // until we answer, so there is no race to lose.
                 this.vaultPending = true;
-                ui.requestUnlock();
+                this.vaultPendingReason = action.reason;
+                ui.requestUnlock(action.reason);
                 return;
         }
     }
@@ -396,7 +422,10 @@ export class CharLoginController {
     /** The vault unlock prompt closed. When a request was parked behind it,
      *  answer it now — the game withholds its own prompt until we reply. */
     vaultUnlockDone(result: 'created' | 'unlocked' | 'closed'): void {
-        if (result === 'closed') this.vaultDeclined = true;
+        if (result === 'closed') {
+            this.vaultDeclined = true;
+            if (this.vaultPending && this.vaultPendingReason === 'store') this.storeDeclined = true;
+        }
         if (!this.vaultPending) return;
         this.vaultPending = false;
         this.attempt();

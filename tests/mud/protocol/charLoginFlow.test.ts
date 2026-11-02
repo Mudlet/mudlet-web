@@ -36,7 +36,7 @@ describe('decideCharLoginRequest', () => {
     });
 
     it('asks to unlock the vault when the saved login is locked away', () => {
-        expect(decideCharLoginRequest(request({ credentialsLocked: true }))).toEqual({ kind: 'unlock' });
+        expect(decideCharLoginRequest(request({ credentialsLocked: true }))).toEqual({ kind: 'unlock', reason: 'read' });
     });
 
     it('declines a method we cannot satisfy', () => {
@@ -153,7 +153,18 @@ describe('decideCharLoginRequest — version 2', () => {
     });
 
     it('opens the vault first when it holds the sign-in', () => {
-        expect(decideCharLoginRequest(v2({ credentialsLocked: true }))).toEqual({ kind: 'unlock' });
+        expect(decideCharLoginRequest(v2({ credentialsLocked: true }))).toEqual({ kind: 'unlock', reason: 'read' });
+        expect(decideCharLoginRequest(v2({ credentialsLocked: true, storageLocked: true })))
+            .toEqual({ kind: 'unlock', reason: 'read' });
+    });
+
+    it('offers to open a locked vault so a new sign-in can be kept', () => {
+        expect(decideCharLoginRequest(v2({ storageLocked: true, clientOAuthAvailable: true })))
+            .toEqual({ kind: 'unlock', reason: 'store' });
+        // A game naming no way to sign in has nothing to mint a token from.
+        expect(decideCharLoginRequest(v2({ methods: [], storageLocked: true }))).toEqual({ kind: 'decline' });
+        // Version 1 has no tokens.
+        expect(decideCharLoginRequest(request({ storageLocked: true }))).toEqual({ kind: 'decline' });
     });
 
     it('keeps handing off once the player chose the game\'s own login', () => {

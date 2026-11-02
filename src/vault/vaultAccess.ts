@@ -117,6 +117,17 @@ export function vaultSignIn(connectionId: string): VaultSignIn | undefined {
     return active?.getSignIn(connectionId);
 }
 
+/** Whether a vault could be set up here but none exists yet. False with no
+ *  vault installed (a branded build) or no crypto (an insecure context). */
+export function vaultMissing(): boolean {
+    return !!active && !active.exists && active.available;
+}
+
+/** Whether a vault exists and is locked. */
+export function vaultLocked(): boolean {
+    return !!active?.locked;
+}
+
 /** Whether this profile has a saved sign-in token — true even while locked. */
 export function vaultHasSignIn(connectionId: string): boolean {
     return !!active?.hasSignIn(connectionId);
