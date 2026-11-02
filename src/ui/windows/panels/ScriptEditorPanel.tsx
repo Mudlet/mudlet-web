@@ -1049,10 +1049,11 @@ export const ScriptEditorPanel = forwardRef<ScriptEditorPanelHandle, ScriptEdito
         // touching disk, so we need the kind flag to make that decision after the
         // store entry is gone.
         const manifest = packages.find(p => p.name === packageName);
-        // Raise sysUninstall/sysUninstallPackage before removing the
-        // package's items from the store so the package's own handlers can
-        // still run during cleanup.
-        scriptingEngineRef?.current?.notifyPackageUninstalled(packageName);
+        // Raise sysUninstall and sysUninstallPackage (sysUninstallModule for a
+        // module) before removing the package's items from the store so the
+        // package's own handlers can still run during cleanup.
+        scriptingEngineRef?.current?.notifyPackageUninstalled(
+            packageName, manifest?.kind === 'module' ? 'module' : 'package');
         uninstallPackage(connectionId, packageName);
         if (vfs && manifest) {
             try { await uninstallPackageFiles(manifest, vfs); }

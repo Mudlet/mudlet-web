@@ -48,6 +48,8 @@ export interface AppMenuContext {
 
     onOpenScripts: () => void;
     onOpenMap: () => void;
+    /** setConfig("mapperButton", "disabled") is in force. */
+    mapDisabled?: boolean;
     onOpenFiles: () => void;
     onOpenLogs: () => void;
     onToggleReplayRecording: () => void;
@@ -103,7 +105,7 @@ export function buildAppMenus(ctx: AppMenuContext): TopMenu[] {
         menu('games', 'Games', ctx.connectionItems),
         menu('toolbox', 'Toolbox', [
             ctx.show('scripts') ? item('scriptEditor', 'Script editor', ctx.onOpenScripts) : null,
-            ctx.show('map') ? item('map', 'Map', ctx.onOpenMap) : null,
+            ctx.show('map') ? item('map', 'Map', ctx.onOpenMap, { disabled: ctx.mapDisabled === true }) : null,
             ctx.show('files') ? item('files', 'Files', ctx.onOpenFiles) : null,
             ctx.show('logs') ? item('logs', 'Logs', ctx.onOpenLogs) : null,
             sep('toolbox-1'),
