@@ -631,19 +631,19 @@ Implemented via the Web Speech API (`TtsManager`). Mudlet uses ranges `-1..1` fo
 
 ## Speech to Text Functions
 
-(Mudlet 5.1) Desktop's `stt.*` drives the offline Vosk recogniser: it loads a native library and a language model from disk, and half the API (`getLibraryPath`, `getPlatformKey`, `reloadLibrary`, `unloadLibrary`) manages exactly that. None of it has a browser counterpart, so the whole table is bound in the state desktop is in when no engine is installed — the state Mudlet's own `STT_spec` is written to pass in. `stt.available()` is `false`; `init`/`start`/`toggle` refuse with (nil, errMsg) and announce the same message on `sysSTTError`; a script's own mistake (a negative timeout, an unknown sensitivity) is returned only. `mudlet.supports.stt` is `false`. See the `stt` block in `Bridge.lua`.
+(Mudlet 5.1) **Not supported.** Desktop's `stt.*` drives the offline Vosk recogniser: it loads a native library and a language model from disk, and half the API (`getLibraryPath`, `getPlatformKey`, `reloadLibrary`, `unloadLibrary`) manages exactly that. None of it has a browser counterpart, so the whole table is bound in the state desktop is in when no engine is installed — the state Mudlet's own `STT_spec` is written to pass in. `stt.available()` is `false`; `init`/`start`/`toggle` refuse with (nil, errMsg) and announce the same message on `sysSTTError`; a script's own mistake (a negative timeout, an unknown sensitivity) is returned only. `mudlet.supports.stt` is `false`. See the `stt` block in `Bridge.lua`.
 
 | Function | Status | Notes |
 |---|---|---|
-| `stt.available()` / `stt.initialized()` / `stt.listening()` | ⚠️ | Always `false` |
-| `stt.getInfo()` | ⚠️ | `backend = ""`, `state = "uninitialized"`, every capability `false` |
-| `stt.init([modelPath])` / `stt.start()` / `stt.toggle()` | ⚠️ | Refuse — the speech recognition library is not available — and raise `sysSTTError` |
-| `stt.stop()` / `stt.cancel()` / `stt.close()` | ⚠️ | `true`: nothing is running, which is the state they ask for |
-| `stt.getModelPath()` / `stt.listModels()` | ⚠️ | `<home>/stt/models` / an empty list |
-| `stt.getLibraryPath()` / `stt.getPlatformKey()` / `stt.reloadLibrary()` / `stt.unloadLibrary()` | ⚠️ | `<home>/stt` / the key desktop's installer would download by / `false` (still no library) / `true` |
-| `stt.setSilenceTimeout()` / `stt.setSensitivity()` / `stt.setVocabulary()` | ⚠️ | Arguments checked as on desktop; nothing to tune |
+| `stt.available()` / `stt.initialized()` / `stt.listening()` | ❌ stub | Always `false` |
+| `stt.getInfo()` | ❌ stub | `backend = ""`, `state = "uninitialized"`, every capability `false` |
+| `stt.init([modelPath])` / `stt.start()` / `stt.toggle()` | ❌ stub | Refuse — the speech recognition library is not available — and raise `sysSTTError` |
+| `stt.stop()` / `stt.cancel()` / `stt.close()` | ❌ stub | `true`: nothing is running, which is the state they ask for |
+| `stt.getModelPath()` / `stt.listModels()` | ❌ stub | `<home>/stt/models` / an empty list |
+| `stt.getLibraryPath()` / `stt.getPlatformKey()` / `stt.reloadLibrary()` / `stt.unloadLibrary()` | ❌ stub | `<home>/stt` / the key desktop's installer would download by / `false` (still no library) / `true` |
+| `stt.setSilenceTimeout()` / `stt.setSensitivity()` / `stt.setVocabulary()` | ❌ stub | Arguments checked as on desktop; nothing to tune |
 
-> A browser does have speech recognition (the Web Speech API, cloud-backed in Chrome, absent in Firefox), but it is an event stream off `navigator` rather than a local model, so it would be a different backend behind these names rather than a port. Until one is written, `sysSTTResult` / `sysSTTPartialResult` / `sysSTTWords` / `sysSTTStateChanged` / `sysSTTCapabilitiesChanged` / `sysSTTHandover` never fire.
+> **Not supported.** A browser's own speech recognition (the Web Speech API) is not a substitute: it is cloud-backed in Chrome, so it would send the player's microphone audio to a third party, and Firefox has none. `sysSTTResult` / `sysSTTPartialResult` / `sysSTTWords` / `sysSTTStateChanged` / `sysSTTCapabilitiesChanged` / `sysSTTHandover` never fire.
 
 ---
 
@@ -1117,4 +1117,5 @@ These features have no real implementation in Mudlet Web, but to keep imported M
 | MMCP / MudMaster Chat Protocol (`mmcp.*`) | Peer-to-peer chat over direct TCP — no raw/listening sockets or P2P in a browser. `mudlet.supports.mmcp` reports false |
 | In-tab multi-profile switching (loading multiple profiles into one tab) | One profile per tab. (`getProfiles` DOES enumerate every configured profile with cross-tab loaded/connected status, `loadProfile` opens another profile in a new tab, and `raiseGlobalEvent` works *across* tabs — see above) |
 | `spawn(...)` | No subprocess in the browser |
+| Speech to text (`stt.*`) | Desktop runs an offline Vosk recogniser from a native library and on-disk models; the browser's Web Speech API is cloud-backed (Chrome) or absent (Firefox). Bound engine-absent: `stt.available()` is false, `mudlet.supports.stt` is false |
 | Spell-check API (`spellCheckWord`, `spellSuggestWord`, `addWordToDictionary`, `removeWordFromDictionary`, `getDictionaryWordList`) | No Hunspell in browser |
