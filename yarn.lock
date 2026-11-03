@@ -1999,9 +1999,9 @@ w3c-keyname@^2.2.4:
   resolved "https://registry.yarnpkg.com/w3c-keyname/-/w3c-keyname-2.2.8.tgz#7b17c8c6883d4e8b86ac8aba79d39e880f8869c5"
   integrity sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ==
 
-wasmoon-lua5.1@^1.18.10:
+wasmoon-lua5.1@1.18.10:
   version "1.18.10"
-  resolved "https://registry.npmjs.org/wasmoon-lua5.1/-/wasmoon-lua5.1-1.18.10.tgz"
+  resolved "https://registry.yarnpkg.com/wasmoon-lua5.1/-/wasmoon-lua5.1-1.18.10.tgz#d8c4df52b174125aeaa38085ccfacfeffdda51b2"
   integrity sha512-7ZLYj7FQgqzJOTJOLXqnIYYIUSRgG/Dw+uDMKnTor5G1Q9ykzRRPBomC3XgS0If+dbj+a8/Hj3+lA2URwKF0BA==
   dependencies:
     "@types/emscripten" "^1.39.10"
