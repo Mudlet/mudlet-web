@@ -27,6 +27,8 @@ interface ToolbarProps {
     onReconnect: () => void;
     onNewConnection: () => void;
     onOpenMap: () => void;
+    /** A script set setConfig("mapperButton", "disabled"): the map entries grey out. */
+    mapDisabled?: boolean;
     onOpenScripts: () => void;
     onOpenFiles: () => void;
     /** Mudlet's Notepad: the profile's notes.txt. */
@@ -133,7 +135,7 @@ function useBrandCommands(commands: BrandCommand[] | undefined, ctx: BrandToolba
     }, [commands, ctx?.connectionId]);
 }
 
-export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnect, onNewConnection, onOpenMap, onOpenScripts, onOpenFiles, onOpenNotepad, onOpenLogs, onOpenDocs, onOpenHelp, onOpenSettings, onOpenAbout, onFocusInputLine, replayRecording, onToggleReplayRecording, replaySpeed, onReplaySpeedChange, onReplayStop, onContextMenu, brandContext, addonCommands, addonMenuCommands, onAddonCommandClick }: ToolbarProps) {
+export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnect, onNewConnection, onOpenMap, mapDisabled = false, onOpenScripts, onOpenFiles, onOpenNotepad, onOpenLogs, onOpenDocs, onOpenHelp, onOpenSettings, onOpenAbout, onFocusInputLine, replayRecording, onToggleReplayRecording, replaySpeed, onReplaySpeedChange, onReplayStop, onContextMenu, brandContext, addonCommands, addonMenuCommands, onAddonCommandClick }: ToolbarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
     const hamburgerRef = useRef<HTMLDivElement>(null);
     const hamburgerMenuRef = useRef<HTMLDivElement>(null);
@@ -310,6 +312,7 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
             shortcutFor: keyOf,
             onOpenScripts,
             onOpenMap,
+            mapDisabled,
             onOpenFiles,
             onOpenNotepad,
             onOpenLogs,
@@ -441,7 +444,7 @@ export function Toolbar({ connectionName, status, ping, onDisconnect, onReconnec
             label: muteAll ? 'Unmute' : 'Mute',
             run: () => setMute(!muteAll, !muteAll),
         } : null,
-        show('map') ? { kind: 'button', id: 'map', icon: <IconMap />, label: 'Map', run: onOpenMap } : null,
+        show('map') ? { kind: 'button', id: 'map', icon: <IconMap />, label: 'Map', run: onOpenMap, disabled: mapDisabled } : null,
         show('docs') ? { kind: 'button', id: 'docs', icon: <IconDocs />, label: 'Docs', title: 'Lua scripting reference', run: onOpenDocs } : null,
         show('help') ? { kind: 'button', id: 'help', icon: <IconHelp />, label: 'Help', title: 'Profiles, connecting, storage and browser limits', run: onOpenHelp } : null,
         show('settings') ? { kind: 'button', id: 'settings', icon: <IconSettings />, label: 'Settings', run: onOpenSettings } : null,

@@ -585,6 +585,17 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         return registry.subscribe(sync);
     }, [engineRef, session, connection, vfs]);
 
+    // setConfig("mapperButton", "disabled") greys the map button, as desktop
+    // disables its mapper action. Re-subscribed per engine, like the registry.
+    const [mapButtonDisabled, setMapButtonDisabled] = useState(false);
+    useEffect(() => {
+        const engine = engineRef.current;
+        if (!engine) { setMapButtonDisabled(false); return; }
+        const sync = () => setMapButtonDisabled(engine.mapperButtonMode() === 'disabled');
+        sync();
+        return engine.onMapperButtonModeChange(sync);
+    }, [engineRef, session, connection, vfs]);
+
     // What the client's own commands hold, so `addCommand` refuses a package
     // the key a player has moved one of them onto. The registry starts from a
     // mirror of Mudlet's fixed map; this is the part that moves.
@@ -1207,6 +1218,9 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
     };
 
     const handleOpenMap = () => {
+        // Host::interceptMapperButton: a UI package that set
+        // setConfig("mapperButton", "scripted"/"disabled") owns the button.
+        if (engineRef.current?.interceptMapperButton()) return;
         if (session.windows.isVisible(MAP_WIDGET_ID)) {
             session.windows.hide(MAP_WIDGET_ID);
         } else {
@@ -1316,6 +1330,7 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
                 onReconnect={handleReconnect}
                 onNewConnection={onCloseProfile}
                 onOpenMap={handleOpenMap}
+                mapDisabled={mapButtonDisabled}
                 onOpenScripts={handleOpenScripts}
                 onOpenFiles={handleOpenFiles}
                 onOpenNotepad={() => setNotepadOpen(true)}

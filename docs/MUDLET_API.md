@@ -2,6 +2,8 @@
 
 Organised to match the [Mudlet wiki Lua Functions reference](https://wiki.mudlet.org/w/Manual:Lua_Functions). Each section below corresponds to a top-level category on that page; rows appear in the wiki's alphabetical order.
 
+Covers Mudlet up to **5.1**: every Lua function 5.0 and 5.1 added has a row below, marked with the version that added it.
+
 Status legend:
 - ✅ Implemented and callable from Lua (JS-bound, pure-Lua, or wasmoon stdlib)
 - ⚠️ Partial — skeleton exists, signature is incomplete, or pure-Lua impl is bundled but blocked by a missing dependency
@@ -171,6 +173,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `getAllRoomEntrances(roomID)` | ✅ | Sorted, de-duped list of rooms with a stock or special exit into this one |
 | `getAllRoomUserData(roomID)` | ✅ | Bridge.lua → `__getAllRoomUserData` |
 | `getAreaExits(areaID[, fullData])` | ✅ | Default → sorted id list; `fullData` → `{ [fromRoomID] = { [exit] = toRoomID } }` |
+| `getAreaGraph()` | ✅ | (Mudlet 5.1) `{ areas = { [areaID] = {name, x, y, rooms, radius, pinned} }, links = { {from, to, exits}, … } }` — the areas as a graph in a world layout kept in the map's user data (`map/areaGraph.ts`, desktop's TAreaGraph). Data only: Mudlet Web draws no area-graph view |
 | `getAreaRooms(areaID)` | ✅ | JS-exposed (0-indexed) |
 | `getAreaRooms1(areaID)` | ✅ | Bridge.lua — 1-based reindex |
 | `getAreaTable()` | ✅ | JS-exposed |
@@ -184,13 +187,18 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `getExitStubs1(roomID)` | ✅ | Bridge.lua — 1-indexed |
 | `getExitWeights(roomID)` | ✅ | JS-exposed; `{exit=weight}` |
 | `getGridMode(areaID)` | ✅ | Bridge.lua → `__getGridMode`; `(false, errMsg)` when area missing |
+| `getHiddenMapMenuItems()` | ✅ | (Mudlet 5.1) Sorted list of the built-in map menu items `hideMapMenuItem` hid |
 | `getHiddenRooms(areaID)` | ✅ | Bridge.lua — 1-indexed array of room ids in the area whose hidden flag is set; `(false, errMsg)` when the area is missing |
+| `getMapEnvironmentKit(envID)` | ✅ | (Mudlet 5.1) → kit name, and whether the map names it (`true`) rather than it being guessed from the environment's colour (`map/environmentKit.ts`) |
+| `getMapEnvironmentKits()` | ✅ | (Mudlet 5.1) `{ [envID] = kit }` for the kits the map names, keyed by number |
 | `getMapEvents()` | ✅ | Bridge.lua |
 | `getMapLabel(areaID, labelID\|labelText)` | ✅ | Bridge.lua |
 | `getMapLabels(areaID)` | ✅ | Bridge.lua → `__getMapLabels` |
 | `getMapMenus()` | ✅ | `{ [menuName] = { ["parent"], ["display name"] } }`; Bridge.lua reshapes the JS array |
 | `getMapSelection()` | ✅ | `{ rooms = {1-indexed roomIDs}, center = roomID }`. Selection lives on `MapStore` with a dedicated subscribe channel; UI: left-click selects + sets center, ctrl/cmd-click toggles, click on empty area clears. `registerMapInfo` callbacks now receive the real selection size + center room |
 | `getMapUserData(key)` | ✅ | Bridge.lua |
+| `getMapWidgetGeometry()` | ✅ | (Mudlet 5.0) → x, y, w, h of the map widget, or (nil, errMsg) when it isn't open |
+| `getMapWindowTitle()` | ✅ | (Mudlet 5.0) The map window's title text (see `setMapWindowTitle`) |
 | `getMapZoom([areaID])` | ✅ | Mudlet-compatible zoom semantics (units across the shorter viewport edge). `setMapZoom` enforces min of 3.0; `areaID` accepted for compat |
 | `getPath(fromID, toID)` | ✅ | A* via `__getPath`; populates `speedWalkPath`/`speedWalkDir`/`speedWalkWeight` (1-indexed) |
 | `getPlayerRoom()` | ✅ | Returns the id last passed to `centerview`; `nil` when unset/deleted |
@@ -215,6 +223,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `getSpecialExitsSwap(roomID)` | ✅ | JS-exposed; `{cmd=toId}` |
 | `gotoRoom(targetRoomID)` | ✅ | Pure Lua (Bridge.lua): `getPath` then `send`s the moves. Mudlet Web sends immediately (no autonomous timed-walk engine) |
 | `hasSpecialExitLock(fromID, toID, cmd)` | ✅ | `toID` ignored; returns the lock boolean or `(nil, errMsg)` when missing |
+| `hideMapMenuItem(item)` / `showMapMenuItem(item)` | ✅ | (Mudlet 5.1) Every desktop built-in item name is accepted (`MapStore.BUILTIN_MENU_ITEMS`); only `setPlayerLocation` has a counterpart in this client's map menu, so it's the only one whose hiding is visible. Unknown name → (nil, errMsg) |
 | `highlightRoom(roomID, …)` | ✅ | JS-exposed — color1/color2 + radius + alpha |
 | `killMapInfo(label)` | ✅ | Removes a contributor entirely |
 | `loadJsonMap(path)` | ✅ | JS-exposed via `MapStore.loadFromJsonString`; raises no event (desktop has no `sysMapLoadEvent`) |
@@ -227,6 +236,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `openMapWidget([…])` | ✅ | Opens the dockable mapper panel |
 | `pauseSpeedwalk()` | ✅ | Pure Lua via Other.lua |
 | `registerMapInfo(label, fn)` | ✅ | `MapStore.registerMapInfo` keyed by label; callback receives `(roomId, selectionSize, areaId, displayedAreaId)` and returns `(text, bold?, italic?, r?, g?, b?)`. New contributors land disabled — call `enableMapInfo(label)` to show. MapPanel re-evaluates every enabled contributor on map updates. Two built-in native contributors mirror Mudlet's defaults: **Short** (`name / id (area)`) and **Full** (area extent + room id/position with selection-aware suffix & styling); **Full** is enabled by default, both are evaluated without Lua and can't be `killMapInfo`'d. The map hamburger menu's **Map info overlays** submenu toggles every contributor (built-in + script) with checkboxes plus a **None** entry |
+| `resetAreaGraphLayout([keepPinned])` | ✅ | (Mudlet 5.1) Lays the area graph out afresh, keeping pinned areas in place when asked |
 | `resumeSpeedwalk()` | ✅ | Other.lua |
 | `removeCustomLine(roomID, direction)` | ✅ | Direction = 1-12/name/special command; `false` when missing |
 | `removeMapEvent(uniquename)` | ✅ | Pairs with `addMapEvent` |
@@ -241,6 +251,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `searchAreaUserData([key[, value]])` | ✅ | 1-indexed |
 | `searchRoom(roomID \| name[, caseSensitive[, exactMatch]])` | ✅ | By id → name (`false` on miss); by name → `{ [roomID] = name }` |
 | `searchRoomUserData([key[, value]])` | ✅ | 1-indexed |
+| `setAreaGraphPosition(areaID, x, y)` | ✅ | (Mudlet 5.1) Pins an area at a world-layout position; (nil, errMsg) for an unknown area or out-of-range coordinate |
 | `setAreaName(idOrName, newName)` | ✅ | Bridge.lua |
 | `setAreaUserData(areaID, key, value)` | ✅ | JS-exposed; false when missing |
 | `setCustomEnvColor(envID, r, g, b, a)` | ✅ | JS-exposed |
@@ -249,6 +260,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `setExitStub(roomID, dir, bool)` | ✅ | JS-exposed |
 | `setExitWeight(roomID, exitCommand, weight)` | ✅ | Weight 0 resets to destination-room weight; rejects negatives/unknown exits |
 | `setGridMode(areaID, bool)` | ✅ | `api.map.setGridMode`; false when missing |
+| `setMapEnvironmentKit(envID [, kit])` | ✅ | (Mudlet 5.1) Names the kit for an environment, saved in the map's user data; nil or `""` clears it. Unknown kit → (nil, errMsg) |
 | `setMapUserData(key, value)` | ✅ | JS-exposed |
 | `setMapPerspective(r, theta, phi)` / `shiftMapPerspective(verticalAngle, horizontalAngle, rotationAngle)` | ✅ | Desktop's 3D-map camera. The checks desktop makes (no map → `nil, "you haven't opened a map yet"`; three numbers) and then nothing, as on desktop while the 3D view isn't the one showing — the map here is 2D |
 | `setMapZoom(zoom[, areaID])` | ✅ | See `getMapZoom` |
@@ -296,6 +308,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `getCharacterName()` | ✅ | The profile's saved login name (`charLoginAccount`, or a branded build's in-memory login) — `Host::getLogin()`; `nil, "no character name set"` when none is saved |
 | `getConfig(key)` | ✅ | Config registry in `ScriptingAPI`. Structured keys (protocol toggles, mapper, `autoClearInputLine`, `showSentText`, `mapperPanelVisible`) read their real field / live state; UI-consumed keys (`commandLineHistorySaveSize`, `showTabConnectionIndicators`) round-trip via the `config` bag and drive behaviour; other catalogued keys persist-only. Unknown key → nil. Full key table + enforced/persist-only breakdown: [`docs/config-api.md`](config-api.md) |
 | `getCommandSeparator()` | ✅ | Reads the profile's `commandSeparator` (default `;;`) |
+| `getMediaListener()` | ✅ | (Mudlet 5.1) → `{facing = direction \| degrees}` |
 | `getModuleInfo(name, key)` | ✅ | Bridge.lua |
 | `getModulePath(name)` | ✅ | Absolute VFS path of a module's XML — `xmlVfsPath` verbatim, else `<profilePath>/<name>/<xmlPath>`; nil when not an installed module |
 | `getModulePriority(name)` | ✅ | JS-exposed |
@@ -336,7 +349,9 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `pauseMusic([channel])` | ✅ | Web Audio can't truly pause — fades out + stops matching music sources (optionally tag-filtered), mirroring `pauseSounds`. Re-trigger `playMusicFile` to "resume" |
 | `pauseSounds([channel])` | ✅ | Web Audio source nodes can't truly pause — stops sources (optionally tag-filtered). Re-trigger `playSoundFile` to "resume" |
 | `pauseVideos()` | ✅ | Pauses every active `<video>` element |
+| `pumpEvents([durationMs])` | ✅ | (Mudlet 5.0) Test mode only, as on desktop: delivers due timers for up to `durationMs` (default 50, max 30000) via `__mudlet_pump`. (nil, errMsg) outside test mode |
 | `purgeMediaCache()` | ✅ | Drops every decoded-audio buffer; active playback unaffected |
+| `rearmLazyGlobals()` | ✅ | (Mudlet 5.1) Test mode only. Mudlet Web always sets `matches`/`multimatches`/`line` up front (desktop with `lazyCaptureGlobals` off), so it answers `false` |
 | `receiveMSP(payload)` | ✅ | Parses the payload through a fresh `MspParser` and re-emits each `!!SOUND`/`!!MUSIC` command as a `msp` session event, so `ScriptingEngine.handleMspCommand` plays it through `SoundManager`. Returns true when ≥1 command parsed |
 | GMCP media protocol (`Client.Media.Play`/`Load`/`Stop`/`Default`) | ✅ | Mudlet's `TMedia` MediaProtocolGMCP. We advertise `Client.Media 1` in `Core.Supports.Set`; `ScriptingEngine.handleClientMedia` resolves the `name` (+ optional `url` base, or the `Client.Media.Default` url) through the shared `media/` VFS cache and plays it via `SoundManager` on the `game` mute gate. Supports `type` (sound/music), `volume`, `loops`, `key`, `tag`, `fadein`/`fadeout`, `start`, and music `continue`. Not yet mapped: `priority`, `finish`, name wildcards; `Stop` filters sounds only by all-stop (music honours name/key/tag/fadeout) |
 | `registerAnonymousEventHandler(event, fn)` | ✅ | Other.lua override tracks IDs in `handlerIdsToHandlers` |
@@ -348,6 +363,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `resumeNamedEventHandler(name)` | ✅ | IDManager.lua |
 | `saveProfile([name])` | ✅ | Bridge.lua → `__mudlet_saveProfile` forces the debounced VFS flush through to IndexedDB; `(nil, errMsg)` when no VFS, else `true, path`. `name` ignored (single-profile) |
 | `setConfig(key, value)` | ✅ | Config registry in `ScriptingAPI` (base global; Other.lua adds the table-form/no-arg wrappers). Enforced: protocol enables + `specialForce*Off`/`forceNewEnvironNegotiationOff` (next connect), `mapRoomSize`/`mapExitSize`/`mapRoundRooms`/`mapShowRoomBorders`/`mapShowGrid`, `autoClearInputLine`, `showSentText`, `mapperPanelVisible`, `showMapInfo`/`hideMapInfo` (live), `commandLineHistorySaveSize`/`showTabConnectionIndicators`/`f3SearchEnabled` (config bag, consumed by UI). Other keys persist only. Read-only/unknown → false. Absent: the six `irc*` keys (no IRC client) and `undoServerWrap`/`undoServerWrapWidth`. Details: [`docs/config-api.md`](config-api.md) |
+| `setMediaListener({facing = …})` | ✅ | (Mudlet 5.1) The way the player faces — a compass direction or degrees — which turns every sound placed by a direction. Relative words and up/down are refused |
 | `setMergeTables(...)` | ✅ | Pure Lua (Bridge.lua), mirroring `Host::mGMCP_merge_table_keys`. Accumulates GMCP keys (dotted, e.g. `"Char.Status"`) into `mudlet.mergeTables`; `__mudlet_set_gmcp` merges those keys' incoming payloads into the existing `gmcp` sub-table instead of replacing it |
 | `setModuleInfo(name, key, value)` | ✅ | Stores a custom info field (in-memory override map) surfaced by `getModuleInfo`; always true |
 | `setModulePriority(name, n)` | ✅ | JS-exposed |
@@ -365,6 +381,8 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `uninstallModule(name)` | ✅ | JS-exposed |
 | `uninstallPackage(name)` | ✅ | JS-exposed |
 | `unzipAsync(zipPath, destDir)` | ✅ | Creates `destDir` before returning, then fires `sysUnzipDone`/`sysUnzipError` after the call has returned — a missing or invalid zip included |
+| `updateSounds({name\|key\|tag, volume, pan, direction, duration})` | ✅ | (Mudlet 5.1) Moves the sounds a key/name/tag picks out to a new volume, pan or direction, gliding over `duration` ms. Naming nothing to pick by is (nil, errMsg); matching nothing is not an error |
+| `waitForEvent(eventName [, timeoutMs])` | ✅ | (Mudlet 5.0) Test mode only. Desktop blocks in a nested event loop; a browser can't re-enter its own, so Mudlet Web pumps its timer queue by hand until the event arrives → eventName, args… or (nil, errMsg) on timeout (default 3000ms, max 30000). Can't observe an event raised from inside an event dispatch already in progress |
 | `yajl.to_string` / `yajl.to_value` / `yajl.generator` / `yajl.parser` / `yajl.null` | ✅ | Matches desktop lua-yajl (`lua_yajl.c`). `Yajl.lua`: a port of yajl_gen (sparse arrays with null holes, `indent`, depth-128 limit, `__gen_json`) and of yajl's push parser (streaming `yajl.parser`, yajl's error text). `yajl.ts`: the `JSON.parse` fast path behind `to_value` (Lua source, or an iterative raw-API build for deep documents, capped where lua_yajl's stack check is), and `yajl.null` as a userdata. Loaded at startup via `setupYajl` |
 
 ---
@@ -611,6 +629,24 @@ Implemented via the Web Speech API (`TtsManager`). Mudlet uses ranges `-1..1` fo
 
 ---
 
+## Speech to Text Functions
+
+(Mudlet 5.1) **Not supported.** Desktop's `stt.*` drives the offline Vosk recogniser: it loads a native library and a language model from disk, and half the API (`getLibraryPath`, `getPlatformKey`, `reloadLibrary`, `unloadLibrary`) manages exactly that. None of it has a browser counterpart, so the whole table is bound in the state desktop is in when no engine is installed — the state Mudlet's own `STT_spec` is written to pass in. `stt.available()` is `false`; `init`/`start`/`toggle` refuse with (nil, errMsg) and announce the same message on `sysSTTError`; a script's own mistake (a negative timeout, an unknown sensitivity) is returned only. `mudlet.supports.stt` is `false`. See the `stt` block in `Bridge.lua`.
+
+| Function | Status | Notes |
+|---|---|---|
+| `stt.available()` / `stt.initialized()` / `stt.listening()` | ❌ stub | Always `false` |
+| `stt.getInfo()` | ❌ stub | `backend = ""`, `state = "uninitialized"`, every capability `false` |
+| `stt.init([modelPath])` / `stt.start()` / `stt.toggle()` | ❌ stub | Refuse — the speech recognition library is not available — and raise `sysSTTError` |
+| `stt.stop()` / `stt.cancel()` / `stt.close()` | ❌ stub | `true`: nothing is running, which is the state they ask for |
+| `stt.getModelPath()` / `stt.listModels()` | ❌ stub | `<home>/stt/models` / an empty list |
+| `stt.getLibraryPath()` / `stt.getPlatformKey()` / `stt.reloadLibrary()` / `stt.unloadLibrary()` | ❌ stub | `<home>/stt` / the key desktop's installer would download by / `false` (still no library) / `true` |
+| `stt.setSilenceTimeout()` / `stt.setSensitivity()` / `stt.setVocabulary()` | ❌ stub | Arguments checked as on desktop; nothing to tune |
+
+> **Not supported.** A browser's own speech recognition (the Web Speech API) is not a substitute: it is cloud-backed in Chrome, so it would send the player's microphone audio to a third party, and Firefox has none. `sysSTTResult` / `sysSTTPartialResult` / `sysSTTWords` / `sysSTTStateChanged` / `sysSTTCapabilitiesChanged` / `sysSTTHandover` never fire.
+
+---
+
 ## UI Functions
 
 ### Qt stylesheet selectors
@@ -681,6 +717,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | Function | Status | Notes |
 |---|---|---|
 | `addCommandLineMenuEvent(name, event)` | ✅ | Right-click command-line menu hook |
+| `addCommand{name, icon, tooltip, menuPath, shortcut, surfaces}` | ✅ | (Mudlet 5.1) Places a command in the menu bar, the toolbar, or both (`surfaces`: `"menu"`, `"toolbar"`, or a list; default both) → id. A click raises `sysCommandClicked(id)`. Owned by the calling package and removed with it. A shortcut a client command already holds is refused |
 | `addMouseEvent(uniquename, event [, displayName [, tooltip]])` | ✅ | `MouseEventRegistry` (mirrors `Host::mConsoleActions`) on `MudSession`. Adds a custom entry to the main output area's right-click menu (`OutputArea` context menu); clicking raises `event`. False on a duplicate uniqueName |
 | `ansi2decho(text)` | ✅ | Pure Lua via GUIUtils.lua |
 | `ansi2string(text)` | ✅ | Pure Lua via GUIUtils.lua |
@@ -740,6 +777,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `echoUserWindow(name, text)` | 🚧 | Not bound. Deprecated in Mudlet in favour of `echo(window, text)`, which is implemented |
 | `echoPopup([window,] text, cmds, hints)` | ✅ | Bridge.lua flattens cmds/hints tables |
 | `enableClickthrough(name)` | ✅ | JS-exposed |
+| `enableCommand(id)` / `disableCommand(id)` / `removeCommand(id)` | ✅ | (Mudlet 5.1) `false` for an unknown id rather than an error, as desktop |
 | `enableCommandLine(name)` | ✅ | Overlay cmd lines re-enable a disabled input; per-userwindow cmd lines show the docked input; main bar is a no-op |
 | `enableHorizontalScrollBar(name)` | ✅ | JS-exposed |
 | `enableScrollBar(name)` | ✅ | JS-exposed |
@@ -751,6 +789,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `getBorderBottom()` / `getBorderTop()` / `getBorderLeft()` / `getBorderRight()` | ✅ | JS-exposed |
 | `getBorderSizes()` | ✅ | JS-exposed |
 | `getClipboardText()` | ✅ | Returns a session text-clipboard mirror synchronously (Mudlet's signature); the OS clipboard can only be read async in the browser, so it kicks off a best-effort `navigator.clipboard.readText` refresh for the next call. Distinct from `copy`/`paste`'s rich-text buffer |
+| `getCmdLineStyleSheet([name])` | ✅ | (Mudlet 5.0) The QSS last applied with `setCmdLineStyleSheet` (`""` when none) |
 | `getColorWildcard()` | ✅ | Returns the captured colour wildcard from the current trigger |
 | `getColumnCount([window])` | ✅ | JS-exposed |
 | `getColumnNumber([window])` | ✅ | JS-exposed |
@@ -763,6 +802,8 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `getLabelFormat(name)` | ✅ | GUIUtils.lua |
 | `getLabelSizeHint(name)` | ✅ | Bridge.lua → `width, height`. Browser analogue of Qt sizeHint (rendered content extent); a label showing only an SVG answers the document size plus its stylesheet chrome, as TLabel::sizeHint does |
 | `getLabelStyleSheet(name)` | ✅ | Reads the CSS last set via `setLabelStyleSheet` |
+| `getLabelText(name)` | ✅ | (Mudlet 5.0) The text/HTML last set on a label |
+| `getLabelToolTip(name)` | ✅ | (Mudlet 5.0) The tooltip last set with `setLabelToolTip` (`""` when none) |
 | `getLastLineNumber([window])` | ✅ | JS-exposed |
 | `getLineCount([window])` | ✅ | JS-exposed |
 | `getLines([window,] from, to)` | ✅ | Bridge.lua wraps `__getLines` |
@@ -774,9 +815,13 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `getMainWindowSize()` | ✅ | Returns `window.innerWidth, window.innerHeight` |
 | `getRowCount([window])` | ✅ | JS-exposed |
 | `getScroll([window])` | ✅ | Returns the scroll position (top-most visible line) |
+| `getScrollBarVisible([name])` | ✅ | (Mudlet 5.0) Whether the window's vertical scroll bar is shown (`enableScrollBar`/`disableScrollBar`) |
 | `getSelection([window])` | ✅ | Bridge.lua wraps `__getSelection` |
 | `getTextFormat([window])` | ✅ | Bridge.lua → documented attribute table |
 | `getUserWindowSize(name)` | ✅ | Bridge.lua → `__getUserWindowSize` |
+| `getUserWindowStyleSheet(name)` | ✅ | (Mudlet 5.0) The QSS last applied with `setUserWindowStyleSheet` (`""` when none) |
+| `getUserWindowTitle(name)` | ✅ | (Mudlet 5.0) The title shown on a user window's title bar |
+| `getWindowGeometry(name)` | ✅ | (Mudlet 5.0) → x, y, w, h of a window, label, command line, text edit or scroll box — exactly what `moveWindow`/`resizeWindow` set |
 | `getWindowWrap(name)` | ✅ | → wrap columns, with desktop's defaults: "main" reads the profile `outputWrapAt`, **100** unless changed (`Host::mWrapAt`); a miniconsole or user window reads the `WindowManager` hint, **99999999** when unset (`TBuffer::mWrapAt`); a `createBuffer` buffer takes main's width when it is made. 0 only when the Settings turned main's wrapping off. -1 when the window is missing. Used by `Geyser.MiniConsole:getWindowWrap` |
 | `handleWindowResizeEvent()` | ✅ | Fires the resize listener chain (no-op shim that's part of the public API) |
 | `hasFocus([window])` | ✅ | `document.activeElement` check. No name = command bar; a name targets the registered overlay element |
@@ -839,6 +884,9 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `setBorderColor(r,g,b)` | ✅ | Also `resetBorderColor` |
 | `getBorderColor()` | ✅ | (Mudlet 4.21) → r, g, b of the main console frame border. Returns the `setBorderColor` override when set, else the main window background, else 0,0,0. Bridge.lua unpacks the 3-channel array |
 | `setBorderSizes(...)` | ✅ | Bulk setter via the four side-specific routines |
+| `setCommandChecked(id, checked)` / `setCommandIcon(id, icon)` / `setCommandTooltip(id, tooltip)` | ✅ | (Mudlet 5.1) Restyle a command placed by `addCommand`; `false` for an unknown id |
+| `setCommandPinned(id, pinned)` | ✅ | (Mudlet 5.1) Recorded only: desktop pins a command into every profile's window, and Mudlet Web has one profile per page |
+| `setCommandPulse(id, on [, colour, altColour, intervalMs])` | ✅ | (Mudlet 5.1) A toolbar button pulsing between two colours to draw attention |
 | `setFgColor([window,] r, g, b)` | ✅ | JS-exposed |
 | `setButtonStyleSheet(name, css)` | ✅ | Raw QSS → inline React style. Pseudo-state selectors (`:hover`/`:pressed`) drop through |
 | `setClipboardText(text)` | ✅ | Updates the session text-clipboard mirror (authoritative) and best-effort writes to `navigator.clipboard` (may be gesture/permission gated). Always true |
@@ -899,6 +947,7 @@ through byte-identical — app stylesheets are also Mudlet Web's brand-styling h
 | `scrollUp([window,] lines)` | ✅ | Pure Lua via GUIUtils.lua |
 | `scrollTo([window,] line)` | ✅ | Jumps the scroll position |
 | `windowType(name)` | ✅ | Bridge.lua → `__windowType` |
+| `windowVisible(name)` | ✅ | (Mudlet 5.0) Whether a window is effectively visible — false when it or any ancestor is hidden |
 | `wrapLine([window,] linenum)` | ✅ | Re-renders the line buffer (0-indexed) so embedded `\n` is interpreted; Mudlet Web renders with `white-space: pre-wrap` |
 
 Mudlet Web-specific extras: `color_table`.
@@ -938,6 +987,8 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | `sysConnectionEvent` | ✅ | On connect; Mudlet Web also fires native `connect` |
 | `sysDisconnectionEvent` | ✅ | On disconnect |
 | `sysProfileFocusChangeEvent` | ✅ | On `document.visibilitychange` — arg: isFocused |
+| `sysApplicationFocusChangeEvent` | ✅ | (Mudlet 5.1) The application gaining or losing focus, raised only on a change — arg: isActive. Mudlet Web reads the page holding keyboard focus (`window` focus/blur, settled with `document.hasFocus()` so focus moving into an HTML panel's iframe doesn't count) |
+| `sysUiTourFinished` | ➖ | (Mudlet 5.1) Desktop's first-run UI tour; Mudlet Web has none, so it never fires and `mudlet.uiTourPending` is never set (the bundled `mudlet-base-ui` and tutorial handle that) |
 
 **Input / send**
 
@@ -951,7 +1002,8 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 |---|---|---|
 | `sysInstall` / `sysUninstall` | ✅ | After/before any package/module install or uninstall — arg: name. Each install raises it plus exactly one of the detailed events below, as `Host::installPackage` does |
 | `sysInstallPackage` / `sysUninstallPackage` | ✅ | Packages only — args: name, fileName / name |
-| `sysInstallModule` / `sysUninstallModule` | ✅ | Modules installed from the UI — args: name, fileName / name |
+| `sysInstallModule` / `sysUninstallModule` | ✅ | Modules installed / removed from the UI (package manager) — args: name, fileName / name |
+| `sysServerGuiInstalled` | ✅ | (Mudlet 5.1) A GUI package the game offered over GMCP `Client.GUI` finished installing — arg: package name. Also raised with no name when the game declines the built-in starter UI (`{"baseui": false}`) |
 | `sysLuaInstallModule` / `sysLuaUninstallModule` | ✅ | Fired by the Lua `installModule`/`uninstallModule` paths, instead of `sysInstallPackage`/`sysInstallModule` — args: name, fileName / name |
 | `sysSyncInstallModule` / `sysSyncUninstallModule` | ✅ | Sync-flagged modules; single-profile, no sibling propagation |
 
@@ -983,6 +1035,7 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | `sysMapAreaChanged` | ✅ | Whenever the displayed area changes — args: newAreaID, prevAreaID (-1 on initial transition) |
 | `sysMapDownloadEvent` | ✅ | GMCP `Client.Map` records the game's MMP map URL; the map panel then offers "Download map from game" (hamburger menu + empty-state overlay). Fires after the downloaded map parses and loads. Both binary `.dat` and IRE-style `.xml` maps are supported |
 | `sysMapWindowMousePressEvent` | ✅ | args: button (1=left, 2=right, 3=middle), x, y |
+| `sysMapperButtonAction` | ✅ | (Mudlet 5.1) The player pressed the client's map button (toolbar, Toolbox menu or shortcut) while a script had `setConfig("mapperButton", "scripted")` — the client leaves the map alone so a UI package can show its own. `"disabled"` greys the button and swallows the press; `"default"` (each session's start) toggles the map as usual |
 
 **Windows / UI elements**
 
@@ -1021,6 +1074,9 @@ Reconciled against the authoritative [Mudlet Event Engine](https://wiki.mudlet.o
 | Event | Status | Notes |
 |---|---|---|
 | `sysAppStyleSheetChange` | ✅ | `setAppStyleSheet` — args: css, tag |
+| `sysCommandClicked` | ✅ | (Mudlet 5.1) A command placed by `addCommand` was clicked — arg: id (number). Not raised while it is disabled |
+| `sysSTTError` | ✅ | (Mudlet 5.1) Raised with the refusal when an `stt.*` call needs the engine Mudlet Web doesn't have — see Speech to Text Functions |
+| `sysSTTResult` / `sysSTTPartialResult` / `sysSTTWords` / `sysSTTStateChanged` / `sysSTTCapabilitiesChanged` / `sysSTTHandover` | ❌ | (Mudlet 5.1) No recogniser, so nothing to report |
 | `sysPathChanged` | ✅ | VFS mutation of a watched path — arg: path |
 | `sysMediaFinished` | ✅ | Sound/music/video source ended or stopped — args: name, path |
 | `sysSettingChanged` | ✅ | Desktop's list only: `compactInputLine`, `mapperPanelVisible`, `enableClosedCaption`, `advertiseScreenReader`, `announceIncomingText`, `accessibleLabels`, `muteMediaAPI`, `muteMediaGame` — args: getConfig key, new boolean; raised only when the value changed, from a script or the Settings UI alike. Plus `("main window font", family, size)` when the main console's font changes. Every other setting changes silently, as on desktop |
@@ -1061,4 +1117,5 @@ These features have no real implementation in Mudlet Web, but to keep imported M
 | MMCP / MudMaster Chat Protocol (`mmcp.*`) | Peer-to-peer chat over direct TCP — no raw/listening sockets or P2P in a browser. `mudlet.supports.mmcp` reports false |
 | In-tab multi-profile switching (loading multiple profiles into one tab) | One profile per tab. (`getProfiles` DOES enumerate every configured profile with cross-tab loaded/connected status, `loadProfile` opens another profile in a new tab, and `raiseGlobalEvent` works *across* tabs — see above) |
 | `spawn(...)` | No subprocess in the browser |
+| Speech to text (`stt.*`) | Desktop runs an offline Vosk recogniser from a native library and on-disk models; the browser's Web Speech API is cloud-backed (Chrome) or absent (Firefox). Bound engine-absent: `stt.available()` is false, `mudlet.supports.stt` is false |
 | Spell-check API (`spellCheckWord`, `spellSuggestWord`, `addWordToDictionary`, `removeWordFromDictionary`, `getDictionaryWordList`) | No Hunspell in browser |

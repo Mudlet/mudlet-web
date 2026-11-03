@@ -1165,6 +1165,35 @@ export class ScriptingAPI {
         if (!this.addonCommands.get(id)?.enabled) return;
         this.host.raiseEvent('sysCommandClicked', [id]);
     }
+
+    /** The `mapperButton` mode a script set this session — Host::mMapperButtonMode. */
+    mapperButtonMode(): 'default' | 'scripted' | 'disabled' {
+        const mode = this.sessionConfig.get('mapperButton');
+        return mode === 'scripted' || mode === 'disabled' ? mode : 'default';
+    }
+
+    /** Host::interceptMapperButton. Asked by the client's own map button,
+     *  menu entry and shortcut before they toggle the map: true means a script
+     *  has claimed the button and the client must leave the map alone —
+     *  "disabled" swallows the press, "scripted" turns it into
+     *  `sysMapperButtonAction` so a UI package can show its own map window. */
+    interceptMapperButton(): boolean {
+        const mode = this.mapperButtonMode();
+        if (mode === 'disabled') return true;
+        if (mode === 'scripted') {
+            this.host.raiseEvent('sysMapperButtonAction', []);
+            return true;
+        }
+        return false;
+    }
+
+    private readonly mapperButtonListeners = new Set<() => void>();
+    /** Hear `setConfig("mapperButton", …)`, so the button can grey out while
+     *  it is "disabled", as desktop disables its mapper action. */
+    onMapperButtonModeChange(fn: () => void): () => void {
+        this.mapperButtonListeners.add(fn);
+        return () => { this.mapperButtonListeners.delete(fn); };
+    }
     /** Values for the `sessionOnly` options in {@link CONFIG_PERSIST_ONLY} —
      *  held here rather than in the profile's config bag precisely so they are
      *  gone next session. */
@@ -2545,6 +2574,7 @@ export class ScriptingAPI {
             }
             if (spec.sessionOnly) this.sessionConfig.set(key, v);
             else this.patchConfigBag(key, v);
+            if (key === 'mapperButton') for (const fn of this.mapperButtonListeners) fn();
             // The buffer search's key is held only while the search is on, and
             // a package may already be sitting on it. Qt answers two things on
             // one key by disabling BOTH, so switching the search on over a

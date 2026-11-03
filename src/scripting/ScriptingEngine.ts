@@ -2708,10 +2708,15 @@ export class ScriptingEngine implements EngineHost {
      * package's items from the store so the package's own handlers (and the
      * scripts they live in) are still loaded when the event fires.
      */
-    notifyPackageUninstalled(packageName: string): void {
+    notifyPackageUninstalled(packageName: string, kind: 'package' | 'module' = 'package'): void {
         this.countRemoval(packageName);
         this.raiseEvent('sysUninstall', [packageName]);
-        this.raiseEvent('sysUninstallPackage', [packageName]);
+        // Host::uninstallPackage's detailed event names the kind of removal:
+        // sysUninstallPackage for a package, sysUninstallModule for a module a
+        // player removed from the package manager (PackageModuleType::
+        // ModuleFromUI). A script's uninstallModule() raises its own
+        // sysLuaUninstallModule (uninstallModuleByName) and never reaches here.
+        this.raiseEvent(kind === 'module' ? 'sysUninstallModule' : 'sysUninstallPackage', [packageName]);
     }
 
     /**
@@ -5524,6 +5529,12 @@ export class ScriptingEngine implements EngineHost {
         this.api.addonCommandClicked(id);
     }
 
+    /** See ScriptingAPI.interceptMapperButton — the map button, menu entry and
+     *  shortcut ask this before toggling the map. */
+    interceptMapperButton(): boolean { return this.api.interceptMapperButton(); }
+    mapperButtonMode(): 'default' | 'scripted' | 'disabled' { return this.api.mapperButtonMode(); }
+    onMapperButtonModeChange(fn: () => void): () => void { return this.api.onMapperButtonModeChange(fn); }
+
     /** Hand the API a startLogging hook. Wired by ProfileSession, which owns
      *  the actual SessionLogger lifecycle. */
     setLoggingToggler(fn: ((enabled: boolean, format: LogFormat) => boolean) | null): void {
@@ -6730,6 +6741,36 @@ export class ScriptingEngine implements EngineHost {
         };
         document.addEventListener('visibilitychange', onVisibility);
         this.unsubs.push(() => document.removeEventListener('visibilitychange', onVisibility));
+
+        // Mudlet `sysApplicationFocusChangeEvent(active)` — the application
+        // gaining or losing the OS focus (mudlet::slot_applicationStateChanged),
+        // raised only on a change. The browser's equivalent is the page
+        // holding keyboard focus. document.hasFocus() rather than the event's
+        // own kind: focus moving into an iframe inside the page (an HTML panel)
+        // blurs the window without the page losing focus, and the check is
+        // deferred because hasFocus() still answers the old state mid-blur.
+        // Not every host document has hasFocus() (an embedder's shim, a test
+        // double); without it the page is taken as always active.
+        const pageHasFocus = () => typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+        let appActive = pageHasFocus();
+        let focusTimer: ReturnType<typeof setTimeout> | null = null;
+        const onAppFocus = () => {
+            if (focusTimer !== null) clearTimeout(focusTimer);
+            focusTimer = setTimeout(() => {
+                focusTimer = null;
+                const now = pageHasFocus();
+                if (now === appActive) return;
+                appActive = now;
+                this.raiseEvent('sysApplicationFocusChangeEvent', [now]);
+            }, 0);
+        };
+        window.addEventListener('focus', onAppFocus);
+        window.addEventListener('blur', onAppFocus);
+        this.unsubs.push(() => {
+            window.removeEventListener('focus', onAppFocus);
+            window.removeEventListener('blur', onAppFocus);
+            if (focusTimer !== null) clearTimeout(focusTimer);
+        });
 
         // Mudlet `sysSettingChanged(setting, value)`. Desktop raises it for a
         // short, fixed list of boolean settings only — the ones whose Host
