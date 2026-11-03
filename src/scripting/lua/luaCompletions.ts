@@ -425,6 +425,7 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('setCommandIcon',    '(id, icon) → bool',      'Change the icon of a command placed by addCommand. false for an unknown id.'),
     fn('setCommandTooltip', '(id, tooltip) → bool',   'Change the tooltip of a command placed by addCommand. false for an unknown id.'),
     fn('setCommandPulse',   '(id, on [, colour, altColour, intervalMs]) → bool | nil, err', 'Make an addCommand toolbar button pulse between two colours to draw attention, or stop it.'),
+    fn('getCommands',       '() → {command, ...}',    'List the commands placed by addCommand (id, name, icon, tooltip, menuPath, shortcut, surfaces, enabled, checked, pinned).'),
     fn('setCommandPinned', '(id, pinned) → bool', 'Pin an addon command placed by addCommand so it shows in every profile\'s window (one profile per page here, so it is recorded only). false for an unknown id.'),
     fn('setCommandBackgroundColor', '([window,] r, g, b [, a])', 'Set the command bar background color (rgba 0..255). Only the main bar is targeted in mudlet.'),
     fn('setCommandForegroundColor', '([window,] r, g, b [, a])', 'Set the command bar text color (rgba 0..255). Only the main bar is targeted in mudlet.'),

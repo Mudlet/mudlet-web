@@ -115,15 +115,17 @@ describe('global-table drift vs Mudlet PTB (#373)', () => {
         });
     });
 
-    describe('3. getMudletVersion reports the 5.0 API level', () => {
-        it('reports 5.0.0', () => {
-            expect(t.run('return getMudletVersion("string")')).toBe('5.0.0');
+    describe('3. getMudletVersion reports the 5.1 API level', () => {
+        it('reports 5.1.0', () => {
+            expect(t.run('return getMudletVersion("string")')).toBe('5.1.0');
             expect(t.run('return getMudletVersion("major")')).toBe(5);
+            expect(t.run('return getMudletVersion("minor")')).toBe(1);
         });
 
-        it('so mudletOlderThan(5) and (4, 22) are false', () => {
-            expect(t.run('return mudletOlderThan(5)')).toBe(false);
+        it('so mudletOlderThan(5, 1) and (4, 22) are false, (5, 2) true', () => {
+            expect(t.run('return mudletOlderThan(5, 1)')).toBe(false);
             expect(t.run('return mudletOlderThan(4, 22)')).toBe(false);
+            expect(t.run('return mudletOlderThan(5, 2)')).toBe(true);
         });
     });
 

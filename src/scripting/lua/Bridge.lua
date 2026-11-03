@@ -4424,11 +4424,15 @@ end
 -- styles is the only documentation of them a script author gets.
 --
 -- The level is the Mudlet release whose Lua API this runtime follows: the
--- bundled Lua and the spec corpus are synced from Mudlet's 5.0 development
--- line, so a package gating on `mudletOlderThan(5)` gets the features that
--- work here. No build suffix — desktop's PTB tag names a desktop build.
+-- bundled Lua and the spec corpus are synced from Mudlet's 5.1 line, and every
+-- C function 5.1.0 registers beyond 5.0.0's (addCommand and its setters, the
+-- Svg transforms, label accessibility, map environment kits and area graphs,
+-- media listeners, scrollUp/Down...) is bound here, so a package gating on
+-- `mudletOlderThan(5, 1)` gets features that exist. Raise it only after the
+-- same check against the next release's registrations. No build suffix —
+-- desktop's PTB tag names a desktop build.
 do
-    local MAJOR, MINOR, REVISION, BUILD = 5, 0, 0, ""
+    local MAJOR, MINOR, REVISION, BUILD = 5, 1, 0, ""
     local STYLES = "\"major\", \"minor\", \"revision\", \"build\", \"string\" or \"table\"."
     function getMudletVersion(...)
         local count = select('#', ...)
