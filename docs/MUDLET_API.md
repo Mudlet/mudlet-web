@@ -316,7 +316,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `getModuleSync(name)` | ✅ | JS-exposed |
 | `getMudletHomeDir()` | ✅ | VFS.lua — returns the profile's VFS root path |
 | `getMudletInfo()` | ✅ | Echoes a diagnostic block (profile, server encoding, platform/user-agent) to the main window |
-| `getMudletVersion([mode])` | ✅ | Supports `nil`/`"string"`/`"major"`/`"minor"`/`"revision"`/`"build"`/`"table"` |
+| `getMudletVersion([mode])` | ✅ | Reports **5.1.0**: the Mudlet API level this client implements, not the Mudlet Web release number (that is `getMudletInfo()`/About). No build suffix. Supports `nil`/`"string"`/`"major"`/`"minor"`/`"revision"`/`"build"`/`"table"` |
 | `getNamedEventHandlers()` | ✅ | IDManager.lua |
 | `getNewIDManager()` | ✅ | IDManager.lua factory |
 | `getOS()` | ✅ | Sniffed from user agent → `"windows"`/`"mac"`/`"linux"`/`"freebsd"`/`"openbsd"`/`"netbsd"`/`"unknown"` |
@@ -341,7 +341,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `loadMusicFile(path \| {name=…})` | ✅ | `SoundManager.preload` |
 | `loadSoundFile(path \| {name=…})` | ✅ | `SoundManager.preload` |
 | `loadVideoFile(path \| {name=…})` | ✅ | Preload variant of `playVideoFile` — `VideoManager.preload` fetches + caches a VFS-backed video so the first play has no fetch latency (fire-and-forget; http(s)/data/blob URLs need no preloading) |
-| `mudletOlderThan(major, minor, revision)` | ✅ | Built on `getMudletVersion("table")` |
+| `mudletOlderThan(major, minor, revision)` | ✅ | Built on `getMudletVersion("table")`, so it compares against 5.1.0: `mudletOlderThan(5, 1)` is `false`, `mudletOlderThan(5, 2)` is `true` |
 | `openWebPage(url)` | ✅ | Routes to `openUrl` |
 | `playMusicFile(path \| {…})` | ✅ | `SoundManager` (Web Audio + VFS or http(s) URL) |
 | `playSoundFile(path \| {…})` | ✅ | `SoundManager` |
