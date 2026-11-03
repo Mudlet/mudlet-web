@@ -31,8 +31,13 @@ function isExternal(id: string): boolean {
     // test data has no business in a consumer build. Bundled instead they
     // are what they should be: dead weight behind `BUSTED_ENABLED`, and
     // tree-shaken away.
+    //
+    // The same goes for `?inline` imports *of* default packages: LuaRuntime's
+    // busted-only QT_PACKAGE_ARCHIVES glob reads every vendored `.mpackage`,
+    // including ones copy-lib-assets never ships (the tutorial, run-tests…).
+    // Only the `?url` imports in defaultPackages.ts are meant to stay external.
     const path = id.replace(/\\/g, '/');
-    if (path.includes('/import/defaults/')) return true;
+    if (path.includes('/import/defaults/') && !path.includes('?inline')) return true;
     // Same for the bundled games' logos. gameIcons.ts says why they are files
     // and not data URIs — "1.7 MB of logos as data URIs would land in the JS
     // bundle for every user, including the ones who never open the game list" —
@@ -63,15 +68,18 @@ export default defineConfig({
     //
     // Both halves, and they have to stay in step with the plugin's list and
     // vitest's: `LuaRuntime.ts` reaches the fixtures through one glob,
-    // `'./specs/fixtures/**/*.{mpackage,zip}'`, so declaring only `.mpackage`
-    // leaves the `.zip` arm of the same glob unclaimed. Nothing catches that
+    // `'./specs/fixtures/**/*.{mpackage,zip,png,dat}'`, so declaring only
+    // `.mpackage` leaves the `.zip` and `.dat` arms of the same glob unclaimed. Nothing catches that
     // on Linux — the load still resolves and the fixture tree-shakes away
     // behind `BUSTED_ENABLED`, so CI is green — but on Windows rolldown falls
     // through to its own loader and asks the filesystem for a path with a `?`
     // in it, which is not a legal Windows filename: `Could not load
     // achaea-map.zip?inline … (os error 123)`, and `yarn build:lib` cannot
     // run on a Windows dev machine at all.
-    assetsInclude: ['**/*.mpackage', '**/specs/fixtures/**/*.zip'],
+    // The `.dat` arm arrived with the map fixtures a spec sync added and was
+    // missed here, so the 1.0.0 publish failed on Linux too: `Could not load
+    // phantom-room-hashes.dat?inline … (os error 2)`.
+    assetsInclude: ['**/*.mpackage', '**/specs/fixtures/**/*.zip', '**/specs/fixtures/**/*.dat'],
     plugins: [
         react(),
         nodePolyfills({ include: ['buffer', 'stream', 'events', 'util'] }),
