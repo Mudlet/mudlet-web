@@ -520,6 +520,17 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "description": "PhoenixMUD is a free classic DikuMUD, online since 1996. 20,685 rooms across 276 zones, 16 classes and 15 races, and 400+ levels of progression: 1-100 to Hero, then three full remort climbs.\n\nOur official Mudlet package installs itself on connect: GMCP vitals and effects panes, channel routing into chat windows, and an embedded mapper preloaded with the whole world. The browser client adds a World Atlas: a live map with fog-of-war and route-finding.\n\nNo payment of any kind, and character creation is open. Actively developed, with a friendly community that makes room for newcomers. New players welcome.",
         "ownUi": "clientGui",
         "iconFile": "phoenixmud_480x120.png"
+    },
+    {
+        "name": "ClamberMUD",
+        "hostUrl": "clambermud.com",
+        "port": 4445,
+        "tlsEnabled": true,
+        "websiteInfo": "<a href='https://clambermud.com'>Website</a><br><a href='https://discord.gg/Mrb44RSsA9'>Discord</a>",
+        "icon": ":/icons/clambermud_480x120.png",
+        "description": "ClamberMUD is a free LitRPG text game: climb a deadly dungeon tower before your time runs out, on an alien game show nobody agreed to be on.\n\nEvery run is a new climber with one life and a ticking timer. Fight up through tiers of medieval fantasy, alien worlds, and cosmic horror while the show's host plays your best and worst moments for the viewers. Sponsors back the climbers they like, and retiring climbers unlocks new races and classes, over 100 in all.\n\nIn Mudlet, the game's own interface installs itself when you log in: a map that draws itself as you explore, health, mana, and movement gauges, a hotbar for your specials, and chat tabs. Free, in live development, for ages 16 and up. New climbers welcome.",
+        "ownUi": "clientGui",
+        "iconFile": "clambermud_480x120.png"
     }
 ];
 
