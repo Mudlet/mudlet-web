@@ -566,6 +566,8 @@ end`,
     // getVerifiedBool(…, isOptional), read only when not none-or-nil.
     resetAreaGraphLayout: { args: [b('keep pinned areas', { opt: true, nonnil: true })] },
     getMapEnvironmentKit: { args: [i('environmentID')] },
+    getMapEnvColor: { args: [i('environmentID')] },
+    unsetCustomEnvColor: { args: [i('environmentID')] },
     // The name is getVerifiedString(…, isOptional) read only when present and
     // not nil, so a nil second argument clears rather than raises.
     setMapEnvironmentKit: { args: [i('environmentID'), s('kit name', { opt: true, nonnil: true })] },

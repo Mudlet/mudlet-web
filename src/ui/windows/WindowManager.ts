@@ -4,7 +4,7 @@ import type { Console } from '../../mud/text/Console';
 import type { AnsiAwareBuffer } from '../../mud/text/FormatState';
 import type { DockSide, MxpTabPage, WindowHandle, WindowOpenOptions, ScriptWindowRenderData } from './types';
 import { MAP_VIEW_ID_RE, MAP_WIDGET_ID, mapViewWindowId, migrateClientWindowHints } from './types';
-import { MapStore, type MapIssue } from '../../map/MapStore';
+import { MapStore, mapReportTimestamp, type MapIssue } from '../../map/MapStore';
 import { centerviewAreaChange } from './panels/mapAreaChange';
 import { parseXmlMap } from '../../map/xmlMapImport';
 import { exportAreaImage } from '../../map/mapImageExport';
@@ -1692,7 +1692,8 @@ export class WindowManager {
         if (!this._connectionId) return;
         if (!selectProfileField(useAppStore.getState(), this._connectionId, 'reportMapIssues')) return;
 
-        const issues = collected;
+        // Some notes desktop files only in the report, never on screen.
+        const issues = collected.filter(issue => !issue.fileOnly);
         if (issues.length === 0) return;
 
         const shown = issues.slice(0, WindowManager.MAX_MAP_ISSUES_POSTED);
@@ -1845,6 +1846,9 @@ export class WindowManager {
             // double-swaps QString regions into CJK garbage.
             saveMapToStorage(this._connectionId, buf.slice(0)).catch(err =>
                 console.warn('[WindowManager] saveMap failed:', err));
+            // Host::loadMapFile titles its report after the file when there is
+            // one; the report itself is written by whoever read the file.
+            const loadedAt = mapReportTimestamp();
             try {
                 this.ingestMapBuffer(buf, source);
                 this.lastMapLoadFailure = null;
@@ -1852,7 +1856,11 @@ export class WindowManager {
                 this.reportMapLoadFailure('loadMap parse failed', err);
                 return false;
             }
-            this.reportMapIssues();
+            const issues = this.mapStore.takeAuditIssues();
+            this.lastMapReport = this.mapStore.formatAuditReport(source
+                ? `Loading map(1) "${source}" at ${loadedAt} report`
+                : `Loading map(1) at ${loadedAt} report`, issues);
+            this.reportMapIssues(issues);
         }
         // The panel callback is advisory — its return value reports render
         // success, which loadMap's result does not depend on.
@@ -2044,11 +2052,8 @@ export class WindowManager {
         // TMap::importJsonMapFile: what an import found goes to the profile's
         // log/errors.txt under a title naming the file, and the console names
         // that report whether or not it shows the details.
-        this.lastMapReport = '';
-        if (issues.length > 0) {
-            const title = `Importing JSON map "${source}" at ${new Date().toISOString().replace('T', ' ').slice(0, 19)}`;
-            this.lastMapReport = [title, ...issues.map(i => `[ ${i.severity === 'warn' ? 'WARN' : 'INFO'} ]  - ${i.message}`), ''].join('\n');
-        }
+        this.lastMapReport = this.mapStore.formatAuditReport(
+            `Importing JSON map "${source}" at ${mapReportTimestamp()} report`, issues);
         this.reportMapIssues(issues);
         this.mapLoadCallback?.();
         return true;
@@ -2056,7 +2061,8 @@ export class WindowManager {
 
     private lastMapReport = '';
 
-    /** The report the last loadJsonMap wrote for log/errors.txt, once. */
+    /** The report the last loadJsonMap or binary loadMap wrote for
+     *  log/errors.txt, once. */
     takeMapReport(): string {
         const report = this.lastMapReport;
         this.lastMapReport = '';

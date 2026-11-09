@@ -906,6 +906,8 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('getMapRoomExitsColor', '() → r, g, b',                     'The colour room exit lines are drawn in'),
     fn('setMapRoomExitsColor', '(r, g, b)',                        'Set the colour room exit lines are drawn in'),
     fn('setDefaultAreaVisible', '(visible) → bool',                'Show or hide the catch-all "Default Area" in the area list'),
+    fn('unsetCustomEnvColor', '(envID) → true | nil, err',          'Remove a custom environment colour. Refuses the 16 default colours (257-272), an environment with no custom colour, and a colour a room is still drawn in'),
+    fn('getMapEnvColor',      '(envID) → r, g, b, a, defined',      'The colour the mapper draws an environment\'s rooms in, following map-file remaps, and whether the map gives it a colour (else the mapper\'s red)'),
     fn('removeCustomEnvColor', '(envID) → bool',                    'Drop a custom environment color override so the renderer falls back to the built-in env palette. Returns false if no override was set for envID.'),
     fn('setRoomCharColor',     '(roomID, r, g, b [, a]) → bool',    'Set the colour used to paint a room\'s symbol/character. False when the room is missing.'),
     fn('getRoomCharColor',     '(roomID) → r, g, b, a',             'Read the per-room character colour. Returns nil when none was ever set.'),

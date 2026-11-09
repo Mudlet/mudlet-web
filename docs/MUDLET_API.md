@@ -189,6 +189,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `getGridMode(areaID)` | ✅ | Bridge.lua → `__getGridMode`; `(false, errMsg)` when area missing |
 | `getHiddenMapMenuItems()` | ✅ | (Mudlet 5.1) Sorted list of the built-in map menu items `hideMapMenuItem` hid |
 | `getHiddenRooms(areaID)` | ✅ | Bridge.lua — 1-indexed array of room ids in the area whose hidden flag is set; `(false, errMsg)` when the area is missing |
+| `getMapEnvColor(envID)` | ✅ | → r, g, b, a and whether the map gives the environment a colour; follows map-file `envToColorMapping` remaps, and an undefined environment reads as the mapper's red (`MapStore.getMapEnvColor`) |
 | `getMapEnvironmentKit(envID)` | ✅ | (Mudlet 5.1) → kit name, and whether the map names it (`true`) rather than it being guessed from the environment's colour (`map/environmentKit.ts`) |
 | `getMapEnvironmentKits()` | ✅ | (Mudlet 5.1) `{ [envID] = kit }` for the kits the map names, keyed by number |
 | `getMapEvents()` | ✅ | Bridge.lua |
@@ -277,6 +278,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `speedwalk(roomID [, walkcmd, delay])` | ✅ | Pure Lua via Other.lua (`send` + `tempTimer`) |
 | `stopSpeedwalk()` | ✅ | Other.lua |
 | `unHighlightRoom(roomID)` | ✅ | JS-exposed |
+| `unsetCustomEnvColor(envID)` | ✅ | → true; (nil, errMsg) for the 16 defaults (257-272), an environment with no custom colour, or a colour a room (after remaps) is still drawn in (`MapStore.unsetCustomEnvColor`) |
 | `unsetRoomCharColor(roomID)` | ✅ | Drops the side-table entry; false when the room is missing or had no override |
 | `updateMap()` | ✅ | Forces the map panel to re-read MapStore and redraw |
 

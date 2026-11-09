@@ -142,6 +142,9 @@ const SYMBOL_COLOR_FALLBACK_KEY = 'system.fallback_symbol_color';
 /** The profile's sixteen mapper colours as a new profile has them — Qt's
  *  colour constants, in environment 1-16 order (Host::mRed_2 … mLightBlack_2),
  *  which is also TMap::restore16ColorSet's 257→272 order. */
+/** The highest room id: desktop's ids are a C++ int. */
+const MAX_ROOM_ID = 2147483647;
+
 const MAPPER_16_COLORS: ReadonlyArray<[number, number, number]> = [
     [128, 0, 0],       // 1 / 257 dark red
     [0, 128, 0],       // 2 / 258 dark green
@@ -989,6 +992,23 @@ export interface MapIssue {
     areaId?: number;
     /** The sentence to show, without the `[ WARN ]  - ` prefix. */
     message: string;
+    /** Desktop writes this one only to the report in log/errors.txt
+     *  (`appendRoomErrorMsg` with no `postMessage` twin), never on screen. */
+    fileOnly?: boolean;
+}
+
+/** TMap::createFileHeaderLine: a title centred in a 78-column rule of `fill`. */
+function mapReportHeaderLine(title: string, fill: string): string {
+    if (title.length > 76) return `${title}\n`;
+    const rule = fill.repeat(Math.floor((78 - title.length) / 2));
+    return `${rule} ${title} ${rule}\n`;
+}
+
+/** Qt::ISODate for the local time, as desktop's report titles carry it. */
+export function mapReportTimestamp(now = new Date()): string {
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`
+        + `T${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
 }
 
 export class MapStore {
@@ -1820,6 +1840,45 @@ export class MapStore {
         return true;
     }
 
+    /**
+     * TMap::pushErrorMessagesToFile: what an audit found, as desktop writes it
+     * to the profile's log/errors.txt — under `title`, in sections for the
+     * whole map, each area and each room (by id, named where it has a name).
+     * Empty when there is nothing to report, as a cleanup push writes nothing.
+     */
+    formatAuditReport(title: string, issues: readonly MapIssue[]): string {
+        if (issues.length === 0) return '';
+        const line = (i: MapIssue) => `[ ${i.severity === 'warn' ? 'WARN' : 'INFO'} ]  - ${i.message}\n`;
+        const mapLines: string[] = [];
+        const byArea = new Map<number, string[]>();
+        const byRoom = new Map<number, string[]>();
+        const section = (into: Map<number, string[]>, id: number): string[] => {
+            let list = into.get(id);
+            if (!list) into.set(id, list = []);
+            return list;
+        };
+        for (const issue of issues) {
+            const into = issue.roomId !== undefined ? section(byRoom, issue.roomId)
+                : issue.areaId !== undefined ? section(byArea, issue.areaId)
+                    : mapLines;
+            into.push(line(issue));
+        }
+        let out = mapReportHeaderLine(title, '#');
+        out += mapReportHeaderLine('Map issues', '=') + mapLines.join('');
+        out += mapReportHeaderLine('Area issues', '=');
+        for (const id of [...byArea.keys()].sort((a, b) => a - b)) {
+            const name = this.areaNames.get(id);
+            out += mapReportHeaderLine(name ? `Area id: ${id} "${name}"` : `Area id: ${id}`, '-') + byArea.get(id)!.join('');
+        }
+        out += mapReportHeaderLine('Room issues', '=');
+        for (const id of [...byRoom.keys()].sort((a, b) => a - b)) {
+            const name = this.rooms.get(id)?.name;
+            out += mapReportHeaderLine(name ? `Room id: ${id} "${name}"` : `Room id: ${id}`, '-') + byRoom.get(id)!.join('');
+        }
+        out += mapReportHeaderLine('End of report', '#');
+        return out;
+    }
+
     /** What the last repairing audit found, cleared as it is read — a report is
      *  owed to the load that caused it, and to no later one. */
     takeAuditIssues(): MapIssue[] {
@@ -1950,19 +2009,44 @@ export class MapStore {
             const have = new Set(area.rooms);
             const missing = found.filter(id => !have.has(id));
             const extra = area.rooms.filter(id => !found.includes(id));
+            // TRoomDB::auditRooms' wording, in the en_US translation's
+            // singular and plural, with the room-by-room notes it files too.
             if (missing.length > 0) {
+                const one = missing.length === 1;
                 issues.push({
                     severity: 'info', areaId,
-                    message: `Area with ID: ${areaId} was missing rooms that say they are in it, they were:`
-                        + ` ${missing.join(', ')}; they have been added.`,
+                    message: (one
+                        ? 'In this area there was 1 room missing from those it should be recorded as possessing.'
+                            + `  It is: ${missing[0]}.  It has been added.`
+                        : `In this area there were ${missing.length} rooms missing from those it should be recorded as possessing.`
+                            + `  They are: ${missing.join(', ')}.  They have been added.`),
                 });
+                for (const roomId of missing) {
+                    issues.push({
+                        severity: 'info', roomId, fileOnly: true,
+                        message: `This room claims to be in area id: ${areaId}, but that did not have a record of it.`
+                            + '  The area has been updated to include this room.',
+                    });
+                }
             }
             if (extra.length > 0) {
+                const sorted = [...extra].sort((a, b) => a - b);
+                const one = sorted.length === 1;
                 issues.push({
                     severity: 'info', areaId,
-                    message: `Area with ID: ${areaId} listed rooms that are not in it, they were:`
-                        + ` ${extra.join(', ')}; they have been removed.`,
+                    message: (one
+                        ? 'In this area there was 1 extra room that it should not be recorded as possessing.'
+                            + `  It was: ${sorted[0]}.  It has been removed.`
+                        : `In this area there were ${sorted.length} extra rooms that it should not be recorded as possessing.`
+                            + `  They were: ${sorted.join(', ')}.  They have been removed.`),
                 });
+                for (const roomId of sorted) {
+                    issues.push({
+                        severity: 'info', roomId, fileOnly: true,
+                        message: `This room was claimed by area id: ${areaId}, but it does not belong there.`
+                            + '  The area has been updated to not include this room.',
+                    });
+                }
             }
             if (missing.length > 0 || extra.length > 0 || area.rooms.length !== found.length) {
                 area.rooms = found;
@@ -2345,6 +2429,7 @@ export class MapStore {
      * Mudlet `createRoomID([minimum])` — returns the smallest unused room id
      * at or above `minimum` (or above the running cursor if not given). The
      * id isn't reserved; a follow-up `addRoom(id)` is what actually claims it.
+     * 0 when every id from the minimum up to 2147483647 is taken.
      */
     createRoomID(minimum?: number): number {
         // The first free id AT OR ABOVE the minimum, counting up from 1 when
@@ -2356,7 +2441,12 @@ export class MapStore {
         let id = minimum != null && Number.isFinite(minimum) && minimum > 0
             ? Math.trunc(minimum)
             : 1;
-        while (this.rooms.has(id)) id++;
+        // Room ids are int32 on desktop: TRoomDB::lowestFreeRoomId gives up
+        // (0) when the search reaches INT_MAX taken, rather than overflowing.
+        while (this.rooms.has(id)) {
+            if (id >= MAX_ROOM_ID) return 0;
+            id++;
+        }
         if (id >= this.nextRoomId) this.nextRoomId = id + 1;
         return id;
     }
@@ -3025,17 +3115,31 @@ export class MapStore {
     private clearSpecialExitAttributes(roomId: number, cmd: string): void {
         const room = this.rooms.get(roomId);
         if (!room) return;
-        delete room.doors?.[cmd];
-        delete room.customLines?.[cmd];
-        delete room.customLinesColor?.[cmd];
-        delete room.customLinesStyle?.[cmd];
-        delete room.customLinesArrow?.[cmd];
-        if (!this.hasExitOrSpecialExitNamed(room, cmd)) delete room.exitWeights?.[cmd];
         // The per-command set is the authority; the destination-keyed list on
         // the room is the mirror the binary writer repacks, so it is rebuilt
         // rather than edited (two commands can share a destination, and only
         // one of them is going).
         if (this.specialExitLocks.get(roomId)?.delete(cmd)) this.syncSpecialExitLockMirror(roomId);
+        this.clearSpecialExitDecorations(room, cmd);
+    }
+
+    /**
+     * TRoom::removeSpecialExitExtras, less the lock: a special exit named like
+     * a normal one ("n", "up"…) SHARES that exit's door, weight and custom
+     * line, so while the normal exit (or another special exit of that name)
+     * is still there nothing goes; and a stub in that direction keeps its door,
+     * which is all a stub can carry.
+     */
+    private clearSpecialExitDecorations(room: MudletRoom, cmd: string): void {
+        if (this.hasExitOrSpecialExitNamed(room, cmd)) return;
+        delete room.exitWeights?.[cmd];
+        delete room.customLines?.[cmd];
+        delete room.customLinesColor?.[cmd];
+        delete room.customLinesStyle?.[cmd];
+        delete room.customLinesArrow?.[cmd];
+        const dirInt = Object.prototype.hasOwnProperty.call(DIR_SHORT_TO_INT, cmd) ? DIR_SHORT_TO_INT[cmd] : undefined;
+        const stubHoldsDoor = dirInt !== undefined && (room.stubs ?? []).includes(dirInt);
+        if (!stubHoldsDoor) delete room.doors?.[cmd];
     }
 
     /**
@@ -3168,25 +3272,17 @@ export class MapStore {
 
     /**
      * Mudlet `clearSpecialExits(roomID)` — remove every special exit from the
-     * room, along with the locks, doors and custom lines keyed by those
-     * commands (Mudlet's TRoom::clearSpecialExits does the same cleanup).
+     * room, along with the locks, and the doors, weights and custom lines
+     * keyed by those commands that no normal exit shares (Mudlet's
+     * TRoom::clearSpecialExits does the same cleanup).
      * Returns true on success, false when the room doesn't exist.
      */
     clearSpecialExits(id: number): boolean {
         const room = this.rooms.get(id);
         if (!room) return false;
-        for (const cmd of Object.keys(room.mSpecialExits)) {
-            delete room.doors[cmd];
-            delete room.customLines[cmd];
-            delete room.customLinesColor[cmd];
-            delete room.customLinesStyle[cmd];
-            delete room.customLinesArrow[cmd];
-        }
         const commands = Object.keys(room.mSpecialExits);
         room.mSpecialExits = {};
-        for (const cmd of commands) {
-            if (!this.hasExitOrSpecialExitNamed(room, cmd)) delete room.exitWeights[cmd];
-        }
+        for (const cmd of commands) this.clearSpecialExitDecorations(room, cmd);
         room.mSpecialExitLocks = [];
         this.specialExitLocks.delete(id);
         this.notify();
@@ -5025,39 +5121,90 @@ export class MapStore {
     }
 
     /**
-     * The colour desktop draws an environment's rooms in
+     * RoomAppearance's colorEnvironment(): the environment whose colour a room
+     * of `environmentId` is drawn in — mEnvColors remaps the id first, and an
+     * id the map does not define (or one remapped onto nothing) is undefined.
+     */
+    private colorEnvironment(environmentId: number): number | undefined {
+        let env = environmentId;
+        if (this.envColors.has(env)) env = this.envColors.get(env)!;
+        else if (!this.customEnvColors.has(env)) return undefined;
+        if ((env >= 1 && env < 256) || this.customEnvColors.has(env)) return env;
+        return undefined;
+    }
+
+    /**
+     * The colour desktop draws an environment's rooms in, with its alpha
      * (RoomAppearance::environmentColor): mEnvColors remaps the id first; 1-16
      * are the profile's sixteen mapper colours; a custom colour wins over the
      * xterm cube and grey ramp for 17-255; and anything left — an environment
      * the map does not define, or one remapped onto nothing — is dark red, the
      * colour of environment 1, so that no room is drawn invisible.
      */
-    environmentColor(environmentId: number): [number, number, number] {
-        let env = environmentId;
-        let defined = true;
-        if (this.envColors.has(env)) env = this.envColors.get(env)!;
-        else if (!this.customEnvColors.has(env)) defined = false;
-        if (!defined || !((env >= 1 && env < 256) || this.customEnvColors.has(env))) env = 1;
+    environmentColorRgba(environmentId: number): [number, number, number, number] {
+        const env = this.colorEnvironment(environmentId) ?? 1;
+        const profileRed = (): [number, number, number, number] => {
+            const red = this.profileEnvColors.get(257);
+            return red ? [red.r, red.g, red.b, red.alpha] : [...MAPPER_16_COLORS[0], 255];
+        };
         if (env >= 1 && env <= 16) {
             const c = this.profileEnvColors.get(256 + env);
-            return c ? [c.r, c.g, c.b] : MAPPER_16_COLORS[env - 1];
+            return c ? [c.r, c.g, c.b, c.alpha] : [...MAPPER_16_COLORS[env - 1], 255];
         }
         const custom = this.customEnvColors.get(env);
-        if (custom) return [custom.r, custom.g, custom.b];
+        if (custom) return [custom.r, custom.g, custom.b, custom.alpha];
         if (env > 16 && env < 232) {
             const base = env - 16;
             const r = Math.floor(base / 36);
             const g = Math.floor((base - r * 36) / 6);
             const b = base - r * 36 - g * 6;
             const step = (v: number) => (v === 0 ? 0 : (v - 1) * 40 + 95);
-            return [step(r), step(g), step(b)];
+            return [step(r), step(g), step(b), 255];
         }
         if (env > 231 && env < 256) {
             const k = (env - 232) * 10 + 8;
-            return [k, k, k];
+            return [k, k, k, 255];
         }
-        const red = this.profileEnvColors.get(257);
-        return red ? [red.r, red.g, red.b] : MAPPER_16_COLORS[0];
+        return profileRed();
+    }
+
+    /** {@link environmentColorRgba} without the alpha. */
+    environmentColor(environmentId: number): [number, number, number] {
+        const [r, g, b] = this.environmentColorRgba(environmentId);
+        return [r, g, b];
+    }
+
+    /** Mudlet getMapEnvColor(envID) → r, g, b, a and whether the map gives the
+     *  environment a colour (RoomAppearance::environmentDefined) rather than
+     *  it falling back to the mapper's red. */
+    getMapEnvColor(environmentId: number): [number, number, number, number, boolean] {
+        return [...this.environmentColorRgba(environmentId), this.colorEnvironment(environmentId) !== undefined];
+    }
+
+    /**
+     * Mudlet unsetCustomEnvColor(envID) → null on success, else the refusal.
+     * The sixteen profile colours (257-272) are refused — restore16ColorSet
+     * would only put them back — as is an environment with no custom colour,
+     * and one whose colour a room is still drawn in, the room found through
+     * the map's mEnvColors remap as the mapper finds it (lowest id named).
+     */
+    unsetCustomEnvColor(envId: number): string | null {
+        if (envId >= 257 && envId <= 272) {
+            return `environment ID ${envId} is one of the 16 default colors {257 to 272}, which cannot be removed`;
+        }
+        if (!this.customEnvColors.has(envId)) {
+            return `environment ID ${envId} does not have a custom color`;
+        }
+        let user: number | undefined;
+        for (const [id, room] of this.rooms) {
+            const env = room.environment;
+            const drawnAs = this.envColors.has(env) ? this.envColors.get(env)! : env;
+            if (drawnAs === envId && (user === undefined || id < user)) user = id;
+        }
+        if (user !== undefined) return `environment ID ${envId} is still used by room ID ${user}`;
+        this.customEnvColors.delete(envId);
+        this.notify();
+        return null;
     }
 
     /** Mudlet getMapEnvironmentKit(envID) → the kit, and whether the map names

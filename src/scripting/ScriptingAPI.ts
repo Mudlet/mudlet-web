@@ -786,13 +786,15 @@ class ScriptingWindowsAPI {
         return this.session.windows.hasMapper();
     }
 
-    /** The report the last loadJsonMap wrote for log/errors.txt, once (see WindowManager.takeMapReport). */
+    /** The report the last loadJsonMap or binary loadMap wrote for log/errors.txt, once (see WindowManager.takeMapReport). */
     takeMapReport(): string {
         const report = this.session.windows.takeMapReport();
         // The console names the report, whether or not it shows the details.
         if (report) {
-            const title = report.slice(0, report.indexOf('\n'));
-            this.session.postMessageLine(`[ INFO ]  - Problems were found with the map, see the "${title}" report in the profile's log/errors.txt.`);
+            // The report opens with its title centred in a rule of '#'.
+            const first = report.slice(0, report.indexOf('\n'));
+            const title = /^#+ (.*) #+$/.exec(first)?.[1] ?? first;
+            this.session.postMessageLine(`[ INFO ]  - Problems were found with the map, see the report titled "${title}" in the profile's log/errors.txt.`);
         }
         return report;
     }

@@ -2394,6 +2394,22 @@ function getMapEnvironmentKit(environmentId)
     return r[0], r[1]
 end
 
+-- Mudlet getMapEnvColor(envID) → r, g, b, a, and whether the map gives the
+-- environment a colour rather than the mapper falling back to its red.
+function getMapEnvColor(environmentId)
+    local c = __getMapEnvColor(environmentId)
+    return c[0], c[1], c[2], c[3], c[4]
+end
+
+-- Mudlet unsetCustomEnvColor(envID) → true, or (nil, errMsg) when the
+-- environment is one of the 16 defaults, has no custom colour, or a room is
+-- still drawn in it.
+function unsetCustomEnvColor(environmentId)
+    local r = __unsetCustomEnvColor(environmentId)
+    if r ~= true then return nil, r end
+    return true
+end
+
 -- Mudlet getMapEnvironmentKits() → { [envID] = kit } for the kits the map
 -- names, keyed by number as desktop's lua_pushnumber keys them.
 function getMapEnvironmentKits()
@@ -8939,7 +8955,7 @@ do
     end
 
     -- createRoomID answers with a number, or the refusal message when the
-    -- optional minimum is below one.
+    -- optional minimum is below one or no id is free at or above it.
     do
         local _raw = createRoomID
         function createRoomID(minimum)
