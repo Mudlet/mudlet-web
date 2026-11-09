@@ -341,6 +341,10 @@ export class WindowManager {
      *  Mudlet's sysDropEvent with a readable path — browsers don't expose a
      *  filesystem path on the dropped File, so we can't raise it inline here. */
     onFileDrop?:          (file: File, x: number, y: number, id: string) => void;
+    /** Called when an MXP frame's window is given a new size — by a script's
+     *  resizeWindow() or a drag of its edge. An EXTERNAL frame lays the frames
+     *  nested in it out against its size, so they follow. Wired by ScriptingEngine. */
+    onMxpFrameResized?:   (id: string, width: number, height: number) => void;
     /** Called whenever the *main* console's character grid changes (columns ×
      *  rows). MudSession wires this to the client so NAWS (telnet window size)
      *  tracks the output area. Distinct from onRaiseEvent (which drives Lua
@@ -2747,6 +2751,7 @@ export class WindowManager {
         }
         this.notify();
         this.saveHint(id, win);
+        if (this.mxpFrameIds.has(id)) this.onMxpFrameResized?.(id, win.width, win.height);
     }
 
     // ── Per-window command line ───────────────────────────────────────────────

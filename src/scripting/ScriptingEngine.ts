@@ -790,6 +790,7 @@ export class ScriptingEngine implements EngineHost {
         // stage its bytes in the profile VFS and then raise sysDropEvent with a
         // path the bundled packageDrop handler can read.
         session.windows.onFileDrop = (file, x, y, id) => { void this.stageDroppedFile(file, x, y, id); };
+        session.windows.onMxpFrameResized = (id, width, height) => this.api.mxpFrameResized(id, width, height);
         // Mudlet's media events all carry the same five arguments (TMedia.cpp,
         // mediaStarted/mediaFinished): the source URL's filename, its path, the
         // media type, and the key and tag the playback was given. Scripts index
@@ -5852,6 +5853,7 @@ export class ScriptingEngine implements EngineHost {
         this.session.cmdLines.cmdLineHost = DEFAULT_CMD_LINE_HOST;
         this.session.windows.onStartSpeedWalk = undefined;
         this.session.windows.onFileDrop = undefined;
+        this.session.windows.onMxpFrameResized = undefined;
         this.session.sounds.onMediaStarted = undefined;
         this.session.sounds.onMediaFinished = undefined;
         this.session.sounds.onMediaPaused = undefined;

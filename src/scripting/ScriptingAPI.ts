@@ -44,7 +44,7 @@ import { MspParser } from '../mud/protocol';
 import { decodeUtf8AsTBuffer, fromByteString } from '../mud/protocol/byteString';
 import { canEncodeForServer, decodeForServer } from '../mud/protocol/charset';
 import { StopwatchManager, localStorageStopwatchStore } from './StopwatchManager';
-import { MxpFrameManager } from './MxpFrameManager';
+import { MxpFrameManager, MXP_TAB_BAR_HEIGHT } from './MxpFrameManager';
 import { getHeldModifiers } from './heldModifiers';
 import { useAppStore, selectProfileField, connectionUrl, PROTOCOL_DEFAULTS, MAPPER_DEFAULTS, MAP_INFO_BG_DEFAULT, type BooleanProtocolKey, type MapperSettings, type MapInfoBgColor, type MudConnection } from '../storage';
 import {
@@ -5934,6 +5934,12 @@ export class ScriptingAPI {
         return this.mxpFrames.createFrame(name, attrs, dest);
     }
 
+    /** An MXP frame's window was resized; an EXTERNAL one lays out the frames
+     *  nested in it again. */
+    mxpFrameResized(id: string, width: number, height: number): void {
+        this.mxpFrames.setWindowSize(id, width, height);
+    }
+
     /** Tear every MXP frame down. MXP frames are per-connection state in Mudlet
      *  (TMxpFrameManager::resetAllFrames), so a reconnect starts from a clean
      *  main window rather than inheriting the last session's layout. */
@@ -6058,6 +6064,11 @@ export class ScriptingAPI {
         nameTakenByScript: (name) => {
             const id = mxpWindowId(name);
             return (this.session.windows.has(id) && !this.session.windows.isMxpFrame(id)) || this.buffers.has(id);
+        },
+        frameConsoleInPlace: (name, parent) => {
+            const id = mxpWindowId(name);
+            const wm = this.session.windows;
+            return wm.isMxpFrame(id) && wm.parentOf(id) === (parent ? mxpWindowId(parent) : 'main');
         },
         showFrameConsole: (name) => { this.session.windows.show(mxpWindowId(name)); },
         raiseFrameConsole: (name) => this.session.windows.bringToFront(mxpWindowId(name)),
@@ -6363,7 +6374,14 @@ export class ScriptingAPI {
         }
         const buf = this.buffers.get(name);
         if (buf) return { x: buf.x, y: buf.y, width: buf.width, height: buf.height };
-        return this.session.windows.getGeometry(name);
+        const geometry = this.session.windows.getGeometry(name);
+        // An MXP frame with a header is a tab widget in Mudlet, its own console
+        // the first page: the console has the space under the tabs, the same as
+        // every page docked into it — not the frame's, which the strip is part of.
+        if (geometry && this.session.windows.isMxpFrame(name) && this.session.windows.getFrameTabs(name)) {
+            return { ...geometry, height: Math.max(0, geometry.height - MXP_TAB_BAR_HEIGHT) };
+        }
+        return geometry;
     }
 
     /**

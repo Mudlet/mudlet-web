@@ -3134,7 +3134,12 @@ end`);
             this.lua.doStringSync('return __mudlet_busted_loaded == true') === true;
 
         const specPaths = bustedSpecVfsPaths();
-        (window as unknown as { __runBusted?: (pattern?: string) => unknown }).__runBusted = (pattern?: string) => {
+        // `prelude` is Lua run first, in this profile's own globals: the state a
+        // spec inherits from the files Mudlet's sorted single-profile run puts
+        // ahead of it, which a fresh page per spec does not have (see
+        // SPEC_PRELUDES in e2e/bustedHarness.ts).
+        (window as unknown as { __runBusted?: (pattern?: string, prelude?: string) => unknown }).__runBusted = (pattern?: string, prelude?: string) => {
+            if (prelude) this.lua.doStringSync(prelude);
             // Prefer an exact spec-name match (`Foo` → /lua/specs/Foo_spec.lua) so
             // a name that is a substring of another (e.g. "UI" within "GUIUtils")
             // selects only its own spec; fall back to substring for free patterns.
