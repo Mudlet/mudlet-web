@@ -258,14 +258,17 @@ describe('telnet negotiation matches desktop Mudlet (#286)', () => {
     });
   });
 
-  describe('7. CHARSET translate tables are rejected', () => {
-    it('rejects a REQUEST that opens with [TTABLE]', () => {
+  describe('7. CHARSET translate tables are declined', () => {
+    // RFC 2066's version after [TTABLE] is a binary octet; Mudlet skips the
+    // prefix and the octet and reads the character sets behind them.
+    it('reads the character sets behind a [TTABLE] prefix and its version octet', () => {
       const { client, sock } = connected();
       sock.deliver(IAC + WILL + '\x2A');
       sock.take();
-      sock.deliver(sb('\x2A\x01[TTABLE]\x01;ISO-8859-2;UTF-8'));
-      expect(sock.take()).toBe(sb('\x2A\x03'));
-      expect(client.getServerEncoding()).not.toBe('UTF-8');
+      client.setServerEncoding('ISO-8859-1');
+      sock.deliver(sb('\x2A\x01[TTABLE]\x02;ISO-8859-2;UTF-8'));
+      expect(sock.take()).toBe(sb('\x2A\x02ISO-8859-2'));
+      expect(client.getServerEncoding().toUpperCase()).toBe('ISO-8859-2');
     });
 
     it('answers TTABLE-IS with TTABLE-REJECTED', () => {

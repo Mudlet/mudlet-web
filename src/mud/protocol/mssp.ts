@@ -27,8 +27,9 @@ export interface MsspEnvelope {
  * terminated by the next control byte. Tolerant of truncation and stray bytes.
  *
  * Mirrors Mudlet's TLuaInterpreter::parseMSSP: scalar string values, a
- * variable with no `MSSP_VAL` is skipped, and a variable with extra `MSSP_VAL`
- * runs keeps only its first value.
+ * variable with no `MSSP_VAL` is skipped, and a variable with several
+ * `MSSP_VAL` runs (a game's ports, say) keeps the last one, which MSSP has a
+ * server send as the default.
  */
 export function parseMssp(body: string, decode: (bytes: string) => string = defaultDecode): MsspEnvelope[] {
     const out: MsspEnvelope[] = [];
@@ -49,11 +50,16 @@ export function parseMssp(body: string, decode: (bytes: string) => string = defa
         // variables behind it.
         if (i >= n || body.charCodeAt(i) !== VAL) continue;
         i++; // consume VAL
-        const valStart = i;
-        while (i < n && body.charCodeAt(i) !== VAR && body.charCodeAt(i) !== VAL) i++;
-        const value = decode(body.substring(valStart, i));
-        // Any further VAL runs for this variable (list-valued MSSP) are left
-        // for the outer loop to skip — we keep the first value, like Mudlet.
+        let value = '';
+        // A list-valued variable repeats VAL; each run replaces the one
+        // before, so the last — MSSP's default — is what is kept, as in Mudlet.
+        for (;;) {
+            const valStart = i;
+            while (i < n && body.charCodeAt(i) !== VAR && body.charCodeAt(i) !== VAL) i++;
+            value = decode(body.substring(valStart, i));
+            if (i < n && body.charCodeAt(i) === VAL) { i++; continue; }
+            break;
+        }
         if (name) out.push({ name, value });
     }
     return out;
