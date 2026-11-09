@@ -1,8 +1,22 @@
 import { isKeypadEvent } from '../../mud/keybindings/qtKeys';
 
-/** The height in px the split view's lower pane opens at, before the player
- *  drags it. */
-export const DEFAULT_SPLIT_PANE_HEIGHT = 160;
+/** The height in px of the handle between the split view's two panes, as
+ *  desktop's splitter draws it. */
+export const SPLIT_HANDLE_HEIGHT = 3;
+
+/** How tall the split view's upper pane is in a console whose text pane is
+ *  `height` px tall, before the player drags the handle: desktop gives it 6 of
+ *  every 8 pixels the handle leaves, rounded half up. getRowCount counts the
+ *  rows of this pane while the split is open. */
+export function splitUpperPaneHeight(height: number): number {
+    return Math.round(Math.max(0, height - SPLIT_HANDLE_HEIGHT) * 0.75);
+}
+
+/** The height the split view's lower pane opens at in a console whose text
+ *  pane is `height` px tall: what the upper pane and the handle leave. */
+export function splitLowerPaneHeight(height: number): number {
+    return Math.max(0, height - SPLIT_HANDLE_HEIGHT - splitUpperPaneHeight(height));
+}
 
 /**
  * Closing the split view — Mudlet's `TConsole::clearSplit`, which drops the

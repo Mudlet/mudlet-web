@@ -860,6 +860,11 @@ class ScriptingWindowsAPI {
         this.session.windows.announceCreatedSize(id);
     }
 
+    /** Raise the sysUserWindowResizeEvent a resized window is owed, now. */
+    reportSizeNow(id: string): void {
+        this.session.windows.reportWindowSizeNow(id);
+    }
+
     bringToFront(id: string): void {
         this.session.windows.bringToFront(id);
     }
@@ -1321,6 +1326,7 @@ export class ScriptingAPI {
         private readonly connectionId: string,
     ) {
         this.windows = new ScriptingWindowsAPI(session);
+        session.windows.onConsoleGeometryChanged = (id, withChildren) => this.syncConsoleSize(id, withChildren);
         // Hand out a bound *call*, not the method itself. `this.host.rewriteCss`
         // would detach ScriptingEngine.rewriteCss from its instance, and it
         // dereferences this.vfs — so the label stylesheet path died with
@@ -5171,6 +5177,36 @@ export class ScriptingAPI {
         return this.session.windows.timeStampsEnabled(windowName);
     }
 
+    /**
+     * Raise sysConsoleSizeChanged for `id` — and for every console inside it,
+     * when it is a window that has just shown — if its character grid is not
+     * the one it last reported: TConsole raises it as its text pane is
+     * resized, at once, with the columns and rows getColumnCount/getRowCount
+     * answer. A console that is not on screen (hidden, or inside a hidden
+     * window) reports nothing, and reports the size it shows at once it does,
+     * as a hidden widget gets its resize event only as it shows. The main
+     * console and buffers are left alone: main reports from its own panel,
+     * and a buffer is never shown.
+     */
+    syncConsoleSize(id: string, withChildren = false): void {
+        const wm = this.session.windows;
+        const report = (name: string) => {
+            if (name === 'main' || !wm.isTextConsole(name)) return;
+            if (this.windowVisible(name) !== true) return;
+            wm.reportConsoleGrid(name, this.getColumnCount(name), this.getRowCount(name));
+        };
+        report(id);
+        if (!withChildren) return;
+        for (const name of wm.ids()) {
+            if (name === id) continue;
+            const seen = new Set<string>([name]);
+            for (let p = this.parentOf(name); p && p !== 'main' && !seen.has(p); p = this.parentOf(p)) {
+                if (p === id) { report(name); break; }
+                seen.add(p);
+            }
+        }
+    }
+
     /** Mudlet `enableTimeStamps(window)` / `disableTimeStamps(window)`. False
      *  when no such window exists. */
     setTimeStamps(windowName: string, visible: boolean): boolean {
@@ -5186,8 +5222,9 @@ export class ScriptingAPI {
         if (!this.session.windows.setTimeStamps(windowName, visible)) return false;
         // The column moves the text over, so the console reports its grid
         // (with the gutter) — and with it any size a font change left
-        // unreported. A buffer is never shown, so it has none to report.
-        this.session.windows.reportConsoleGrid(windowName, this.getColumnCount(windowName), this.getRowCount(windowName));
+        // unreported. A buffer is never shown, so it has none to report, and
+        // a hidden console reports once it shows.
+        this.syncConsoleSize(windowName);
         return true;
     }
 
@@ -5466,24 +5503,24 @@ export class ScriptingAPI {
         const [, cellH] = measureMonospaceCell(family, fontSize);
         if (cellH <= 0) return 0;
 
+        // With the split screen open the rows are the upper pane's, as
+        // desktop's TTextEdit counts them: the lower pane is laid over the
+        // bottom of the console's text pane.
+        const wm = this.session.windows;
+        const id = isMain ? 'main' : windowName!;
         if (el) {
             const cs = getComputedStyle(el);
             const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-            const pending = isMain ? 0 : this.session.windows.pendingCmdLineHeightDelta(windowName!);
-            // With the split screen open the rows are the upper pane's, as
-            // desktop's TTextEdit counts them: the lower pane is laid over the
-            // bottom of the console.
-            const split = this.session.windows.openSplitPaneHeight(isMain ? 'main' : windowName!);
-            const height = Math.max(0, el.clientHeight - pad + pending - split);
+            const textHeight = Math.max(0, el.clientHeight + (isMain ? 0 : wm.pendingCmdLineHeightDelta(id)));
+            const height = Math.max(0, textHeight - wm.openSplitPaneHeight(id, textHeight) - pad);
             if (height > 0) return Math.floor(height / cellH);
         }
         if (isMain) return 0;
 
-        const size = this.session.windows.getSize(windowName!);
+        const size = wm.getSize(id);
         if (!size || size.height <= 0) return 0;
-        const height = Math.max(0, size.height + this.session.windows.pendingCmdLineHeightDelta(windowName!)
-            - this.session.windows.openSplitPaneHeight(windowName!));
-        return Math.floor(height / cellH);
+        const textHeight = Math.max(0, size.height + wm.pendingCmdLineHeightDelta(id));
+        return Math.floor(Math.max(0, textHeight - wm.openSplitPaneHeight(id, textHeight)) / cellH);
     }
 
     /**
@@ -5881,6 +5918,9 @@ export class ScriptingAPI {
         wm.markAsMiniConsole(name);
         wm.setPosition(name, Math.round(x), Math.round(y));
         wm.setSize(name, Math.round(width), Math.round(height));
+        // A new console reports the grid it is made with, even at the size the
+        // window opened at (when setSize had no resize to report).
+        if (created) this.syncConsoleSize(name);
         // That setFontSize(12) is a font change like any other, so desktop's
         // new miniconsole announces itself with sysFontChangeEvent — raised
         // once it is in place, for a handler that measures it.
@@ -8667,6 +8707,7 @@ export class ScriptingAPI {
 
     destroy(): void {
         this.destroyed = true;
+        this.session.windows.onConsoleGeometryChanged = undefined;
         for (const unsub of this.apiUnsubs) unsub();
         this.apiUnsubs.length = 0;
         // Script-installed CSS is profile-local (see styleTag): a closed

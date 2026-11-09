@@ -162,7 +162,18 @@ export const ARG_CONTRACTS: Record<string, Contract> = {
     getLineCount: WINDOW_ONLY,
     getLastLineNumber: WINDOW_ONLY,
     getColumnNumber: WINDOW_ONLY,
-    getCurrentLine: WINDOW_ONLY,
+    // getCurrentLine([window] [, enableFullErrorReporting]): a boolean first
+    // argument is the flag, for the main console; otherwise #1 is the window
+    // name and #2 the optional flag.
+    getCurrentLine: {
+        custom: `function(n, a1, a2)
+  if type(a1) == 'boolean' then return end
+  if a1 ~= nil and not isS(a1) then return MW('getCurrentLine', 1, 'window', a1, n) end
+  if a2 ~= nil and type(a2) ~= 'boolean' then
+    return M('getCurrentLine', 2, 'enableFullErrorReporting {default = false}', 'boolean', a2, n, true)
+  end
+end`,
+    },
     getTimestamp: { win: 1, winArg: s(LINE_BUFFER), args: [i('line number')] },
     copy: WINDOW_ONLY,
     paste: WINDOW_ONLY,

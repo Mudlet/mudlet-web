@@ -517,11 +517,11 @@ const MUDLET_GLOBALS: Completion[] = [
     fn('isAncestorsActive', '(id, type) → bool | (false, errMsg)', 'True when every ancestor group of the item is enabled (the item\'s own state is ignored). (false, errMsg) when no item of that type has the id.'),
     fn('getProfileStats',  '() → table', 'Per-family counts: {triggers={total,temp,active,patterns={total,active}}, aliases=, timers=, keys=, scripts={total,temp,active}, gifs={total,active}}. temp counts live session-scoped temp items (folded into total/active); scripts have no temp form; no gif tracker (gifs always 0).'),
     // Cursor / line inspection
-    fn('getCurrentLine',  '([window])',    'Get current trigger line text'),
+    fn('getCurrentLine',  '([window] [, enableFullErrorReporting])', 'Get current trigger line text; with enableFullErrorReporting an unknown window answers nil + message'),
     fn('getLineNumber',   '([window])',    'Get cursor line number'),
     fn('getLineCount',    '([window])',    'Get total line count'),
     fn('getConsoleBufferSize', '([window]) → linesLimit, batchSize', 'Get a console\'s scrollback line limit and batch-deletion size; nil when the console does not exist'),
-    fn('setConsoleBufferSize', '([window,] linesLimit [, batchSize]) → bool', 'Set a console\'s scrollback line limit (and batch-deletion size). Omit window for the main output'),
+    fn('setConsoleBufferSize', '([window,] linesLimit [, batchSize] [, useMaximum]) → bool', 'Set a console\'s scrollback line limit (and batch-deletion size). Omit window for the main output'),
     fn('getLastLineNumber', '([window])',  'Get line number of the last line in the buffer'),
     fn('getColumnNumber', '([window])',    'Get cursor column'),
     fn('getColumnCount',  '([window]) → number', 'Get the displayable column count of a window — how many monospace characters fit horizontally in the rendered area. Unaffected by setWindowWrap.'),

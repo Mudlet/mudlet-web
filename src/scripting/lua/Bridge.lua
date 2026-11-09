@@ -897,9 +897,9 @@ end
 
 -- Mudlet setConsoleBufferSize([consoleName,] linesLimit, sizeOfBatchDeletion
 -- [, useMaximum]). Desktop takes argument 1 for the name whenever there are
--- three arguments or more (lua_gettop), so the four-argument form only lines up
--- when a name was actually given — without one the useMaximum flag would land
--- where the batch size goes — and two arguments are never a name and a limit.
+-- three arguments or more (lua_gettop) — except three that end in a boolean,
+-- which are (linesLimit, sizeOfBatchDeletion, useMaximum) for the main console
+-- — and two arguments are never a name and a limit.
 --
 -- The numeric arguments go through __mudlet_int rather than a bare type() test:
 -- Mudlet vets them with getVerifiedInt, which is lua_isnumber + lua_tointeger,
@@ -912,7 +912,11 @@ function setConsoleBufferSize(...)
     local n = select('#', ...)
     local a, b, c, d = ...
     local name, lines, batch, useMaximum
-    if n >= 3 then
+    if n == 3 and type(c) == 'boolean' then
+        -- (linesLimit, sizeOfBatchDeletion, useMaximum) for the main console:
+        -- three arguments ending in a boolean carry no name.
+        lines, batch, useMaximum = a, b, c
+    elseif n >= 3 then
         name, lines, batch, useMaximum = a, b, c, d
         if __mudlet_str(name) == nil then
             error("setConsoleBufferSize: bad argument #1 type (window name as string expected, got "
@@ -11355,11 +11359,18 @@ do
             if not __mudlet_is_console((...)) then return -1 end
             return lastLine(...)
         end
+        -- getCurrentLine([window] [, enableFullErrorReporting]): a boolean
+        -- first argument is the flag, for the main console. With the flag set
+        -- a missing console answers the usual (nil, message) pair.
         local currentLine = guard(getCurrentLine)
-        function getCurrentLine(...)
-            local err = __mudlet_console_missing((...))
-            if err then return "ERROR: mini console does not exist", err end
-            return currentLine(...)
+        function getCurrentLine(name, fullErrors)
+            if type(name) == 'boolean' then name, fullErrors = nil, name end
+            local err = __mudlet_console_missing(name)
+            if err then
+                if fullErrors then return nil, err end
+                return "ERROR: mini console does not exist", err
+            end
+            return currentLine(name)
         end
     end
 
