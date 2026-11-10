@@ -6384,7 +6384,8 @@ do
     end
 
     -- replace([window,] text) — desktop's, which answers true once the
-    -- selection is replaced. GUIUtils.lua wraps it to add the keepcolor argument.
+    -- selection is replaced. GUIUtils.lua wraps it to add the keepcolor argument,
+    -- which it hands on as the third, so that has to reach the binding too.
     local _rawReplace = replace
     function replace(...)
         local n = select('#', ...)
@@ -6393,7 +6394,7 @@ do
             local text = __mudlet_check_string((select(2, ...)), "replace", 2, "with")
             local err = __mudlet_console_refusal(win)
             if err then return nil, err end
-            _rawReplace(__mudlet_console_key(win), text)
+            _rawReplace(__mudlet_console_key(win), text, (select(3, ...)) and true or false)
             return true
         end
         _rawReplace(__mudlet_check_string((...), "replace", 1, "with", n >= 1))

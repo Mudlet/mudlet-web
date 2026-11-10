@@ -20,7 +20,7 @@ import {AnsiAwareBuffer, computeTrailingState} from '../mud/text/FormatState';
 import {HyperlinkPresetRegistry} from '../mud/text/hyperlinkConfig';
 import {HyperlinkVisibilityController} from '../mud/text/hyperlinkVisibility';
 import type {MspCommand, MxpLink} from '../mud/protocol';
-import {MxpParser, splitMxpResultLines} from '../mud/protocol';
+import {MxpParser, splitMxpResultLines, type MxpLineEnd} from '../mud/protocol';
 import {ScriptingAPI, type InstallOutcome} from './ScriptingAPI';
 import { KNOWN_ITEM_TYPES, type EngineHost, type TempComplexTriggerSpec } from './EngineHost';
 import { ItemIdSequence } from '../mud/ItemIdSequence';
@@ -461,6 +461,11 @@ export class ScriptingEngine implements EngineHost {
     // subsequent lines inherit that colour until the next SGR — without a
     // persistent carry, a blank line or frame boundary drops the colour.
     private mudCarryState: FormatStateSnapshot | undefined = undefined;
+    /** The game's line still being written: the last visual line of a line
+     *  whose newline a `<NOBR>` had ignored, or the unfinished line text fed
+     *  locally carries on — TBuffer's mMudLine. The next MUD line is appended
+     *  to it before its triggers run. */
+    private openMudLine: { buffer: AnsiAwareBuffer; plain: string } | null = null;
     // The protocols negotiated on the live connection, by the name Mudlet
     // gives them in sysProtocolEnabled/sysProtocolDisabled. The negotiator
     // announces each one coming and going; this set is what the symmetric
@@ -6407,8 +6412,8 @@ export class ScriptingEngine implements EngineHost {
     /** Part of {@link EngineHost} — also reached directly from the flushLines
      *  subscription, and by feedTriggers via the host so synthetic batches share
      *  ordering semantics with network output. */
-    processFlushBatch(groups: { text: string; type: string; fromServer?: boolean }[]): void {
-        for (const { text, type, fromServer } of groups) {
+    processFlushBatch(groups: { text: string; type: string; fromServer?: boolean; unended?: boolean }[]): void {
+        for (const { text, type, fromServer, unended } of groups) {
             try {
                 const lines = text.split('\n');
                 if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
@@ -6431,8 +6436,24 @@ export class ScriptingEngine implements EngineHost {
                             const held = this.api.takeHeldFeedText();
                             if (held) line = held + line;
                         }
-                        const lineIsPrompt = this.promptPending && i === lines.length - 1;
+                        const isLast = i === lines.length - 1;
+                        const lineIsPrompt = !unended && this.promptPending && isLast;
                         if (lineIsPrompt) this.promptPending = false;
+                        // What ended the line, which decides whether a <NOBR>
+                        // joins it to the next: a newline, the prompt marker,
+                        // the idle flush of a line the game left unfinished —
+                        // or nothing yet, for the game's unfinished line a feed
+                        // carries on.
+                        const lineEnd: MxpLineEnd = unended && isLast ? 'none'
+                            : lineIsPrompt ? 'prompt'
+                            : !isLast || text.endsWith('\n') ? 'newline'
+                            : 'flush';
+                        // The last unit of this line is not complete yet: the
+                        // next line carries it on.
+                        let holdLast = lineEnd === 'none';
+                        // Units after the line's own parts: text a <DEST> could
+                        // not redirect, which is not the line being carried on.
+                        let unitsAfterParts = 0;
 
                         // Build the render units for this network line. Normally one
                         // unit per line, but when MXP is active a single line can carry
@@ -6449,7 +6470,8 @@ export class ScriptingEngine implements EngineHost {
                             // wire any <SEND>/<A> links into clickable hyperlinks.
                             // The parser owns SGR carry on these lines (it walked
                             // every byte), so computeTrailingState is bypassed.
-                            const r = this.mxp.parseLine(line, carryState, fromServer !== false);
+                            const r = this.mxp.parseLine(line, carryState, fromServer !== false, lineEnd);
+                            if (r.joined) holdLast = true;
                             if (debugMxpEnabled()) logMxpLine(line, r.segments);
                             carryState = r.trailingSnapshot;
                             const parts = splitMxpResultLines(r);
@@ -6480,6 +6502,7 @@ export class ScriptingEngine implements EngineHost {
                                 this.wireOsc8Links(fbuf);
                                 if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof, rd.eol)) {
                                     units.push({ plain: rd.plain, buffer: fbuf, blankRenders: rd.plain === '' });
+                                    unitsAfterParts++;
                                 }
                             }
                             // MXP <SOUND>/<MUSIC> are the same server-driven audio
@@ -6505,6 +6528,21 @@ export class ScriptingEngine implements EngineHost {
                             // sees the last text segment's state.
                             carryState = computeTrailingState(line, carryState, buffer.openHyperlink);
                             units.push({ plain, buffer, blankRenders: line === '' });
+                        }
+
+                        if (type === 'mud') {
+                            // A line the game left open is carried on by this one.
+                            const open = this.openMudLine;
+                            if (open && units.length > 0) {
+                                this.openMudLine = null;
+                                const first = units[0];
+                                first.buffer.insertBuffer(0, open.buffer);
+                                first.plain = open.plain + first.plain;
+                            }
+                            if (holdLast && units.length > unitsAfterParts) {
+                                const [held] = units.splice(units.length - 1 - unitsAfterParts, 1);
+                                this.openMudLine = { buffer: held.buffer, plain: held.plain };
+                            }
                         }
 
                         for (let u = 0; u < units.length; u++) {
@@ -6925,6 +6963,7 @@ export class ScriptingEngine implements EngineHost {
                 // Drop any colour carry from a prior session — the new server
                 // starts at default SGR.
                 this.mudCarryState = undefined;
+                this.openMudLine = null;
                 // MXP renegotiates per connection; drop any leftover definitions/
                 // open tags/modes and wait for the new session's mxp.negotiated.
                 this.mxp.reset();

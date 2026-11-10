@@ -129,15 +129,22 @@ const RGB_KEY_NONE: RgbKey = NaN;
  * The OSC 8 link style a cell is drawn in, as TBuffer commits it onto the
  * cell: the link's own style, and for a link the game marks as already
  * selected its selected style over that — which then `replaces` the
- * formatting the game wrapped the link in rather than adding to it. Undefined
- * for a cell with no styled link.
+ * formatting the game wrapped the link in rather than adding to it. Any other
+ * link is committed in its `:link` state, so its `:any-link` and `:link`
+ * styles go over its own (TBuffer::getEffectiveHyperlinkStyling for
+ * StateDefault). Undefined for a cell with no styled link.
  */
 function linkStyleOf(state: FormatStateSnapshot | undefined): { style: LinkStateStyle; replaces: boolean } | undefined {
     const config = state?.hyperlink?.config;
     const base = config?.style;
     if (!base) return undefined;
-    const selected = config.selection?.selected ? base.states?.selected : undefined;
-    return selected ? { style: { ...base, ...selected }, replaces: true } : { style: base, replaces: false };
+    const states = base.states;
+    const selected = config.selection?.selected ? states?.selected : undefined;
+    if (selected) return { style: { ...base, ...selected }, replaces: true };
+    const anyLink = states?.['any-link'];
+    const unvisited = states?.link;
+    if (!anyLink && !unvisited) return { style: base, replaces: false };
+    return { style: { ...base, ...anyLink, ...unvisited }, replaces: false };
 }
 
 /**
@@ -5060,7 +5067,16 @@ export class ScriptingAPI {
         // after a trailing terminator, so cutting it off here lost the last line
         // whenever it was empty — "F1\n\n" committed only F1, and "\n" nothing,
         // where Mudlet commits an empty line for each '\n' (mudlet-web#385).
-        this.host.processFlushBatch([{ text: joined.slice(0, cut + 1), type: 'mud', fromServer: false }]);
+        //
+        // The game's own unfinished line goes first: Mudlet holds it in the same
+        // mMudLine the fed text is appended to, so the fed text carries it on
+        // rather than committing a line above it. It was the game's, so its
+        // MXP is read as the game's.
+        const serverLine = this.session.takePendingServerLine();
+        this.host.processFlushBatch([
+            ...(serverLine ? [{ text: serverLine, type: 'mud', fromServer: true, unended: true }] : []),
+            { text: joined.slice(0, cut + 1), type: 'mud', fromServer: false },
+        ]);
 
         // Appended rather than assigned: a trigger in the batch may have fed an
         // unterminated line of its own, which this one's tail follows in mMudLine.
@@ -6531,8 +6547,8 @@ export class ScriptingAPI {
      * Mudlet `replace([win,] with, [keepcolor])`. Default (`keepcolor=false`)
      * applies the resolved console's current pen state (set via
      * setFgColor/setBgColor/etc.) to the replacement text. With
-     * `keepcolor=true`, the replacement inherits the selection's existing
-     * format — same as our previous behavior.
+     * `keepcolor=true`, the replacement takes the colours of the selection's
+     * first character and the rest of the pen.
      */
     replace(newText: string, windowName?: string, keepColor = false): void {
         const sel = this.selectionOf(windowName);
@@ -6543,7 +6559,16 @@ export class ScriptingAPI {
         // TBuffer::replaceInLine refuses a selection that no longer fits the
         // line rather than trimming it.
         if (sel.start < 0 || sel.start + sel.length > buf.length) return;
-        const state = keepColor ? undefined : this.outputConsole(targetWin).format.toSnapshot();
+        // TConsoleModel::replace writes with a copy of the pen; keepColor only
+        // takes the colours of the selection's first character into it, so the
+        // pen's own attributes still apply and the pen itself is left as the
+        // script set it for whatever is written next.
+        const pen = this.outputConsole(targetWin).format.toSnapshot();
+        let state: FormatStateSnapshot = pen;
+        if (keepColor && sel.start < buf.length) {
+            const kept = buf.getStateAt(sel.start);
+            state = { ...pen, foreground: kept?.foreground, background: kept?.background };
+        }
         buf.replace([sel.start, sel.start + sel.length], newText, state);
         if (this.inTriggerProcessing && this.getConsole(targetWin) === this.mainConsole) {
             // TConsole::replace moves every capture after the start of the
@@ -6557,7 +6582,7 @@ export class ScriptingAPI {
             // replacement wears whatever the snapshot already had at that
             // offset, which is what "keep" means here.
             this.spliceLineColorSnapshot(sel.start, sel.length, newText ? {
-                ...(state ? this.stateColorKeys(state) : this.snapshotColorAt(sel.start)),
+                ...(keepColor ? this.snapshotColorAt(sel.start) : this.stateColorKeys(state)),
                 text: newText,
             } : undefined);
         }
