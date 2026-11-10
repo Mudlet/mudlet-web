@@ -1473,11 +1473,6 @@ pbkdf2@^3.1.2, pbkdf2@^3.1.5:
     sha.js "^2.4.12"
     to-buffer "^1.2.2"
 
-pcre2-wasm-universal@^1.0.0:
-  version "1.0.0"
-  resolved "https://registry.npmjs.org/pcre2-wasm-universal/-/pcre2-wasm-universal-1.0.0.tgz"
-  integrity sha512-dU56PEtHiETIkaoLwYS1Gz0xaTuqGTWqelaaeLvMzS49sat0BlYMY2SsNyZeH9J6l831ZYdbaVeyiakSOUsROw==
-
 picocolors@^1.1.1:
   version "1.1.1"
   resolved "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz"

@@ -1,17 +1,15 @@
 // @vitest-environment node
 //
-// Parity guard for the vendored PCRE2 wrapper (`src/mud/triggers/pcre/Pcre2.ts`),
-// a performance-tuned fork of `pcre2-wasm-universal`'s wrapper that shares a
-// pre-encoded line buffer and reuses match-data across calls. Because the
-// trigger engine matches against the fork rather than upstream, this asserts the
-// fork returns byte-for-byte the same match shape (full match, captures, capture
-// offsets, named groups) as upstream across a corpus that exercises captures,
-// named groups, unmatched optional groups, anchors, multiple matches, and
-// non-matches. If the two ever diverge, triggers would behave differently from
-// the documented PCRE2 semantics.
+// The match shape the PCRE2 wrapper (`src/mud/triggers/pcre/Pcre2.ts`) hands
+// the trigger engine: full match, captures with their offsets, named groups,
+// an unset optional group as start/end -1, and no match as null. The wrapper
+// shares a pre-encoded line buffer and reuses match data across calls; these
+// expectations were recorded from the upstream `pcre2-wasm-universal` wrapper
+// it was forked from (PCRE2 10.34), which the module built by
+// wasm/pcre2/build.sh replaced, so a change of engine or wrapper that alters
+// what a trigger sees fails here.
 
 import { describe, it, expect } from 'vitest';
-import UpstreamPCRE from 'pcre2-wasm-universal';
 import VendoredPCRE from '../../src/mud/triggers/pcre/Pcre2';
 
 type Group = { start: number; end: number; match: string; name?: string };
@@ -37,45 +35,49 @@ function normalize(m: unknown): Norm {
     return { length, groups, named };
 }
 
-const CASES: Array<{ pattern: string; line: string }> = [
-    { pattern: '(\\d+) gold', line: 'you find 42 gold coins' },
-    { pattern: '^You see (.+) here\\.$', line: 'You see a rusty sword here.' },
-    { pattern: '(?<hp>\\d+)/(?<max>\\d+)', line: 'HP: 30/100 remaining' },
-    { pattern: 'foo(bar)?baz', line: 'foobaz' },                 // unmatched optional group
-    { pattern: 'foo(bar)?baz', line: 'foobarbaz' },              // matched optional group
-    { pattern: '^(\\w+) tells you: (.+)$', line: 'Gandalf tells you: run' },
-    { pattern: '\\b(\\w+)@(\\w+)\\.(\\w{2,4})\\b', line: 'mail me at bob@example.com today' },
-    { pattern: 'nothing-here', line: 'this line will not match at all' },
-    { pattern: '^$', line: '' },                                  // empty-line anchor
-    { pattern: '(a|b)(c|d)', line: 'zzz bd zzz' },
+type G = [start: number, end: number, match: string];
+const g = (start: number, end: number, match: string, name?: string): Group => ({ start, end, match, name });
+const m = (groups: G[], named: Record<string, string> = {}): Norm =>
+    ({ length: groups.length, groups: groups.map(([s, e, t]) => g(s, e, t, Object.keys(named).find(k => named[k] === t && t !== ''))), named });
+
+const CASES: Array<{ pattern: string; line: string; expected: Norm }> = [
+    { pattern: '(\\d+) gold', line: 'you find 42 gold coins', expected: m([[9, 16, '42 gold'], [9, 11, '42']]) },
+    { pattern: '^You see (.+) here\\.$', line: 'You see a rusty sword here.',
+        expected: m([[0, 27, 'You see a rusty sword here.'], [8, 21, 'a rusty sword']]) },
+    { pattern: '(?<hp>\\d+)/(?<max>\\d+)', line: 'HP: 30/100 remaining',
+        expected: m([[4, 10, '30/100'], [4, 6, '30'], [7, 10, '100']], { hp: '30', max: '100' }) },
+    // unmatched optional group
+    { pattern: 'foo(bar)?baz', line: 'foobaz', expected: m([[0, 6, 'foobaz'], [-1, -1, '']]) },
+    { pattern: 'foo(bar)?baz', line: 'foobarbaz', expected: m([[0, 9, 'foobarbaz'], [3, 6, 'bar']]) },
+    { pattern: '^(\\w+) tells you: (.+)$', line: 'Gandalf tells you: run',
+        expected: m([[0, 22, 'Gandalf tells you: run'], [0, 7, 'Gandalf'], [19, 22, 'run']]) },
+    { pattern: '\\b(\\w+)@(\\w+)\\.(\\w{2,4})\\b', line: 'mail me at bob@example.com today',
+        expected: m([[11, 26, 'bob@example.com'], [11, 14, 'bob'], [15, 22, 'example'], [23, 26, 'com']]) },
+    { pattern: 'nothing-here', line: 'this line will not match at all', expected: null },
+    // empty-line anchor
+    { pattern: '^$', line: '', expected: m([[0, 0, '']]) },
+    { pattern: '(a|b)(c|d)', line: 'zzz bd zzz', expected: m([[4, 6, 'bd'], [4, 5, 'b'], [5, 6, 'd']]) },
 ];
 
-describe('vendored PCRE2 wrapper parity with upstream', () => {
-    it('produces identical match() results across the corpus', async () => {
-        await UpstreamPCRE.init();
+describe('the PCRE2 wrapper\'s match shape', () => {
+    it('matches the corpus as the upstream wrapper did', async () => {
         await VendoredPCRE.init();
-
-        for (const { pattern, line } of CASES) {
-            const u = new UpstreamPCRE(pattern);
+        for (const { pattern, line, expected } of CASES) {
             const v = new VendoredPCRE(pattern);
-            expect(normalize(v.match(line)), `pattern ${pattern} / line "${line}"`)
-                .toEqual(normalize(u.match(line)));
-            u.destroy();
+            expect(normalize(v.match(line)), `pattern ${pattern} / line "${line}"`).toEqual(expected);
             v.destroy();
         }
     }, 60000);
 
-    it('produces identical matchAll() results', async () => {
-        await UpstreamPCRE.init();
+    it('matches all as the upstream wrapper did', async () => {
         await VendoredPCRE.init();
-
-        const pattern = '(\\d+)';
-        const line = 'rooms 1 and 22 and 333 and 4';
-        const u = new UpstreamPCRE(pattern);
-        const v = new VendoredPCRE(pattern);
-        expect((v.matchAll(line) as unknown[]).map(normalize))
-            .toEqual((u.matchAll(line) as unknown[]).map(normalize));
-        u.destroy();
+        const v = new VendoredPCRE('(\\d+)');
+        expect((v.matchAll('rooms 1 and 22 and 333 and 4') as unknown[]).map(normalize)).toEqual([
+            m([[6, 7, '1'], [6, 7, '1']]),
+            m([[12, 14, '22'], [12, 14, '22']]),
+            m([[19, 22, '333'], [19, 22, '333']]),
+            m([[27, 28, '4'], [27, 28, '4']]),
+        ]);
         v.destroy();
     }, 60000);
 

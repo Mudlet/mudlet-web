@@ -6,3 +6,4 @@
 # here too, or git undoes that on the way out of the repo.
 *.mpackage binary
 *.dat binary
+*.wasm binary

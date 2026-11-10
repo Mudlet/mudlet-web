@@ -1,10 +1,8 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import type { Plugin, PluginOption } from 'vite';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
-import { patchLibpcre2Wasm } from './pcre2Wasm.js';
 
 /**
  * The `@mudlet/mudlet-web/vite` companion plugin. The library leaves all of its
@@ -21,8 +19,6 @@ import { patchLibpcre2Wasm } from './pcre2Wasm.js';
  * the app build and consumer builds can't drift apart.
  */
 
-const require = createRequire(import.meta.url);
-
 const POLYFILLS: ('buffer' | 'stream' | 'events' | 'util')[] = ['buffer', 'stream', 'events', 'util'];
 
 /** The static files the app needs at its root (vfs-sw.js, oauth-callback.html)
@@ -36,23 +32,17 @@ function resolveStaticPath(name: string): string | null {
     return null;
 }
 
-/** Serves libpcre2.wasm at the root URL in dev (where emscripten looks for it
- *  when document.currentScript is null) and emits it to the build output.
- *  Resolved from wherever pcre2-wasm-universal lives relative to mudlet, and
- *  patched on the way out so `_match` takes an options argument — without it a
- *  trigger's match-all is quadratic in the line's length (see pcre2Wasm.ts).
- *  A binary the patch doesn't recognise goes out as shipped: slower, not wrong.
- *  That fallback is silent here on purpose (a consumer's build shouldn't break
- *  over speed); tests/triggers/pcreMatchAllLinear.test.ts is what turns a
- *  pcre2-wasm-universal bump the patch no longer fits into a red CI run. */
+/** Serves libpcre2.wasm (built by wasm/pcre2/build.sh) beside the page in dev,
+ *  and emits it to the build output there, which is where pcre2WasmSource.ts
+ *  fetches it from. Found next to the compiled plugin in dist-lib (consumers;
+ *  copy-lib-assets puts it there) or in wasm/pcre2/ when running from the
+ *  Mudlet Web repo itself. */
 function pcre2WasmPlugin(): Plugin {
-    // The wasm file isn't in the package's exports map — resolve the exported
-    // ./libpcre2 entry (dist/libpcre2.js) and take its sibling.
-    const wasmPath = join(dirname(require.resolve('pcre2-wasm-universal/libpcre2')), 'libpcre2.wasm');
-    const wasm = (): Uint8Array => {
-        const shipped = readFileSync(wasmPath);
-        return patchLibpcre2Wasm(shipped) ?? shipped;
-    };
+    const wasmPath = [`./libpcre2.wasm`, `../wasm/pcre2/libpcre2.wasm`]
+        .map(rel => fileURLToPath(new URL(rel, import.meta.url)))
+        .find(p => existsSync(p));
+    if (!wasmPath) throw new Error('mudlet:pcre2-wasm: libpcre2.wasm not found next to the plugin or in wasm/pcre2/');
+    const wasm = (): Uint8Array => readFileSync(wasmPath);
     return {
         name: 'mudlet:pcre2-wasm',
         configureServer(server) {
@@ -152,7 +142,7 @@ export default function mudlet(): PluginOption[] {
                     // dies on Windows (os error 123). Excluded, Mudlet Web is served
                     // through Vite's transform pipeline in dev, where `?url`
                     // works. Harmless in Mudlet Web's own repo (not a dep there).
-                    exclude: ['pcre2-wasm-universal', '@mudlet/mudlet-web'],
+                    exclude: ['@mudlet/mudlet-web'],
                     // CJS deps reached from the excluded Mudlet Web entry must be
                     // pre-bundled explicitly (Vite doesn't interop CJS served
                     // raw). Extend this list if dev mode reports "does not
@@ -183,19 +173,6 @@ export default function mudlet(): PluginOption[] {
                 worker: {
                     format: 'es' as const,
                     plugins: () => [nodePolyfills({ include: POLYFILLS })],
-                },
-                build: {
-                    rollupOptions: {
-                        onwarn(warning, defaultHandler) {
-                            if (
-                                warning.code === 'COMMONJS_VARIABLE_IN_ESM' &&
-                                warning.id?.includes('pcre2-wasm-universal')
-                            ) {
-                                return;
-                            }
-                            defaultHandler(warning);
-                        },
-                    },
                 },
             }),
         },

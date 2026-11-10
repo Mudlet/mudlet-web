@@ -158,22 +158,26 @@ describe('empty matches in match-all retry at the same offset, as desktop does',
     });
 });
 
-// Recorded in e2e/knownDivergences.ts (PLATFORM_DIVERGENCES, #361): the PCRE2
-// build itself differs. Pinned so a newer library shows up here, and the
-// divergence entry can go.
-describe('PCRE2 10.34 in 16-bit mode (a recorded divergence)', () => {
+// The items of #361 that were properties of the PCRE2 build itself. The
+// module this client shipped then was PCRE2 10.34; the one wasm/pcre2/build.sh
+// builds now is newer than desktop's, so the Unicode tables and the \K rule
+// agree with desktop. Only the code-unit width still differs, and that is
+// recorded in e2e/knownDivergences.ts (PLATFORM_DIVERGENCES, #361).
+describe('the PCRE2 build', () => {
     const yezidi = '\u{10E80}';
 
-    it('does not know Unicode 13 letters', () => {
+    it('knows Unicode 13 letters, as desktop does', () => {
         const fired = fire([trigger('l', '^UL (\\p{L}+)'), trigger('w', '^UW (\\w+)')], `UL ${yezidi}`);
-        expect(fired.size).toBe(0);
-        expect(() => new Pcre2('(*UTF)(*UCP)^YZ (\\p{Yezidi}*)')).toThrow();
+        expect(fired.get('l')?.list).toEqual([`UL ${yezidi}`, yezidi]);
+        expect(() => new Pcre2('(*UTF)(*UCP)^YZ (\\p{Yezidi}*)').destroy()).not.toThrow();
     });
 
-    it('accepts \\K in a lookaround', () => {
-        expect(fire([trigger('k', '^KL a(?=b\\K)')], 'KL ab').get('k')?.list).toEqual(['b']);
+    it('refuses \\K in a lookaround, as desktop (PCRE2 10.38 and up) does', () => {
+        expect(() => new Pcre2('^KL a(?=b\\K)')).toThrow();
+        expect(fire([trigger('k', '^KL a(?=b\\K)')], 'KL ab').get('k')).toBeUndefined();
     });
 
+    // a recorded divergence: 16-bit code units here, bytes of UTF-8 on desktop
     it('matches \\C as one UTF-16 code unit', () => {
         expect(fire([trigger('c', '^BC (\\C)')], 'BC é').get('c')?.list).toEqual(['BC é', 'é']);
     });

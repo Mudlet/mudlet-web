@@ -29,26 +29,10 @@ function wasmoonWasmFsUrl(): Plugin {
   };
 }
 
-// The app gets pcre2's wasm from the Mudlet Web Vite plugin, which patches
-// `_match` to take an options argument on the way out (vite-plugin/pcre2Wasm.ts).
-// Under vitest the emscripten glue reads the file straight off node_modules, so
-// the same patch is applied where it does — the glue is inlined (see
-// server.deps below), which is what lets this transform reach it. Without it
-// the suite would run the shipped binary, and a test of the trigger engine's
-// match-all loop would not be testing what the app runs.
-function pcre2WasmPatch(): Plugin {
-  const anchor = 'return readBinary(wasmBinaryFile);';
-  const patchModule = resolve('vite-plugin/pcre2Wasm.ts');
-  return {
-    name: 'pcre2-wasm-patch',
-    transform(code, id) {
-      if (!/pcre2-wasm-universal[\\/]dist[\\/]libpcre2\.js/.test(id)) return;
-      if (!code.includes(anchor)) throw new Error(`pcre2-wasm-patch: '${anchor}' not found in ${id}`);
-      return `import { patchLibpcre2Wasm as __patchLibpcre2Wasm } from ${JSON.stringify(patchModule)};\n`
-        + code.replace(anchor, 'var shipped = readBinary(wasmBinaryFile); return __patchLibpcre2Wasm(shipped) || shipped;');
-    },
-  };
-}
+// The app fetches libpcre2.wasm from beside the page (pcre2WasmSource.ts);
+// under vitest there is no page, so that one module is swapped for one that
+// reads the committed file from disk.
+const pcre2WasmSourceForTests = resolve('tests/support/pcre2WasmSource.ts');
 
 // Tests run through Vite, so the bundled Lua (`?raw` imports + the
 // `import.meta.glob('./mudlet-lua/**/*.lua')`), JSON imports, and extensionless
@@ -56,7 +40,10 @@ function pcre2WasmPatch(): Plugin {
 // document / window / localStorage that ScriptingAPI touches; wasmoon's WASM is
 // loaded from node's filesystem.
 export default defineConfig({
-  plugins: [wasmoonWasmFsUrl(), pcre2WasmPatch()],
+  plugins: [wasmoonWasmFsUrl()],
+  resolve: {
+    alias: [{ find: /^\.\/pcre2WasmSource$/, replacement: pcre2WasmSourceForTests }],
+  },
   // A Mudlet package archive is a zip, not source — LuaRuntime carries the
   // busted fixture archives into the VFS with `?inline`, which reaches the
   // asset pipeline and needs the extension declared. The app build gets this
@@ -76,14 +63,5 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     // wasmoon WASM init + bundled-Lua load is ~1s on a cold runtime.
     testTimeout: 20000,
-    server: {
-      deps: {
-        // Emscripten glue in pcre2-wasm-universal uses __dirname, which is
-        // undefined when node loads the package's "type":"module" files as ESM.
-        // Inlining routes it through Vite's transform, which shims __dirname/
-        // __filename so the WASM resolves + loads from node_modules via fs.
-        inline: ['pcre2-wasm-universal'],
-      },
-    },
   },
 });

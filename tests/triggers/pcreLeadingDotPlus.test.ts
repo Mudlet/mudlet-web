@@ -15,8 +15,7 @@
 // interpreter takes seconds to reach. Trigger and alias patterns now carry a
 // lower one (ENGINE_MATCH_LIMIT).
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import libpcre2 from 'pcre2-wasm-universal/libpcre2';
-import Pcre2, { ENGINE_MATCH_LIMIT, ENGINE_MATCH_LIMIT_VERB, leadingDotPlus } from '../../src/mud/triggers/pcre/Pcre2';
+import Pcre2, { ENGINE_MATCH_LIMIT, ENGINE_MATCH_LIMIT_VERB, leadingDotPlus, pcre2Bindings } from '../../src/mud/triggers/pcre/Pcre2';
 import { TriggerEngine, type TriggerNode } from '../../src/mud/triggers/TriggerEngine';
 import { AliasPattern } from '../../src/mud/PatternEngine';
 
@@ -49,9 +48,9 @@ function compileUnanchored(pattern: string): Pcre2 {
     return re;
 }
 
-/** Every `_match` call's options while `run` runs. */
+/** Every `match` call's options while `run` runs. */
 function optionsPassed(run: () => void): number[] {
-    const spy = vi.spyOn(libpcre2 as unknown as { _match: (...a: number[]) => number }, '_match');
+    const spy = vi.spyOn(pcre2Bindings(), 'match');
     try {
         run();
         return spy.mock.calls.map(args => (args[5] ?? 0) >>> 0);

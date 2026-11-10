@@ -29,14 +29,16 @@ Mudlet Web is a **web-based MUD (Multi-User Dungeon) client** built with React +
 
 **What still says `mudix`, and must:** anything naming data that already exists in a user's browser or in a file they hold — the legacy tables in `storageMigration.ts`, the legacy readers in `backupImport.ts`, `LEGACY_*` paths in `mudletProfileExport.ts`, the `.mudix/` fallback in `profileVfsData.ts`, and the `mudix-` cache prefix the service worker sweeps. Renaming any of those strands exactly the data the migration exists to rescue. A `mudlet-web-backup` file and any `.zip` exported before the rename carry the old spellings, so those readers take both. The library entry points *did* follow the rename: the package is `@mudlet/mudlet-web` (npm), the app root export is `MudletWebApp` (`src/MudletWebApp.tsx`), and no `MudixApp` alias is kept.
 
-Key libraries: `wasmoon-lua5.1` (WASM-compiled Lua 5.1), `pcre2-wasm-universal` (PCRE regex for triggers/aliases), `@sqlite.org/sqlite-wasm` (the `db:*` API), `@zenfs/core` + `@zenfs/dom` (the profile VFS), `mudlet-map-binary-reader`/`-renderer`/`-editor` (map files), `zustand` (state), `pako`/`fflate` (compression), `@codemirror/*` (the script editor), `dompurify` + `marked` (HTML/markdown panels).
+Key libraries: `wasmoon-lua5.1` (WASM-compiled Lua 5.1), PCRE2 (regex for triggers/aliases/`rex`, built here — see below), `@sqlite.org/sqlite-wasm` (the `db:*` API), `@zenfs/core` + `@zenfs/dom` (the profile VFS), `mudlet-map-binary-reader`/`-renderer`/`-editor` (map files), `zustand` (state), `pako`/`fflate` (compression), `@codemirror/*` (the script editor), `dompurify` + `marked` (HTML/markdown panels).
 
-> **`pcre2-wasm-universal`'s wasm is byte-patched at build time** (`vite-plugin/pcre2Wasm.ts`, mirrored in
-> `vitest.config.ts`) so `_match` takes an options argument and match loops can pass `PCRE2_NO_UTF_CHECK` —
-> without it every match-all on a long line is quadratic. The patch expects the exact bytes of the pinned build
-> and ships an unrecognised binary unchanged, so **bumping the package means re-deriving the patch** (see
-> "UPGRADING" in `pcre2Wasm.ts`). `tests/triggers/pcreMatchAllLinear.test.ts` fails with "pcre2 wasm patch did
-> not apply" until you do.
+> **The PCRE2 engine is built in this repo, not installed.** `wasm/pcre2/build.sh` compiles a pinned PCRE2
+> release (16-bit library, UTF mode) with clang alone into the committed `wasm/pcre2/libpcre2.wasm`; `bridge.c`
+> holds the exports `Pcre2.ts` calls and `libc/` the little libc it needs. The module imports nothing and has no
+> JS glue: `Pcre2.init()` instantiates it from bytes `pcre2WasmSource.ts` fetches from beside the page (the Vite
+> plugin serves and emits it there), swapped under vitest for `tests/support/pcre2WasmSource.ts`, which reads the
+> file. **Never hand-edit the `.wasm`**: change the source, run `wasm/pcre2/build.sh`, and commit the module with
+> its `.sha256`. CI's "pcre2 wasm reproduces" job rebuilds it with clang 18 and fails unless the bytes match.
+> Upgrading PCRE2 is the two pins at the top of `build.sh` ("UPGRADING PCRE2" there says what else to check).
 
 > **`konva`, `i18next` and `react-i18next` are dependencies nothing here imports** — do not sweep them
 > as unused. `mudlet-map-editor` (2.0.0 and up) leaves every library it renders with external and

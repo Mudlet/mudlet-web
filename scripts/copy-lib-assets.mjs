@@ -25,11 +25,15 @@ if (!assets.length) throw new Error(`no ?url default-package imports found in ${
 mkdirSync('dist-lib', { recursive: true });
 copyFileSync('public/vfs-sw.js', 'dist-lib/vfs-sw.js');
 copyFileSync('public/oauth-callback.html', 'dist-lib/oauth-callback.html');
+// The regex engine, served and emitted by the Mudlet Web/vite plugin from
+// beside the compiled plugin (see pcre2WasmPlugin in vite-plugin/vite.ts).
+copyFileSync('wasm/pcre2/libpcre2.wasm', 'dist-lib/libpcre2.wasm');
+copyFileSync('wasm/pcre2/LICENCE-PCRE2.md', 'dist-lib/LICENCE-PCRE2.md');
 for (const rel of assets) {
     mkdirSync(`dist-lib/${dirname(rel)}`, { recursive: true });
     copyFileSync(`src/${rel}`, `dist-lib/${rel}`);
 }
-console.log(`copy-lib-assets: vfs-sw.js + oauth-callback.html + ${assets.length} default-package asset(s)`);
+console.log(`copy-lib-assets: vfs-sw.js + oauth-callback.html + libpcre2.wasm + ${assets.length} default-package asset(s)`);
 
 // The bundled games' logos, externalised for the same reason (see isExternal in
 // vite.lib.config.ts) and copied whole: unlike the defaults directory this one is

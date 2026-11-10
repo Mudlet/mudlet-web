@@ -6,12 +6,6 @@ import { vi } from 'vitest';
 // persist) and StopwatchManager read it at import/construction. A Map-backed
 // stub is enough — tests don't assert on persisted state. (happy-dom tests
 // already have a real one, so this only fills the node-env gap.)
-// NOTE: a `window` stub is deliberately NOT defined here. pcre2-wasm-universal
-// runs PCRE.init() at import time and picks node-mode (read WASM from fs) only
-// while `window` is absent — defining it here would flip pcre2 to web/fetch
-// mode. createTestRuntime defines a minimal window LATER (after pcre2 has
-// initialised) for the bits of bundled Lua that need window.innerWidth.
-
 if (typeof globalThis.localStorage === 'undefined') {
   const store = new Map<string, string>();
   globalThis.localStorage = {

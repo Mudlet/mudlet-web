@@ -626,7 +626,7 @@ function pcreToMatchResult(m: PcreMatch): MatchResult {
     const captureSpans: CaptureSpan[] = [];
     const namedGroups: Record<string, string> = {};
     const namedSpans: Record<string, CaptureSpan> = {};
-    // pcre2-wasm-universal reports `m.length` as ovector pair count, which includes
+    // Pcre2 reports `m.length` as the ovector pair count, which includes
     // the full match at index 0 — so capture groups are at 1..length-1, not 1..length.
     // TTrigger::processRegexMatch copies the first `rc` pairs, and pcre2_match
     // returns one more than the highest group that took part: a group that did

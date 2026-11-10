@@ -322,22 +322,6 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
             + 'profile open in another tab is answered false with a message while that tab flashes its title '
             + '(ScriptingAPI.setActiveProfile) — there is no second profile in this window for focus to move to.',
     })),
-    Regex: [
-        {
-            name: 'PCRE regex cases with tempRegexTrigger / fixed text a match has to contain / does not take a non-atomic lookbehind for a named group',
-            reason:
-                'The patterns are (?<*ab)… and (?<*[>]xy)…: a non-atomic positive lookbehind, syntax PCRE2 added in '
-                + '10.43. The pcre2-wasm-universal build every trigger, alias and rex pattern compiles with here is '
-                + 'PCRE2 10.34, which reads (?< as the start of a named group and refuses the * with "subpattern '
-                + 'name expected" — so the triggers never exist, rather than (as the spec guards against on '
-                + 'desktop) Mudlet\'s own fixed-text pre-scan mistaking the lookbehind for a group name. Closing '
-                + 'it means a newer PCRE2 wasm build: rewriting (?<* to the atomic (?<= would compile, but '
-                + 'changes what the pattern matches whenever the lookbehind could backtrack into another '
-                + 'alternative, which is the one thing the non-atomic form exists for. Bumping the package also '
-                + 'means re-deriving the wasm patch in vite-plugin/pcre2Wasm.ts; this entry turns red the day the '
-                + 'bundled engine understands the syntax.',
-        },
-    ],
     Telnet: (() => {
         // Each of these specs offers a package at a URL nothing serves, checks
         // the offer reached the downloader, and then waits - pumping events for up to three
@@ -617,20 +601,17 @@ export const PLATFORM_DIVERGENCES: PlatformDivergence[] = [
         issue: '#438',
     },
     {
-        api: 'trigger and alias regex: PCRE2 10.34 in 16-bit mode',
+        api: 'trigger and alias regex: PCRE2 in 16-bit mode',
         behaviour:
-            'Desktop matches with PCRE2 10.39 over UTF-8; Mudlet Web with 10.34 over UTF-16. So: letters '
-            + 'added in Unicode 13 (Yezidi, U+10E80…) are not \\p{L} or \\w here, and \\p{Yezidi} does not compile; '
-            + '\\K inside a lookaround (^KL a(?=b\\K)) compiles and fires here where desktop (10.38+) rejects the '
-            + 'pattern; and \\C matches one UTF-16 code unit here (é) where desktop matches one byte (<C3>). '
-            + 'Everything else the #361 comparison covered matches.',
+            'Desktop matches over UTF-8, Mudlet Web over UTF-16, so \\C matches one UTF-16 code unit here (é) '
+            + 'where desktop matches one byte (<C3>). Everything else the #361 comparison covered matches, '
+            + 'including the Unicode tables and the rule against \\K in a lookaround, which the 10.34 build this '
+            + 'client shipped then did not.',
         reason:
-            'These are properties of the PCRE2 build itself: its Unicode tables, its compile rules and its '
-            + 'code-unit width. pcre2-wasm-universal is the only WebAssembly PCRE2 there is and ships 10.34 as '
-            + 'the 16-bit library; its wasm is also byte-patched at build time (vite-plugin/pcre2Wasm.ts), so a '
-            + 'newer one is a rebuild of the library, not a version bump. Rewriting patterns to imitate a newer '
-            + 'release (rejecting \\K in lookarounds, say) would need a PCRE pattern parser in front of PCRE and '
-            + 'still could not supply the newer Unicode tables. Pinned by tests/triggers/regexDrift361.test.ts.',
+            'The code-unit width is the one property of the PCRE2 build that has to differ: JS strings are '
+            + 'UTF-16, and the 16-bit library is what lets every offset PCRE2 reports be a string index with no '
+            + 'transcoding of each line. \\C is the only construct that sees the width. The library is built '
+            + 'from a pinned PCRE2 release by wasm/pcre2/build.sh. Pinned by tests/triggers/regexDrift361.test.ts.',
         issue: '#361',
     },
     {

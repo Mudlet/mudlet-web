@@ -21,6 +21,12 @@
 #     (scripts/check-vendored-paths.mjs; see "Vendored Mudlet trees" in
 #     CLAUDE.md). Those trees change only through the sync scripts, so the sync
 #     workflow's own branches are exempt for the paths their scripts write.
+#   * pcre2 — rebuilds wasm/pcre2/libpcre2.wasm, the regex engine, from its
+#     pinned PCRE2 release and fails unless it is byte-identical to the
+#     committed module, so the binary in the tree is known to come from the
+#     source beside it. Pinned to ubuntu-24.04, whose clang 18 is the one
+#     wasm/pcre2/build.sh expects: another major version builds a working
+#     module but not the same bytes.
 #   * build — `yarn build`, which catches bundler-level failures that no
 #     type-check or unit test sees. Unlike deploy.yml's build job this one does
 #     not upload a Pages artifact: nothing on a PR deploys it.
@@ -144,6 +150,19 @@ jobs:
           cache: yarn
       - run: yarn install --frozen-lockfile
       - run: yarn build
+
+  pcre2:
+    name: pcre2 wasm reproduces
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install clang 18 and lld
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-18 lld-18
+      - name: Rebuild and compare
+        env:
+          CLANG: clang-18
+          WASM_LD: wasm-ld-18
+        run: wasm/pcre2/build.sh --check
 
   vendored:
     name: Vendored trees

@@ -1,59 +1,45 @@
 /**
- * Vendored, performance-tuned PCRE2 wrapper for the trigger hot path.
+ * The PCRE2 wrapper behind triggers, aliases and the Lua `rex` module.
  *
- * This is a focused fork of `pcre2-wasm-universal`'s `src/PCRE.js` (the wrapper
- * only — the prebuilt `dist/libpcre2.js` glue and `.wasm` binary are reused
- * untouched via the package's `./libpcre2` subpath export). It exposes the same
- * surface the trigger engine consumes (`init` / `new Pcre2(pattern)` /
- * `match` / `matchAll` / `destroy`) and returns the identical match shape, so it
- * is a drop-in for `import PCRE from 'pcre2-wasm-universal'` there.
+ * The engine is PCRE2's 16-bit library in UTF mode, compiled to wasm by
+ * wasm/pcre2/build.sh (no emscripten, no JS glue: the module imports nothing
+ * and is instantiated here). Being 16-bit, it matches a JS string's UTF-16
+ * code units as they are, so every offset it reports is a string index.
  *
- * Two differences from the upstream wrapper, both targeting the per-line scan
- * where one line is matched against N triggers (see TriggerEngine):
+ * The wrapper started as a fork of pcre2-wasm-universal's `src/PCRE.js` and
+ * keeps its surface (`init` / `new Pcre2(pattern)` / `match` / `matchAll` /
+ * `destroy`) and match shape. What it adds, for the per-line scan where one
+ * line is matched against N triggers (see TriggerEngine):
  *
- *   1. Shared line buffer. Upstream `match()` re-encodes the subject to UTF-16LE
- *      and copies it into wasm on EVERY call — so a 1-line / N-trigger pass
- *      encodes the same line N times. Here the line is encoded into a single
- *      module-level wasm buffer once; subsequent matches of the same line (the
- *      common case: every trigger in the pass receives the same string
- *      reference) reuse it via a reference-equality fast path.
+ *   1. Shared line buffer. The line is encoded into a single module-level wasm
+ *      buffer once; later matches of the same line (every trigger in the pass
+ *      receives the same string reference) reuse it via a reference-equality
+ *      fast path, rather than copying it in again per pattern.
  *
- *   2. Reusable match-data. Upstream allocates and frees a `pcre2_match_data`
- *      block on every call, including non-matches. Here each compiled pattern
- *      keeps one match-data block for its lifetime; `pcre2_match` overwrites it
- *      in place, so the malloc/free per call disappears.
+ *   2. Reusable match-data. Each compiled pattern keeps one match-data block
+ *      for its lifetime; `pcre2_match` overwrites it in place, so there is no
+ *      malloc/free per call.
  *
- * These are constant-factor wins (the engine is still interpreted — the wasm
- * build has no JIT), but they remove the redundant work the scan was repeating.
+ *   3. {@link Pcre2.matchAll} checks the subject is valid UTF-16 once and
+ *      passes PCRE2_NO_UTF_CHECK for the rest of the loop, as Mudlet's does.
+ *      Re-checking from each start offset to the end of the line made a global
+ *      match quadratic in the line's length. The same options argument carries
+ *      the NOTEMPTY_ATSTART | ANCHORED retry that loop makes after an empty
+ *      match.
  *
- * A third one is not constant: {@link Pcre2.matchAll} checks the subject is
- * valid UTF-16 once and skips the check for the rest of the loop. The shipped
- * `_match` export takes no options argument, so the pcre2 wasm is patched as it
- * is served (vite-plugin/pcre2Wasm.ts) to take one; without the patch every
- * call re-checks from its start offset to the end of the line, which makes a
- * global match quadratic in the line's length. The same options argument
- * carries the NOTEMPTY_ATSTART | ANCHORED retry that loop makes after an empty
- * match, as Mudlet's does.
- *
- * A fourth is {@link leadingDotPlus}: a pattern that opens with `.+` is
- * matched ANCHORED, newline-free stretch by newline-free stretch, which finds
- * the same match without trying the pattern at every offset of a long line.
+ *   4. {@link leadingDotPlus}: a pattern that opens with `.+` is matched
+ *      ANCHORED, newline-free stretch by newline-free stretch, which finds the
+ *      same match without trying the pattern at every offset of a long line.
  *
  * The alias engine compiles its patterns with it too (PatternEngine), and so
- * does the Lua `rex` module (rex.ts); all of them share the same wasm module
- * instance.
- *
- * Bumping pcre2-wasm-universal means re-deriving that wasm patch for the new
- * binary — see "UPGRADING" in vite-plugin/pcre2Wasm.ts. An unrecognised binary
- * still works, just quadratically, and tests/triggers/pcreMatchAllLinear.test.ts
- * fails so the bump can't land without it.
+ * does `rex` (rex.ts); all of them share the one module instance.
  */
-import libpcre2 from 'pcre2-wasm-universal/libpcre2';
+import { loadPcre2Wasm } from './pcre2WasmSource';
 
 const PCRE2_NO_MATCH = -1;
 
 /** pcre2_match option: the subject has already been checked for valid UTF, so
- *  don't scan it again. Only honoured by a patched wasm — see the header. */
+ *  don't scan it again. */
 export const PCRE2_NO_UTF_CHECK = 0x40000000;
 /** pcre2_match options Mudlet's global-match loop retries an empty match with. */
 const PCRE2_NOTEMPTY_ATSTART = 0x00000008;
@@ -90,9 +76,7 @@ interface CFuncs {
     destroyCode: Cfunc;
     lastErrorMessage: Cfunc;
     lastErrorOffset: Cfunc;
-    /** match(codePtr, subjectPtr, lengthInCodeUnits, startOffset, matchDataPtr, options) —
-     *  `options` reaches pcre2_match only in the patched wasm; the shipped one
-     *  drops the sixth argument and always passes 0. */
+    /** match(codePtr, subjectPtr, lengthInCodeUnits, startOffset, matchDataPtr, options) */
     match: Cfunc;
     createMatchData: Cfunc;
     destroyMatchData: Cfunc;
@@ -104,7 +88,23 @@ interface CFuncs {
 }
 
 let initialized = false;
+let initPromise: Promise<void> | null = null;
 let cfunc: CFuncs;
+let memory: WebAssembly.Memory;
+/** The bridge's own `version` export, for {@link Pcre2.version}. */
+let versionFn: (ptr: number) => number;
+
+// Views over the module's memory. Re-created on every read: a malloc that
+// grows the memory detaches the views made before it.
+const heapU16 = (): Uint16Array => new Uint16Array(memory.buffer);
+const heapView = (): DataView => new DataView(memory.buffer);
+
+/** The functions the module exports, as Pcre2 calls them. A plain object
+ *  (not the instance's frozen exports) so a test can spy on a call. */
+export function pcre2Bindings(): CFuncs {
+    if (!initialized) throw new Error('Pcre2.init() has not completed');
+    return cfunc;
+}
 
 export type Pcre2MatchGroup = { start: number; end: number; match: string; name?: string; group?: number };
 export type Pcre2Match = { length: number; [k: number]: Pcre2MatchGroup; [k: string]: Pcre2MatchGroup | number };
@@ -128,7 +128,7 @@ function ensureLineEncoded(subject: string): void {
         bufCapacity = Math.max(len, bufCapacity * 2, 256);
         bufPtr = cfunc.malloc(bufCapacity * 2); // may grow wasm memory → read HEAP views AFTER
     }
-    const u16 = libpcre2.HEAPU16; // fetched post-malloc so it isn't a detached view
+    const u16 = heapU16(); // fetched post-malloc so it isn't a detached view
     const base = bufPtr >> 1;
     for (let i = 0; i < len; i++) u16[base + i] = subject.charCodeAt(i);
     curLine = subject;
@@ -296,40 +296,52 @@ export default class Pcre2 {
 
     static async init(): Promise<void> {
         if (initialized) return;
-        await libpcre2.loaded;
-        const w = (name: string, ret: string | null, args: string[]) => libpcre2.cwrap(name, ret, args) as Cfunc;
-        cfunc = {
-            malloc: (bytes: number) => libpcre2._malloc(bytes),
-            free: (ptr: number) => libpcre2._free(ptr),
-            compile: libpcre2.cwrap('compile', 'number', ['array', 'number', 'string']) as Cfunc,
-            destroyCode: w('destroyCode', null, ['number']),
-            lastErrorMessage: w('lastErrorMessage', 'number', ['number', 'number']),
-            lastErrorOffset: w('lastErrorOffset', 'number', []),
-            // Subject is passed as a pointer ('number'), not an 'array' — we
-            // supply the pre-encoded shared buffer, so no per-call stack copy.
-            match: w('match', 'number', ['number', 'number', 'number', 'number', 'number', 'number']),
-            createMatchData: w('createMatchData', 'number', ['number']),
-            destroyMatchData: w('destroyMatchData', null, ['number']),
-            getOvectorCount: w('getOvectorCount', 'number', ['number']),
-            getOvectorPtr: w('getOvectorPointer', 'number', ['number']),
-            getMatchNameCount: w('getMatchNameCount', 'number', ['number']),
-            getMatchNameTableEntrySize: w('getMatchNameTableEntrySize', 'number', ['number']),
-            getMatchNameTable: w('getMatchNameTable', 'number', ['number']),
-        };
-        initialized = true;
+        initPromise ??= (async () => {
+            const { instance } = await WebAssembly.instantiate(await loadPcre2Wasm(), {});
+            const x = instance.exports as Record<string, unknown>;
+            const fn = (name: string) => {
+                const f = x[name];
+                if (typeof f !== 'function') throw new Error(`libpcre2.wasm has no export '${name}'`);
+                return f as Cfunc;
+            };
+            memory = x.memory as WebAssembly.Memory;
+            versionFn = fn('version');
+            cfunc = {
+                malloc: fn('malloc'),
+                free: fn('free'),
+                compile: fn('compile'),
+                destroyCode: fn('destroyCode'),
+                lastErrorMessage: fn('lastErrorMessage'),
+                lastErrorOffset: fn('lastErrorOffset'),
+                match: fn('match'),
+                createMatchData: fn('createMatchData'),
+                destroyMatchData: fn('destroyMatchData'),
+                getOvectorCount: fn('getOvectorCount'),
+                getOvectorPtr: fn('getOvectorPointer'),
+                getMatchNameCount: fn('getMatchNameCount'),
+                getMatchNameTableEntrySize: fn('getMatchNameTableEntrySize'),
+                getMatchNameTable: fn('getMatchNameTable'),
+            };
+            initialized = true;
+        })();
+        try {
+            await initPromise;
+        } catch (e) {
+            initPromise = null; // let a later call try again
+            throw e;
+        }
     }
 
     /** The PCRE2 library's own version string (`pcre2_config(PCRE2_CONFIG_VERSION)`),
      *  e.g. "10.42 2022-12-11" — what lrexlib's `rex.version()` reports. */
     static version(): string {
         if (!initialized) throw new Error('Pcre2.init() has not completed');
-        const fn = libpcre2.cwrap('version', 'number', ['number']);
-        const len = fn(0);
+        const len = versionFn(0);
         if (len <= 0) return '';
-        const ptr = libpcre2._malloc(len * 2);
+        const ptr = cfunc.malloc(len * 2);
         try {
-            fn(ptr);
-            const u16 = libpcre2.HEAPU16;
+            versionFn(ptr);
+            const u16 = heapU16();
             let out = '';
             for (let i = 0; i < len; i++) {
                 const c = u16[(ptr >> 1) + i];
@@ -338,19 +350,13 @@ export default class Pcre2 {
             }
             return out;
         } finally {
-            libpcre2._free(ptr);
+            cfunc.free(ptr);
         }
     }
 
     constructor(pattern: string, flags = '') {
         if (!initialized) throw new Error('Pcre2.init() must resolve before compiling patterns');
-        const patternBuffer = encodeUTF16LE(pattern);
-        // cwrap('array') expects a JS typed array here; pass through ccall's array marshalling.
-        const ptr = (cfunc.compile as unknown as (a: Uint8Array, b: number, c: string) => number)(
-            patternBuffer,
-            patternBuffer.length / 2,
-            flags,
-        );
+        const ptr = compilePattern(pattern, flags);
         if (ptr === 0) {
             const { errorMessage, offset } = this.getLastError();
             const err = new Error(errorMessage) as Error & { offset?: number };
@@ -366,7 +372,7 @@ export default class Pcre2 {
         const tableBuf = cfunc.getMatchNameTable(ptr);
         for (let i = 0; i < nameCount; i++) {
             const p = tableBuf + entrySize * i * 2;
-            const index = libpcre2.getValue(p, 'i16', false);
+            const index = heapView().getInt16(p, true);
             this.nametable[index] = copyStringBuffer(p + 2, utf16leLen(p + 2));
             this.nameEntries.push([this.nametable[index], index]);
         }
@@ -560,27 +566,35 @@ export default class Pcre2 {
 
 // ── helpers (ported verbatim from upstream PCRE.js) ───────────────────────────
 
-function encodeUTF16LE(str: string): Uint8Array {
-    const buffer = new Uint8Array(str.length * 2);
-    for (let i = 0; i < str.length; i++) {
-        const code = str.charCodeAt(i);
-        buffer[i * 2] = code & 0xff;
-        buffer[i * 2 + 1] = (code >> 8) & 0xff;
+/** compile() with the pattern and flags copied into the module's memory. */
+function compilePattern(pattern: string, flags: string): number {
+    const patternPtr = cfunc.malloc(Math.max(pattern.length, 1) * 2);
+    const flagsPtr = cfunc.malloc(flags.length + 1);
+    try {
+        const u16 = heapU16();
+        for (let i = 0; i < pattern.length; i++) u16[(patternPtr >> 1) + i] = pattern.charCodeAt(i);
+        const u8 = new Uint8Array(memory.buffer);
+        for (let i = 0; i < flags.length; i++) u8[flagsPtr + i] = flags.charCodeAt(i) & 0x7f;
+        u8[flagsPtr + flags.length] = 0;
+        return cfunc.compile(patternPtr, pattern.length, flagsPtr);
+    } finally {
+        cfunc.free(flagsPtr);
+        cfunc.free(patternPtr);
     }
-    return buffer;
 }
 
 const utf16Decoder = new TextDecoder('utf-16le');
 
 function copyStringBuffer(ptr: number, len: number): string {
-    len = libpcre2.HEAPU16[ptr / 2 + (len - 1)] === 0 ? len - 1 : len;
-    const encoded = libpcre2.HEAP8.subarray(ptr, ptr + len * 2);
+    len = heapU16()[ptr / 2 + (len - 1)] === 0 ? len - 1 : len;
+    const encoded = new Uint8Array(memory.buffer, ptr, len * 2);
     return utf16Decoder.decode(encoded);
 }
 
 function utf16leLen(ptr: number): number {
     let len = 0;
-    while (libpcre2.getValue(ptr, 'i16', false) !== 0) {
+    const view = heapView();
+    while (view.getUint16(ptr, true) !== 0) {
         len++;
         ptr += 2;
     }
@@ -591,8 +605,10 @@ function convertOVector(subject: string, vectorPtr: number, vectorCount: number)
     const table: Record<number, Pcre2MatchGroup> = {};
     for (let i = 0; i < vectorCount; i++) {
         const ptr = vectorPtr + i * 4 * 2;
-        const start = libpcre2.getValue(ptr, 'i32', false);
-        const end = libpcre2.getValue(ptr + 4, 'i32', false);
+        // Signed, so an unset group's PCRE2_UNSET reads as -1.
+        const view = heapView();
+        const start = view.getInt32(ptr, true);
+        const end = view.getInt32(ptr + 4, true);
         table[i] = { start, end, match: subject.substring(start, end) };
     }
     return table;
