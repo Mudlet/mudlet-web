@@ -517,13 +517,16 @@ export class MudClient {
         this.viaProxy = /[?&]host=/.test(url) && /[?&]port=/.test(url);
 
         this.gmcpStream = createGmcpStream({
-            onEnvelope: ({ path, value }) => {
+            onEnvelope: ({ path, value, text }) => {
                 this.handleCharLogin(path, value);
                 (this.eventBus.emit as (event: string, ...args: unknown[]) => void)(`gmcp.${path}`, value);
-                this.eventBus.emit('gmcp', { path, value });
+                this.eventBus.emit('gmcp', { path, value, text });
             },
             onClientGui: (payload) => {
                 this.eventBus.emit('clientGui', payload);
+            },
+            onUndecoded: (payload) => {
+                this.eventBus.emit('gmcpUndecoded', payload);
             },
         });
 

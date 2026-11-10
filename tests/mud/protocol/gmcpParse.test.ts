@@ -20,7 +20,7 @@ function utf8Frame(text: string): string {
 describe('GMCP payload parsing', () => {
   it('parses a normal message with a JSON body', () => {
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     stream(frame('Char.Vitals {"hp":42}'));
     expect(seen).toEqual([{ path: 'Char.Vitals', value: { hp: 42 } }]);
   });
@@ -30,21 +30,21 @@ describe('GMCP payload parsing', () => {
     // reply has no body at all, and reaches Lua as an empty table — a script
     // reading gmcp.Core.Ping is reading a table (cTelnet passes on "{}").
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     stream(frame('Core.Ping'));
     expect(seen).toEqual([{ path: 'Core.Ping', value: {} }]);
   });
 
   it('accepts a message with a trailing space but empty body', () => {
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     stream(frame('Core.Ping '));
     expect(seen).toEqual([{ path: 'Core.Ping', value: {} }]);
   });
 
   it('accepts an explicit empty-string body', () => {
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     stream(frame('Core.Ping ""'));
     expect(seen).toEqual([{ path: 'Core.Ping', value: '' }]);
   });
@@ -56,7 +56,7 @@ describe('GMCP payload parsing', () => {
   it('routes a non-JSON Client.GUI body to onClientGui instead of dropping it', () => {
     const seen: unknown[] = [];
     const gui: unknown[] = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e), onClientGui: p => gui.push(p) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }), onClientGui: p => gui.push(p) });
     stream(frame('Client.GUI 39\nhttps://example.com/gui.mpackage'));
     expect(gui).toEqual(['39\nhttps://example.com/gui.mpackage']);
     // Legacy shape stays off the envelope path — no gmcp table entry, no events.
@@ -81,7 +81,7 @@ describe('GMCP payload parsing', () => {
     // body is a server bug and stays dropped-with-a-warning.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     stream(frame('Char.Vitals hp=42'));
     expect(seen).toEqual([]);
     expect(warn).toHaveBeenCalledOnce();
@@ -94,7 +94,7 @@ describe('GMCP payload parsing', () => {
   // mojibake chars "â\x80¢" and Lua pattern matches against it failed.
   it('decodes a UTF-8 body rather than passing raw bytes through', () => {
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     stream(utf8Frame('Game.Players.Info {"route":"Tristeza • Port of Darkhill","emoji":"⛵"}'));
     expect(seen).toEqual([
       { path: 'Game.Players.Info', value: { route: 'Tristeza • Port of Darkhill', emoji: '⛵' } },
@@ -109,7 +109,7 @@ describe('GMCP payload parsing', () => {
     expect(encodeGmcpRaw('Char.Name {"name":"Zoë"}')).toContain('"name":"Zo\xC3\xAB"');
 
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     for (const wire of [encodeGmcp('Char.Name', { name: 'Zoë' }), encodeGmcpRaw('Char.Name {"name":"Zoë"}')]) {
       expect(wire.startsWith('\xFF\xFA' + String.fromCharCode(GMCP_COMMAND_CODE))).toBe(true);
       expect(wire.endsWith('\xFF\xF0')).toBe(true);
@@ -129,7 +129,7 @@ describe('GMCP payload parsing', () => {
   it('warns about a body that is not valid UTF-8 rather than corrupting it silently', () => {
     const seen: Array<{ path: string; value: unknown }> = [];
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
 
     // 0xE9 is Latin-1 'é' — a bare UTF-8 lead byte with no continuation.
     stream(frame('Room.Info {"name":"Caf\xE9 du Nord"}'));
@@ -150,7 +150,7 @@ describe('GMCP payload parsing', () => {
   // reaches the gmcp table and raises gmcp.gmcp_msgs (mudlet-web#362).
   it('delivers gmcp_msgs as an ordinary package, not decoded text', () => {
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     stream(frame('gmcp_msgs {"type":"x","text":"aGVsbG8="}'));
     expect(seen).toEqual([{ path: 'gmcp_msgs', value: { type: 'x', text: 'aGVsbG8=' } }]);
   });
@@ -160,14 +160,14 @@ describe('GMCP payload parsing', () => {
   // than the whole message (mudlet-web#362).
   it('drops a raw LF inside a JSON string instead of the message', () => {
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     stream(frame('Room.Info {"num":1,"name":"Hall","desc":"A long hall.\nIt goes north."}'));
     expect(seen).toEqual([{ path: 'Room.Info', value: { num: 1, name: 'Hall', desc: 'A long hall.It goes north.' } }]);
   });
 
   it('drops a raw CR, and an LF inside a key, the same way', () => {
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     stream(frame('Room.Info {"desc":"A long hall.\r\nIt goes north."}'));
     stream(frame('Room.Info {"na\nme":"Hall"}'));
     expect(seen).toEqual([
@@ -176,9 +176,31 @@ describe('GMCP payload parsing', () => {
     ]);
   });
 
+  // The Lua gmcp table is filled by json_to_value from the body itself, so
+  // the envelope carries it as decoding sees it, and a body JSON.parse
+  // rejects still goes out for a script's own decoder to try.
+  it('carries the body json_to_value is handed, and hands on one that is not JSON', () => {
+    const seen: Array<{ path: string; text?: string }> = [];
+    const undecoded: Array<{ path: string; text: string }> = [];
+    const stream = createGmcpStream({
+      onEnvelope: ({ path, text }) => seen.push({ path, text }),
+      onUndecoded: u => undecoded.push(u),
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stream(frame('Char.Vitals {"hp":42,\n"c":"\x1b[0m"}'));
+    stream(frame('Core.Ping'));
+    stream(frame('Odd.Thing not json'));
+    warn.mockRestore();
+    expect(seen).toEqual([
+      { path: 'Char.Vitals', text: '{"hp":42,"c":"\\u001B[0m"}' },
+      { path: 'Core.Ping', text: '{}' },
+    ]);
+    expect(undecoded).toEqual([{ path: 'Odd.Thing', text: 'not json' }]);
+  });
+
   it('still reads a pretty-printed body separated from its name by a newline', () => {
     const seen: Array<{ path: string; value: unknown }> = [];
-    const stream = createGmcpStream({ onEnvelope: e => seen.push(e) });
+    const stream = createGmcpStream({ onEnvelope: ({ path, value }) => seen.push({ path, value }) });
     stream(frame('Char.Vitals\n{\r\n  "hp": 42\r\n}'));
     expect(seen).toEqual([{ path: 'Char.Vitals', value: { hp: 42 } }]);
   });

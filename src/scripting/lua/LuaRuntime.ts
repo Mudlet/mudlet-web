@@ -5264,19 +5264,34 @@ end`);
     }
 
     // Bridges a single GMCP message into the Lua `gmcp` global. Path is the
-    // dotted server key (e.g. "Char.Vitals"); value is the JSON-decoded payload.
-    // The leaf is replaced; siblings under shared parents are preserved.
-    setGmcpValue(path: string, value: unknown): void {
-        if (this.inert || !path) return;
+    // dotted server key (e.g. "Char.Vitals"). `text` is the JSON body as the
+    // game sent it, which is decoded by json_to_value as desktop's parseJSON
+    // decodes it (Yajl.lua's __mudlet_json_decode) — a script may have
+    // replaced that decoder. A message with no body has no text, and stores
+    // `value` as it is. The leaf is replaced; siblings under shared parents
+    // are preserved. False when nothing was stored: the decoder raised, and
+    // desktop then leaves the table as it was and raises no event.
+    setGmcpValue(path: string, value: unknown, text?: string): boolean {
+        if (this.inert || !path) return false;
+        if (text !== undefined) {
+            this.lua.global.set('__mudlet_gmcp_path', path);
+            this.lua.global.set('__mudlet_gmcp_text', text);
+            this.lua.global.set('__mudlet_gmcp_ok', false);
+            this.runChunk('__mudlet_set_gmcp_text(__mudlet_gmcp_path, __mudlet_gmcp_text)', `set-gmcp "${path}"`);
+            const ok = this.lua.global.get('__mudlet_gmcp_ok') === true;
+            this.lua.global.set('__mudlet_gmcp_text', null);
+            return ok;
+        }
         this.lua.global.set('__mudlet_gmcp_path', path);
         // Raw-push the (potentially large, deeply nested) decoded payload instead
         // of wasmoon's generic pushValue, whose ref/unref bookkeeping is O(n²) in
         // the node count (issue #2) — and which recursed past the Lua stack on a
         // deep document. The yajl bridge builds it the way yajl.to_value does.
         const L = this.lua.global.address;
-        if (!this.pushDecodedJson(L, value, `gmcp "${path}"`)) return;
+        if (!this.pushDecodedJson(L, value, `gmcp "${path}"`)) return false;
         this.lua.global.luaApi.lua_setglobal(L, '__mudlet_gmcp_val');
         this.runChunk('__mudlet_set_gmcp(__mudlet_gmcp_path, __mudlet_gmcp_val)', `set-gmcp "${path}"`);
+        return true;
     }
 
     // Bridges a single MSDP variable into the Lua `msdp` global. `path` is the

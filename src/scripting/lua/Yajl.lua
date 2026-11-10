@@ -521,6 +521,44 @@ function yajl.to_value(s, opts)
     return v
 end
 
+-- ── GMCP decoding (TLuaInterpreter::parseJSON) ────────────────────────────
+-- Desktop decodes a GMCP message with whatever json_to_value holds. While
+-- that is still the stock yajl.to_value it builds the value itself, as
+-- to_value would, and calls to_value only for a document it rejects or one
+-- nested past 64 levels; a script's own json_to_value gets every message.
+-- Either runs under a lua_pcall, so an error raised while decoding — a bad
+-- document, or a finaliser the collector runs mid-parse — leaves the previous
+-- value in place. Returns ok and the value, or false and the error.
+local stock_to_value = yajl.to_value
+local gmcp_src = __yajl_gmcp_src__
+__yajl_gmcp_src__ = nil
+local cpcall = __mudlet_cpcall
+
+-- to_value's own fast and raw paths, for a document JSON.parse took. The
+-- chunk is compiled as Mudlet Web's own, so a finaliser it runs sees the C
+-- decoder desktop would be in.
+local function build(s, src)
+    if src then
+        local chunk = loadstring(src, '=[C]')
+        if chunk then return chunk(NULL) end
+    end
+    local v, err = parse_raw(s)
+    if v == nil then error(err or 'InvalidJSONInput: could not decode', 0) end
+    return v
+end
+
+function __mudlet_json_decode(s)
+    local decode = json_to_value
+    if decode ~= stock_to_value then
+        return cpcall(decode, s)
+    end
+    local src = gmcp_src(s)
+    if src == nil then
+        return cpcall(stock_to_value, s)
+    end
+    return cpcall(build, s, src)
+end
+
 function yajl.parser(opts)
     if type(opts) ~= 'table' then arg_error(1, 'parser', 'table', type(opts)) end
     local p = new_parser(events_sink(opts.events), opts.allow_comments, opts.check_utf8)
