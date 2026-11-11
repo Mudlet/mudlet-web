@@ -91,11 +91,13 @@
     "@types/pako": "^2.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "@types/ws": "^8.5.14",
     "@vitejs/plugin-react": "^6.0.1",
     "happy-dom": "^21.0.4",
     "typescript": "^5.0.0",
     "vite": "8.1.6",
-    "vitest": "^4.1.12"
+    "vitest": "^4.1.12",
+    "ws": "^8.21.0"
   },
   "resolutions": {
     "dompurify": "^3.4.14",

@@ -212,6 +212,47 @@ describe('reconnect automatically', () => {
         expect(redials).toBe(1);
     });
 
+    // A game session the proxy holds can outlive the page's socket. When the
+    // proxy then refuses to resume it the game is gone, and a redial would be a
+    // new login nobody asked for (websocket-session-resumption §2, §5, §7).
+    const send = (to: MockWebSocket, message: object) => to.onmessage?.({ data: JSON.stringify(message) });
+
+    /** A settled session that the proxy offered to hold and the client accepted. */
+    const hold = () => {
+        const sock = settle();
+        act(() => {
+            send(sock, { type: 'session.offer', offerId: 'o' });
+            send(sock, { type: 'session.enabled', sessionId: 's', secret: 'c2VjcmV0', input: '0', output: '0' });
+        });
+        vi.advanceTimersByTime(60_000);
+        return sock;
+    };
+
+    it('does not dial a new game when the proxy refuses to resume the one it held', async () => {
+        const sock = hold();
+        await drop(sock);                                  // a detach, not a drop: the one automatic resume starts
+        const attempt = socket();
+        expect(attempt.url).toBe('wss://proxy.invalid/resume?host=achaea.com&port=23');
+        await act(async () => { attempt.onopen?.({}); send(attempt, { type: 'session.unavailable', reason: 'unavailable' }); });
+        expect(redials).toBe(0);
+
+        const dials = MockWebSocket.instances.length;
+        act(() => { session.connect(PROXY_URL); });        // Connect is the player's decision, and still dials
+        expect(MockWebSocket.instances).toHaveLength(dials + 1);
+    });
+
+    // A session the relay cannot keep going — its output limit, a broken stream —
+    // ends saying so (`failed`), and is no drop to redial. The game quitting, or
+    // dropping the connection, says nothing and is redialled as it always was.
+    it('does not dial a new game when the proxy ends the session over a limit, but does after an ordinary end', async () => {
+        const end = (sock: MockWebSocket, failed: boolean, code: number) =>
+            act(async () => { send(sock, { type: 'session.ended', failed }); sock.onclose?.({ code, reason: '', wasClean: true }); });
+        await end(hold(), true, 1011);
+        expect(redials).toBe(0);
+        await end(hold(), false, 1000);
+        expect(redials).toBe(1);
+    });
+
     // Dialling again tears a settled session down first, and that teardown is
     // a `client.disconnect` like any other. It is not a drop to recover from:
     // the dial that caused it is already under way.
