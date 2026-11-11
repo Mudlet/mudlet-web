@@ -531,6 +531,17 @@ export const BUNDLED_GAMES: readonly BundledGame[] = [
         "description": "ClamberMUD is a free LitRPG text game: climb a deadly dungeon tower before your time runs out, on an alien game show nobody agreed to be on.\n\nEvery run is a new climber with one life and a ticking timer. Fight up through tiers of medieval fantasy, alien worlds, and cosmic horror while the show's host plays your best and worst moments for the viewers. Sponsors back the climbers they like, and retiring climbers unlocks new races and classes, over 100 in all.\n\nIn Mudlet, the game's own interface installs itself when you log in: a map that draws itself as you explore, health, mana, and movement gauges, a hotbar for your specials, and chat tabs. Free, in live development, for ages 16 and up. New climbers welcome.",
         "ownUi": "clientGui",
         "iconFile": "clambermud_480x120.png"
+    },
+    {
+        "name": "Fablerift",
+        "hostUrl": "mud.fablerift.net",
+        "port": 4443,
+        "tlsEnabled": true,
+        "websiteInfo": "<a href='https://fablerift.net/'>Website</a><br><a href='https://play.fablerift.net/'>Play in the browser</a><br><a href='https://discord.gg/ecq88z7H9A'>Discord</a>",
+        "icon": ":/icons/fablerift_480x120.png",
+        "description": "Fablerift is a free multiplayer text RPG in the classic MUD tradition, on one shared server: a name, a password and a colour choice, and you are walking the Mistwood beside everyone else. The browser client and telnet reach the same world, so a player who installed nothing is in the room next to you.\n\nSeven regions of forest, coast, desert and frozen peak each carry their own weather, and a day/night cycle changes what comes out after dark. Chop, mine and fish, craft at shared workbenches, and cook meals that keep you warm on the mountain. Classes have their own abilities with mana costs and cooldowns, bosses telegraph their heaviest blows, and a party can clear instanced dungeons - with heroic versions once the story is done. There are guilds, player-to-player trading, a market board that sells while its owner is away, mail with items attached, land you can claim, and a five-chapter story that runs to a final boss.\n\nIn Mudlet the game's own interface installs itself on login through GMCP Client.GUI: vitals, chat windows with timestamps, clickable text, item and quest panels, and a mapper fed by GMCP Room.Info with fixed coordinates, with the starting region's safe rooms already on your map. GA is on by default after every prompt, and gui off or mudlet off turns the interface back off. Screen-reader, large-text, ASCII-only and colour-free modes are built in.\n\nThe server is MIT-licensed and self-hostable, so you can run your own world and invite people to it. New players welcome.",
+        "ownUi": "clientGui",
+        "iconFile": "fablerift_480x120.png"
     }
 ];
 
