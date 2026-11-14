@@ -76,6 +76,8 @@ yarn
 yarn start    # listens on ws://localhost:3001 by default
 ```
 
+Set `SESSION_RESUME=1` to let browsers reattach to the same game connection after a network drop, without logging in again. Offers require a browser origin in `SESSION_RESUME_ORIGINS` (comma-separated; default `https://web.mudlet.org`); add your client's origin when self-hosting. Reservations count toward `SESSION_RESUME_MAX` (default 32); overflow uses the plain proxy without evicting existing sessions. Sessions stay in memory without an expiry timer, ending on Disconnect, backend close, or a buffer limit (16 MiB retained output, 1 MiB pending input).
+
 Then choose **MUD (host:port)** mode when creating a connection. Servers that expose a native WebSocket endpoint don't need the proxy — use **WebSocket** mode and point it straight at the `ws(s)://` URL.
 
 ### Already play in desktop Mudlet?

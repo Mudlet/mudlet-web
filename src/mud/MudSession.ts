@@ -218,6 +218,11 @@ export class MudSession {
         // raises sysDisconnectionEvent. A lost connection is the other way
         // round — see the `client.disconnected` subscription below.
         this.events.on('client.connect', () => { this.setStatus('connected'); this.announceConnected(); });
+        // Retain the game lifecycle, but do not claim connected while away.
+        this.events.on('client.detached', () => this.setStatus('connecting'));
+        this.events.on('client.resumed', () => this.setStatus(this.connectedAt !== null ? 'connected' : 'connecting'));
+        // A failed resume is not permission to log into a new game.
+        this.events.on('client.sessionFailed', () => { this.dontReconnect = true; });
         // A CHARSET exchange decides what encoding the session reads its game in,
         // and the answer belongs to the profile rather than to the socket that
         // happened to negotiate it. Subscribed here, for the session's lifetime:
@@ -294,7 +299,14 @@ export class MudSession {
     /** The number of dials so far — see {@link dialedUrl}. */
     get dialCount(): number { return this.dials; }
 
+    /** The relay holds the game, but the browser transport is lost. */
+    transportDetached(): boolean {
+        return this.client?.transportDetached() ?? false;
+    }
+
     connect(url: string): void {
+        // Connect to a held game resumes it rather than logging in again.
+        if (url === this.lastUrl && this.client?.resumeTransport()) return;
         this.lastUrl = url;
         this.dials += 1;
         // A running replay feeds the same parsing pipeline the live socket is

@@ -254,6 +254,12 @@ export type MudClientEvents = {
      *  redials. Fires at most once per connection, and never once the profile's
      *  `promptForVersionInTTYPE` latch is set. */
     'kavir.detected': void;
+    /** Transport lost; the relay still holds the game. No disconnect/login. */
+    'client.detached': void;
+    /** Reattached to the same game, without a new client.connect. */
+    'client.resumed': void;
+    /** Before client.disconnect: do not auto-reconnect a failed retained session. */
+    'client.sessionFailed': void;
     /** An IAC GA/EOR arrived. The next line flushed is the one it ended — an
      *  empty one for a bare marker, as in Mudlet. */
     'prompt': void;
