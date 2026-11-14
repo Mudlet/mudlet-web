@@ -213,11 +213,29 @@ describe('GA/EOR prompts vs. Mudlet (mudlet-web#288)', () => {
             const before = main().getLineCount() + 1;
 
             session.feedTelnet(TELNET_GA);
+            session.feedTelnet(TELNET_GA);
+            session.feedTelnet('E1 text\r\n');
             session.feedTelnet(TELNET_EOR);
 
-            expect(fired).toEqual(['|true', 'PROMPT:', '|true', 'PROMPT:']);
-            expect(linesFrom(before)).toEqual(['', '']);
+            expect(fired).toEqual(['|true', 'PROMPT:', '|true', 'PROMPT:', 'E1 text|false', '|true', 'PROMPT:']);
+            expect(linesFrom(before)).toEqual(['', '', 'E1 text', '']);
             expect(lineAt(before)?.isPrompt).toBe(true);
+        });
+
+        // cTelnet::processTelnetCommand: a game that ends each prompt with both
+        // markers ends it once — the second of an EOR + GA pair with no text
+        // between them ends nothing, whichever comes first, and even when a
+        // trigger on the prompt feeds text of its own in between.
+        it('ends a prompt once when EOR and GA both end it', async () => {
+            await boot();
+            const before = main().getLineCount() + 1;
+
+            session.feedTelnet(`P1> ${TELNET_EOR}${TELNET_GA}`);
+            session.feedTelnet(TELNET_GA);
+            session.feedTelnet(TELNET_EOR);
+
+            expect(fired).toEqual(['P1> |true', 'PROMPT:', '|true', 'PROMPT:']);
+            expect(linesFrom(before)).toEqual(['P1> ', '']);
         });
 
         it('does not make the next ordinary line a prompt', async () => {

@@ -20,7 +20,7 @@ import {AnsiAwareBuffer, computeTrailingState} from '../mud/text/FormatState';
 import {HyperlinkPresetRegistry} from '../mud/text/hyperlinkConfig';
 import {HyperlinkVisibilityController} from '../mud/text/hyperlinkVisibility';
 import type {MspCommand, MxpLink} from '../mud/protocol';
-import {MxpParser, splitMxpResultLines} from '../mud/protocol';
+import {MxpParser, splitMxpResultLines, type MxpLineEnd} from '../mud/protocol';
 import {ScriptingAPI, type InstallOutcome} from './ScriptingAPI';
 import { KNOWN_ITEM_TYPES, type EngineHost, type TempComplexTriggerSpec } from './EngineHost';
 import { ItemIdSequence } from '../mud/ItemIdSequence';
@@ -99,7 +99,7 @@ import {rewriteVfsUrlsInCss} from './vfs/cssRewrite';
 import {rewriteVfsUrlsInHtml} from './vfs/htmlRewrite';
 import {MapOpenNotifier} from './MapOpenNotifier';
 import {installPackageFonts, refreshPackageFonts} from '../import/packageFonts';
-import {installPackageFromBytes, moduleXmlAbsolutePath, prepareModuleInstallFromVfsPath, preparePackageInstall, reloadModuleFromVfs, uninstallPackageFiles} from '../import/packageInstaller';
+import {installPackageFromBytes, moduleXmlAbsolutePath, packageConfigSource, prepareModuleInstallFromVfsPath, preparePackageInstall, profileKeepsItsOwnDataIn, reloadModuleFromVfs, uninstallPackageFiles} from '../import/packageInstaller';
 import type {MudletImportResult} from '../import/mudletXmlImport';
 import {clientGuiDeclinesBaseUi, clientGuiPackageName, downloadFromUrl, filenameFromUrl, isClientGuiRedelivery, parseClientGuiPayload, parseClientMapPayload} from '../import/remotePackageInstall';
 import {ensureDefaultPackages} from '../import/defaultPackages';
@@ -461,6 +461,11 @@ export class ScriptingEngine implements EngineHost {
     // subsequent lines inherit that colour until the next SGR — without a
     // persistent carry, a blank line or frame boundary drops the colour.
     private mudCarryState: FormatStateSnapshot | undefined = undefined;
+    /** The game's line still being written: the last visual line of a line
+     *  whose newline a `<NOBR>` had ignored, or the unfinished line text fed
+     *  locally carries on — TBuffer's mMudLine. The next MUD line is appended
+     *  to it before its triggers run. */
+    private openMudLine: { buffer: AnsiAwareBuffer; plain: string } | null = null;
     // The protocols negotiated on the live connection, by the name Mudlet
     // gives them in sysProtocolEnabled/sysProtocolDisabled. The negotiator
     // announces each one coming and going; this set is what the symmetric
@@ -790,6 +795,7 @@ export class ScriptingEngine implements EngineHost {
         // stage its bytes in the profile VFS and then raise sysDropEvent with a
         // path the bundled packageDrop handler can read.
         session.windows.onFileDrop = (file, x, y, id) => { void this.stageDroppedFile(file, x, y, id); };
+        session.windows.onMxpFrameResized = (id, width, height) => this.api.mxpFrameResized(id, width, height);
         // Mudlet's media events all carry the same five arguments (TMedia.cpp,
         // mediaStarted/mediaFinished): the source URL's filename, its path, the
         // media type, and the key and tag the playback was given. Scripts index
@@ -1723,10 +1729,11 @@ export class ScriptingEngine implements EngineHost {
     }
 
     /**
-     * In-memory custom info fields set via setPackageInfo / setModuleInfo. These
-     * mirror Mudlet's mPackageInfo / mModuleInfo — volatile string→string maps
-     * that overlay the manifest-derived fields, repopulated by scripts as
-     * needed (Mudlet itself loses them on restart too).
+     * In-memory custom info fields set via setModuleInfo, and via
+     * setPackageInfo for a package still being installed. These mirror
+     * Mudlet's mModuleInfo — volatile string→string maps that overlay the
+     * manifest-derived fields. An installed package's details are saved to its
+     * config.lua instead (see setInfoField).
      */
     private packageInfoOverrides = new Map<string, Map<string, string>>();
     private moduleInfoOverrides = new Map<string, Map<string, string>>();
@@ -1790,6 +1797,27 @@ export class ScriptingEngine implements EngineHost {
         if (!listed) return `${kind} '${name}' not found`;
         if (key === 'mpackage' && value !== name) {
             return `'mpackage' is the name ${kind} '${name}' is installed under and cannot be changed`;
+        }
+        // An installed package keeps its details in its config.lua, which is
+        // what a profile reads them back from as it loads, so a detail is set
+        // by saving it there — and is not set at all when it cannot be saved.
+        // A package from a plain XML file has no config.lua, and gets one
+        // naming it. (A module's details, and those set while a package is
+        // still being installed, stay in memory, as desktop's do.)
+        if (kind === 'package' && manifest !== undefined && manifest.kind !== 'module') {
+            const details = { ...(manifest.declaredInfo ?? { mpackage: name }), [key]: value };
+            const vfs = this.vfs;
+            if (vfs && !profileKeepsItsOwnDataIn(name)) {
+                try {
+                    vfs.writeFile(`${vfs.profilePath}/${name}/config.lua`, packageConfigSource(name, details));
+                } catch (err) {
+                    const reason = err instanceof Error ? err.message : String(err);
+                    return `could not save the details of package '${name}': ${reason}`;
+                }
+            }
+            useAppStore.getState().updatePackageManifest(this.connectionId, name, { declaredInfo: details });
+            overrides.get(name)?.delete(key);
+            return null;
         }
         let ov = overrides.get(name);
         if (!ov) { ov = new Map(); overrides.set(name, ov); }
@@ -3061,10 +3089,13 @@ export class ScriptingEngine implements EngineHost {
         if (!baseUrl && debug) console.debug(`${logPrefix} no announced base URL — guessing ${effectiveBase}`);
         let downloadUrl: string;
         try {
-            // URL() treats `base` as a file when it has no trailing slash, so
-            // normalise: `http://x/sounds` + `zap.wav` → `http://x/sounds/zap.wav`.
+            // Appended, as TMedia::parseUrl appends it, rather than resolved
+            // against the base: `http://x/sounds` + `zap.wav` is
+            // `http://x/sounds/zap.wav`, and a base with a query keeps it in
+            // front of the name (`.../query?set=1/zap.wav`), where URL
+            // resolution would drop the query and the last path segment.
             const base = effectiveBase.endsWith('/') ? effectiveBase : `${effectiveBase}/`;
-            downloadUrl = new URL(cleanFile, base).toString();
+            downloadUrl = new URL(base + cleanFile).toString();
         } catch {
             if (debug) console.debug(`${logPrefix} invalid base URL "${baseUrl}"`);
             return null;
@@ -3361,6 +3392,17 @@ export class ScriptingEngine implements EngineHost {
         }
     }
 
+    /** Raise gmcp.Char, gmcp.Char.Items, gmcp.Char.Items.List for an incoming
+     *  "Char.Items.List", each with the leaf's full key (parseJSON's events). */
+    private emitGmcpEvents(path: string): void {
+        const fullKey = `gmcp.${path}`;
+        let token = 'gmcp';
+        for (const segment of path.split('.')) {
+            token += `.${segment}`;
+            this.emit(token, [fullKey]);
+        }
+    }
+
     /** Mudlet's `mAcceptServerGUI` — the profile's `allowMudPackageInstall`,
      *  where undefined means allowed. */
     private serverGuiAccepted(): boolean {
@@ -3635,15 +3677,14 @@ export class ScriptingEngine implements EngineHost {
     /**
      * Lua `uninstallPackage(name)`: why it would not, or null once it has
      * (TLuaInterpreter::uninstallPackage). Whether the package is installed is
-     * asked first — retrying one that is not never works, so a running save is
-     * not the reason to give for it — and an installed one is refused only
-     * while a profile save is running. A save a handler starts once the
-     * uninstall is under way is no reason to abandon it.
+     * asked first. A profile save that is running is waited out first
+     * (Host::waitForProfileSave), as an install waits one out, and a save a
+     * handler starts once the uninstall is under way is no reason to abandon it.
      */
     uninstallPackageFromScript(packageName: string): string | null {
         const manifest = this.findManifest(packageName);
         if (!manifest || manifest.kind === 'module') return `package '${packageName}' is not installed`;
-        if (this.profileSaveInFlight) return 'a profile save is in progress, try again once it has finished';
+        this.waitOutProfileSave();
         return this.uninstallPackageByName(packageName) ? null : `package '${packageName}' cannot be uninstalled`;
     }
 
@@ -5852,6 +5893,7 @@ export class ScriptingEngine implements EngineHost {
         this.session.cmdLines.cmdLineHost = DEFAULT_CMD_LINE_HOST;
         this.session.windows.onStartSpeedWalk = undefined;
         this.session.windows.onFileDrop = undefined;
+        this.session.windows.onMxpFrameResized = undefined;
         this.session.sounds.onMediaStarted = undefined;
         this.session.sounds.onMediaFinished = undefined;
         this.session.sounds.onMediaPaused = undefined;
@@ -6405,8 +6447,8 @@ export class ScriptingEngine implements EngineHost {
     /** Part of {@link EngineHost} — also reached directly from the flushLines
      *  subscription, and by feedTriggers via the host so synthetic batches share
      *  ordering semantics with network output. */
-    processFlushBatch(groups: { text: string; type: string; fromServer?: boolean }[]): void {
-        for (const { text, type, fromServer } of groups) {
+    processFlushBatch(groups: { text: string; type: string; fromServer?: boolean; unended?: boolean }[]): void {
+        for (const { text, type, fromServer, unended } of groups) {
             try {
                 const lines = text.split('\n');
                 if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
@@ -6429,8 +6471,24 @@ export class ScriptingEngine implements EngineHost {
                             const held = this.api.takeHeldFeedText();
                             if (held) line = held + line;
                         }
-                        const lineIsPrompt = this.promptPending && i === lines.length - 1;
+                        const isLast = i === lines.length - 1;
+                        const lineIsPrompt = !unended && this.promptPending && isLast;
                         if (lineIsPrompt) this.promptPending = false;
+                        // What ended the line, which decides whether a <NOBR>
+                        // joins it to the next: a newline, the prompt marker,
+                        // the idle flush of a line the game left unfinished —
+                        // or nothing yet, for the game's unfinished line a feed
+                        // carries on.
+                        const lineEnd: MxpLineEnd = unended && isLast ? 'none'
+                            : lineIsPrompt ? 'prompt'
+                            : !isLast || text.endsWith('\n') ? 'newline'
+                            : 'flush';
+                        // The last unit of this line is not complete yet: the
+                        // next line carries it on.
+                        let holdLast = lineEnd === 'none';
+                        // Units after the line's own parts: text a <DEST> could
+                        // not redirect, which is not the line being carried on.
+                        let unitsAfterParts = 0;
 
                         // Build the render units for this network line. Normally one
                         // unit per line, but when MXP is active a single line can carry
@@ -6447,7 +6505,8 @@ export class ScriptingEngine implements EngineHost {
                             // wire any <SEND>/<A> links into clickable hyperlinks.
                             // The parser owns SGR carry on these lines (it walked
                             // every byte), so computeTrailingState is bypassed.
-                            const r = this.mxp.parseLine(line, carryState, fromServer !== false);
+                            const r = this.mxp.parseLine(line, carryState, fromServer !== false, lineEnd);
+                            if (r.joined) holdLast = true;
                             if (debugMxpEnabled()) logMxpLine(line, r.segments);
                             carryState = r.trailingSnapshot;
                             const parts = splitMxpResultLines(r);
@@ -6478,6 +6537,7 @@ export class ScriptingEngine implements EngineHost {
                                 this.wireOsc8Links(fbuf);
                                 if (!this.api.mxpWriteToFrame(rd.frame, fbuf, rd.eof, rd.eol)) {
                                     units.push({ plain: rd.plain, buffer: fbuf, blankRenders: rd.plain === '' });
+                                    unitsAfterParts++;
                                 }
                             }
                             // MXP <SOUND>/<MUSIC> are the same server-driven audio
@@ -6503,6 +6563,21 @@ export class ScriptingEngine implements EngineHost {
                             // sees the last text segment's state.
                             carryState = computeTrailingState(line, carryState, buffer.openHyperlink);
                             units.push({ plain, buffer, blankRenders: line === '' });
+                        }
+
+                        if (type === 'mud') {
+                            // A line the game left open is carried on by this one.
+                            const open = this.openMudLine;
+                            if (open && units.length > 0) {
+                                this.openMudLine = null;
+                                const first = units[0];
+                                first.buffer.insertBuffer(0, open.buffer);
+                                first.plain = open.plain + first.plain;
+                            }
+                            if (holdLast && units.length > unitsAfterParts) {
+                                const [held] = units.splice(units.length - 1 - unitsAfterParts, 1);
+                                this.openMudLine = { buffer: held.buffer, plain: held.plain };
+                            }
                         }
 
                         for (let u = 0; u < units.length; u++) {
@@ -6923,6 +6998,7 @@ export class ScriptingEngine implements EngineHost {
                 // Drop any colour carry from a prior session — the new server
                 // starts at default SGR.
                 this.mudCarryState = undefined;
+                this.openMudLine = null;
                 // MXP renegotiates per connection; drop any leftover definitions/
                 // open tags/modes and wait for the new session's mxp.negotiated.
                 this.mxp.reset();
@@ -6969,7 +7045,7 @@ export class ScriptingEngine implements EngineHost {
             session.events.on('clientGui', (payload) => {
                 this.handleClientGui(payload);
             }),
-            session.events.on('gmcp', ({ path, value }) => {
+            session.events.on('gmcp', ({ path, value, text }) => {
                 // Mirrors Mudlet TLuaInterpreter::parseJSON: write into the
                 // Lua `gmcp` global first (additively — only the leaf is
                 // replaced, siblings survive), then raise gmcp.Char,
@@ -6991,13 +7067,10 @@ export class ScriptingEngine implements EngineHost {
                             body.length > 200 ? body.slice(0, 200) + '…' : body);
                     }
                 }
-                this.runtimes.lua?.setGmcpValue(path, value);
-                const fullKey = `gmcp.${path}`;
-                let token = 'gmcp';
-                for (const segment of path.split('.')) {
-                    token += `.${segment}`;
-                    this.emit(token, [fullKey]);
-                }
+                // Desktop raises the events only once json_to_value has
+                // decoded the body; a decoder that raises leaves the table as
+                // it was and the message unannounced.
+                if (this.runtimes.lua?.setGmcpValue(path, value, text) !== false) this.emitGmcpEvents(path);
                 // Built-in Client.Map handler — Mudlet Host::setMmpMapLocation.
                 // Records the game's published map URL; the actual download is
                 // user-triggered from the map panel (Mudlet parity: dlgMapper's
@@ -7015,6 +7088,14 @@ export class ScriptingEngine implements EngineHost {
                     const action = lowerPath.slice('client.media'.length).replace(/^\./, '');
                     void this.handleClientMedia(action || 'default', value);
                 }
+            }),
+            // A body JSON.parse rejected: no JS consumer can use it, but the
+            // Lua `gmcp` table is json_to_value's to fill, and a script's own
+            // decoder may take what the stock one refuses.
+            session.events.on('gmcpUndecoded', ({ path, text }) => {
+                if (!path) return;
+                if (path.toLowerCase().startsWith('client.gui') && !this.serverGuiAccepted()) return;
+                if (this.runtimes.lua?.setGmcpValue(path, undefined, text)) this.emitGmcpEvents(path);
             }),
             session.events.on('msdp', ({ path, value }) => {
                 // Mirror Mudlet: write the decoded value into the Lua `msdp`

@@ -243,6 +243,16 @@ export function installMapBindings({
     // string explaining what went wrong — Bridge.lua turns that string into
     // Mudlet's (nil, message) pair. XML says more than binary because Mudlet's
     // XML importer does: a parse failure there is worth a reason.
+    /** TMap::pushErrorMessagesToFile: what the load just finished found goes
+     *  to the profile's log/errors.txt, and the console names the report. */
+    function writeMapReport(): void {
+        const report = api.windows.takeMapReport();
+        if (!report || !vfs) return;
+        try {
+            vfs.mkdir(`${vfs.profilePath}/log`);
+            vfs.appendFile(`${vfs.profilePath}/log/errors.txt`, report);
+        } catch { /* the console line still names it */ }
+    }
     lua.global.set('__loadMap', (location?: unknown, xml?: unknown) => {
         if (typeof location === 'string' && location.length > 0) {
             const path = resolveMapPath(location);
@@ -282,7 +292,9 @@ export function installMapBindings({
                 try { bytes = vfs.readBinaryFile(path); }
                 catch { return false; }
             }
-            return api.loadMap(bytes, location);
+            const loaded = api.loadMap(bytes, location);
+            if (loaded) writeMapReport();
+            return loaded;
         }
         // No path: TMap::restore(""). The newest file is not always one that
         // loads — it can have been cut short or damaged outside Mudlet, or
@@ -297,7 +309,10 @@ export function installMapBindings({
             if (!/\.json$/i.test(file)) {
                 let bytes: Uint8Array | null = null;
                 try { bytes = vfs!.readBinaryFile(file); } catch { /* tried as unreadable */ }
-                if (bytes && api.loadMap(bytes, file)) return true;
+                if (bytes && api.loadMap(bytes, file)) {
+                    writeMapReport();
+                    return true;
+                }
                 continue;
             }
             // readJsonMapFile refuses to start while another JSON import or
@@ -442,13 +457,7 @@ export function installMapBindings({
             return `no areas detected in file "${location}"`;
         }
         if (!api.loadJsonMap(json, location)) return `could not read the map in file "${location}"`;
-        const report = api.windows.takeMapReport();
-        if (report) {
-            try {
-                vfs.mkdir(`${vfs.profilePath}/log`);
-                vfs.appendFile(`${vfs.profilePath}/log/errors.txt`, report);
-            } catch { /* the console line still names it */ }
-        }
+        writeMapReport();
         // The map-level settings ride in the same document, and are applied
         // after the rooms so a failed load cannot leave the profile wearing an
         // imported map's appearance without its map.
@@ -462,7 +471,8 @@ export function installMapBindings({
     // refused rather than ignored: room ids start at 1, so asking for the first
     // free id at or above zero is a question about a range that does not exist,
     // and silently answering it hides the mistake. Returns the id, or the
-    // message string that Bridge.lua turns into Mudlet's (nil, errMsg).
+    // message string that Bridge.lua turns into Mudlet's (nil, errMsg) — also
+    // when no id is free at or above the minimum (ids stop at 2147483647).
     lua.global.set('createRoomID', (minimum?: unknown) => {
         if (minimum === undefined || minimum === null) return api.map.createRoomID();
         const m = Number(minimum);
@@ -470,7 +480,8 @@ export function installMapBindings({
             return `createRoomID: minimum roomID ${Math.trunc(m) || 0} is an optional value`
                 + ' but if provided it must be greater than zero';
         }
-        return api.map.createRoomID(Math.trunc(m));
+        const id = api.map.createRoomID(Math.trunc(m));
+        return id > 0 ? id : `no free room ID at or above ${Math.trunc(m)}`;
     });
     // Mudlet addRoom(roomID [, areaID]) — when an areaID is given the new room
     // is placed in that area, which must already exist. Without one the room
@@ -1166,6 +1177,15 @@ export function installMapBindings({
         if (!Number.isFinite(id)) return false;
         return api.map.removeCustomEnvColor(Math.trunc(id));
     });
+    // Mudlet unsetCustomEnvColor(envID) → true, or the refusal's message for
+    // Bridge.lua to return as (nil, msg): one of the 16 default colours, no
+    // custom colour, or a colour a room is still drawn in.
+    lua.global.set('__unsetCustomEnvColor', (envId: unknown) =>
+        api.map.unsetCustomEnvColor(Math.trunc(int(envId))) ?? true);
+    // Mudlet getMapEnvColor(envID) → r, g, b, a, defined — the colour the
+    // mapper draws the environment's rooms in. Bridge.lua unpacks the array.
+    lua.global.set('__getMapEnvColor', (envId: unknown) =>
+        api.map.getMapEnvColor(Math.trunc(int(envId))));
     // Mudlet setRoomCharColor(roomID, r, g, b [, a]). Sets the per-room
     // colour for the symbol painted by the renderer. (false, errMsg) when
     // the room is missing.

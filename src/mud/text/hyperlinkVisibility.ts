@@ -247,3 +247,71 @@ export function resetDelayedReveals(): void {
     pendingReveals.length = 0;
     if (revealTimer !== null) { clearTimeout(revealTimer); revealTimer = null; }
 }
+
+// ── spoilers ────────────────────────────────────────────────────────────────
+// A spoiler is masked the same way, space for space, the moment its line is
+// stored: Mudlet's TBuffer::maskSpoilerText sets the text aside and writes
+// spaces in its place, so getLines() and every other read of the buffer see
+// the blank the player sees, and revealSpoilerLink() puts it back on the first
+// click. Only characters that carry the spoiler's own link are masked — an MXP
+// <SEND> laid over part of it is another link, and keeps its text — while what
+// MXP writes out itself inside one (an entity, a tag it turned down) carries
+// the link like the text around it, and goes with it.
+//
+// One link is one config object, shared by reference by every segment of it,
+// on every line it was carried across, so that object is the key a reveal
+// finds all of its text by.
+
+/** Where a masked spoiler's text was, and what it was. */
+interface MaskedSpoilerText {
+    line: AnsiAwareBuffer;
+    start: number;
+    text: string;
+}
+
+const maskedSpoilers = new WeakMap<object, MaskedSpoilerText[]>();
+/** Spoilers already revealed: a line re-rendered (or a link carried on to a
+ *  line stored after the click) is not masked again. */
+const revealedSpoilers = new WeakSet<object>();
+
+/** Whether this spoiler link's text is still masked, so the renderer draws it
+ *  covered and lets the first click reveal it. */
+export function spoilerHidden(config: object): boolean {
+    return !revealedSpoilers.has(config);
+}
+
+/** Mask every spoiler on a freshly stored line, setting the text aside for
+ *  {@link revealSpoiler}. */
+export function maskSpoilers(line: AnsiAwareBuffer): void {
+    if (!line.hasSpoilerLink()) return;
+    let column = 0;
+    for (const segment of line.getSegments()) {
+        const start = column;
+        column += segment.text.length;
+        const config = segment.state?.hyperlink?.config;
+        if (!config?.spoiler || segment.text.length === 0 || revealedSpoilers.has(config)) continue;
+        const masked = maskedSpoilers.get(config) ?? [];
+        masked.push({ line, start, text: segment.text });
+        maskedSpoilers.set(config, masked);
+        line.overwrite(start, " ".repeat(segment.text.length));
+    }
+}
+
+/** Put a spoiler's text back wherever it was masked and redraw those lines —
+ *  the first click on it. Returns whether anything was masked. */
+export function revealSpoiler(config: object): boolean {
+    if (revealedSpoilers.has(config)) return false;
+    revealedSpoilers.add(config);
+    const masked = maskedSpoilers.get(config);
+    maskedSpoilers.delete(config);
+    if (!masked) return false;
+    const lines = new Set<AnsiAwareBuffer>();
+    for (const { line, start, text } of masked) {
+        // Only where the blank is still there: a script may have edited the line since.
+        if (line.text.slice(start, start + text.length) !== " ".repeat(text.length)) continue;
+        line.overwrite(start, text);
+        lines.add(line);
+    }
+    for (const line of lines) line.rerender();
+    return true;
+}

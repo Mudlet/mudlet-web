@@ -44,7 +44,7 @@ import { MspParser } from '../mud/protocol';
 import { decodeUtf8AsTBuffer, fromByteString } from '../mud/protocol/byteString';
 import { canEncodeForServer, decodeForServer } from '../mud/protocol/charset';
 import { StopwatchManager, localStorageStopwatchStore } from './StopwatchManager';
-import { MxpFrameManager } from './MxpFrameManager';
+import { MxpFrameManager, MXP_TAB_BAR_HEIGHT } from './MxpFrameManager';
 import { getHeldModifiers } from './heldModifiers';
 import { useAppStore, selectProfileField, connectionUrl, PROTOCOL_DEFAULTS, MAPPER_DEFAULTS, MAP_INFO_BG_DEFAULT, type BooleanProtocolKey, type MapperSettings, type MapInfoBgColor, type MudConnection } from '../storage';
 import {
@@ -129,15 +129,22 @@ const RGB_KEY_NONE: RgbKey = NaN;
  * The OSC 8 link style a cell is drawn in, as TBuffer commits it onto the
  * cell: the link's own style, and for a link the game marks as already
  * selected its selected style over that — which then `replaces` the
- * formatting the game wrapped the link in rather than adding to it. Undefined
- * for a cell with no styled link.
+ * formatting the game wrapped the link in rather than adding to it. Any other
+ * link is committed in its `:link` state, so its `:any-link` and `:link`
+ * styles go over its own (TBuffer::getEffectiveHyperlinkStyling for
+ * StateDefault). Undefined for a cell with no styled link.
  */
 function linkStyleOf(state: FormatStateSnapshot | undefined): { style: LinkStateStyle; replaces: boolean } | undefined {
     const config = state?.hyperlink?.config;
     const base = config?.style;
     if (!base) return undefined;
-    const selected = config.selection?.selected ? base.states?.selected : undefined;
-    return selected ? { style: { ...base, ...selected }, replaces: true } : { style: base, replaces: false };
+    const states = base.states;
+    const selected = config.selection?.selected ? states?.selected : undefined;
+    if (selected) return { style: { ...base, ...selected }, replaces: true };
+    const anyLink = states?.['any-link'];
+    const unvisited = states?.link;
+    if (!anyLink && !unvisited) return { style: base, replaces: false };
+    return { style: { ...base, ...anyLink, ...unvisited }, replaces: false };
 }
 
 /**
@@ -786,13 +793,15 @@ class ScriptingWindowsAPI {
         return this.session.windows.hasMapper();
     }
 
-    /** The report the last loadJsonMap wrote for log/errors.txt, once (see WindowManager.takeMapReport). */
+    /** The report the last loadJsonMap or binary loadMap wrote for log/errors.txt, once (see WindowManager.takeMapReport). */
     takeMapReport(): string {
         const report = this.session.windows.takeMapReport();
         // The console names the report, whether or not it shows the details.
         if (report) {
-            const title = report.slice(0, report.indexOf('\n'));
-            this.session.postMessageLine(`[ INFO ]  - Problems were found with the map, see the "${title}" report in the profile's log/errors.txt.`);
+            // The report opens with its title centred in a rule of '#'.
+            const first = report.slice(0, report.indexOf('\n'));
+            const title = /^#+ (.*) #+$/.exec(first)?.[1] ?? first;
+            this.session.postMessageLine(`[ INFO ]  - Problems were found with the map, see the report titled "${title}" in the profile's log/errors.txt.`);
         }
         return report;
     }
@@ -856,6 +865,11 @@ class ScriptingWindowsAPI {
     /** Queue the sysUserWindowResizeEvent a freshly opened user window is owed. */
     announceCreatedSize(id: string): void {
         this.session.windows.announceCreatedSize(id);
+    }
+
+    /** Raise the sysUserWindowResizeEvent a resized window is owed, now. */
+    reportSizeNow(id: string): void {
+        this.session.windows.reportWindowSizeNow(id);
     }
 
     bringToFront(id: string): void {
@@ -1319,6 +1333,7 @@ export class ScriptingAPI {
         private readonly connectionId: string,
     ) {
         this.windows = new ScriptingWindowsAPI(session);
+        session.windows.onConsoleGeometryChanged = (id, withChildren) => this.syncConsoleSize(id, withChildren);
         // Hand out a bound *call*, not the method itself. `this.host.rewriteCss`
         // would detach ScriptingEngine.rewriteCss from its instance, and it
         // dereferences this.vfs — so the label stylesheet path died with
@@ -5052,7 +5067,16 @@ export class ScriptingAPI {
         // after a trailing terminator, so cutting it off here lost the last line
         // whenever it was empty — "F1\n\n" committed only F1, and "\n" nothing,
         // where Mudlet commits an empty line for each '\n' (mudlet-web#385).
-        this.host.processFlushBatch([{ text: joined.slice(0, cut + 1), type: 'mud', fromServer: false }]);
+        //
+        // The game's own unfinished line goes first: Mudlet holds it in the same
+        // mMudLine the fed text is appended to, so the fed text carries it on
+        // rather than committing a line above it. It was the game's, so its
+        // MXP is read as the game's.
+        const serverLine = this.session.takePendingServerLine();
+        this.host.processFlushBatch([
+            ...(serverLine ? [{ text: serverLine, type: 'mud', fromServer: true, unended: true }] : []),
+            { text: joined.slice(0, cut + 1), type: 'mud', fromServer: false },
+        ]);
 
         // Appended rather than assigned: a trigger in the batch may have fed an
         // unterminated line of its own, which this one's tail follows in mMudLine.
@@ -5169,6 +5193,36 @@ export class ScriptingAPI {
         return this.session.windows.timeStampsEnabled(windowName);
     }
 
+    /**
+     * Raise sysConsoleSizeChanged for `id` — and for every console inside it,
+     * when it is a window that has just shown — if its character grid is not
+     * the one it last reported: TConsole raises it as its text pane is
+     * resized, at once, with the columns and rows getColumnCount/getRowCount
+     * answer. A console that is not on screen (hidden, or inside a hidden
+     * window) reports nothing, and reports the size it shows at once it does,
+     * as a hidden widget gets its resize event only as it shows. The main
+     * console and buffers are left alone: main reports from its own panel,
+     * and a buffer is never shown.
+     */
+    syncConsoleSize(id: string, withChildren = false): void {
+        const wm = this.session.windows;
+        const report = (name: string) => {
+            if (name === 'main' || !wm.isTextConsole(name)) return;
+            if (this.windowVisible(name) !== true) return;
+            wm.reportConsoleGrid(name, this.getColumnCount(name), this.getRowCount(name));
+        };
+        report(id);
+        if (!withChildren) return;
+        for (const name of wm.ids()) {
+            if (name === id) continue;
+            const seen = new Set<string>([name]);
+            for (let p = this.parentOf(name); p && p !== 'main' && !seen.has(p); p = this.parentOf(p)) {
+                if (p === id) { report(name); break; }
+                seen.add(p);
+            }
+        }
+    }
+
     /** Mudlet `enableTimeStamps(window)` / `disableTimeStamps(window)`. False
      *  when no such window exists. */
     setTimeStamps(windowName: string, visible: boolean): boolean {
@@ -5184,8 +5238,9 @@ export class ScriptingAPI {
         if (!this.session.windows.setTimeStamps(windowName, visible)) return false;
         // The column moves the text over, so the console reports its grid
         // (with the gutter) — and with it any size a font change left
-        // unreported. A buffer is never shown, so it has none to report.
-        this.session.windows.reportConsoleGrid(windowName, this.getColumnCount(windowName), this.getRowCount(windowName));
+        // unreported. A buffer is never shown, so it has none to report, and
+        // a hidden console reports once it shows.
+        this.syncConsoleSize(windowName);
         return true;
     }
 
@@ -5464,24 +5519,24 @@ export class ScriptingAPI {
         const [, cellH] = measureMonospaceCell(family, fontSize);
         if (cellH <= 0) return 0;
 
+        // With the split screen open the rows are the upper pane's, as
+        // desktop's TTextEdit counts them: the lower pane is laid over the
+        // bottom of the console's text pane.
+        const wm = this.session.windows;
+        const id = isMain ? 'main' : windowName!;
         if (el) {
             const cs = getComputedStyle(el);
             const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-            const pending = isMain ? 0 : this.session.windows.pendingCmdLineHeightDelta(windowName!);
-            // With the split screen open the rows are the upper pane's, as
-            // desktop's TTextEdit counts them: the lower pane is laid over the
-            // bottom of the console.
-            const split = this.session.windows.openSplitPaneHeight(isMain ? 'main' : windowName!);
-            const height = Math.max(0, el.clientHeight - pad + pending - split);
+            const textHeight = Math.max(0, el.clientHeight + (isMain ? 0 : wm.pendingCmdLineHeightDelta(id)));
+            const height = Math.max(0, textHeight - wm.openSplitPaneHeight(id, textHeight) - pad);
             if (height > 0) return Math.floor(height / cellH);
         }
         if (isMain) return 0;
 
-        const size = this.session.windows.getSize(windowName!);
+        const size = wm.getSize(id);
         if (!size || size.height <= 0) return 0;
-        const height = Math.max(0, size.height + this.session.windows.pendingCmdLineHeightDelta(windowName!)
-            - this.session.windows.openSplitPaneHeight(windowName!));
-        return Math.floor(height / cellH);
+        const textHeight = Math.max(0, size.height + wm.pendingCmdLineHeightDelta(id));
+        return Math.floor(Math.max(0, textHeight - wm.openSplitPaneHeight(id, textHeight)) / cellH);
     }
 
     /**
@@ -5879,6 +5934,9 @@ export class ScriptingAPI {
         wm.markAsMiniConsole(name);
         wm.setPosition(name, Math.round(x), Math.round(y));
         wm.setSize(name, Math.round(width), Math.round(height));
+        // A new console reports the grid it is made with, even at the size the
+        // window opened at (when setSize had no resize to report).
+        if (created) this.syncConsoleSize(name);
         // That setFontSize(12) is a font change like any other, so desktop's
         // new miniconsole announces itself with sysFontChangeEvent — raised
         // once it is in place, for a handler that measures it.
@@ -5930,6 +5988,12 @@ export class ScriptingAPI {
     mxpFrame(name: string, attrs: Record<string, string>, dest?: string): boolean {
         if (!name) return false;
         return this.mxpFrames.createFrame(name, attrs, dest);
+    }
+
+    /** An MXP frame's window was resized; an EXTERNAL one lays out the frames
+     *  nested in it again. */
+    mxpFrameResized(id: string, width: number, height: number): void {
+        this.mxpFrames.setWindowSize(id, width, height);
     }
 
     /** Tear every MXP frame down. MXP frames are per-connection state in Mudlet
@@ -6056,6 +6120,11 @@ export class ScriptingAPI {
         nameTakenByScript: (name) => {
             const id = mxpWindowId(name);
             return (this.session.windows.has(id) && !this.session.windows.isMxpFrame(id)) || this.buffers.has(id);
+        },
+        frameConsoleInPlace: (name, parent) => {
+            const id = mxpWindowId(name);
+            const wm = this.session.windows;
+            return wm.isMxpFrame(id) && wm.parentOf(id) === (parent ? mxpWindowId(parent) : 'main');
         },
         showFrameConsole: (name) => { this.session.windows.show(mxpWindowId(name)); },
         raiseFrameConsole: (name) => this.session.windows.bringToFront(mxpWindowId(name)),
@@ -6361,7 +6430,14 @@ export class ScriptingAPI {
         }
         const buf = this.buffers.get(name);
         if (buf) return { x: buf.x, y: buf.y, width: buf.width, height: buf.height };
-        return this.session.windows.getGeometry(name);
+        const geometry = this.session.windows.getGeometry(name);
+        // An MXP frame with a header is a tab widget in Mudlet, its own console
+        // the first page: the console has the space under the tabs, the same as
+        // every page docked into it — not the frame's, which the strip is part of.
+        if (geometry && this.session.windows.isMxpFrame(name) && this.session.windows.getFrameTabs(name)) {
+            return { ...geometry, height: Math.max(0, geometry.height - MXP_TAB_BAR_HEIGHT) };
+        }
+        return geometry;
     }
 
     /**
@@ -6471,8 +6547,8 @@ export class ScriptingAPI {
      * Mudlet `replace([win,] with, [keepcolor])`. Default (`keepcolor=false`)
      * applies the resolved console's current pen state (set via
      * setFgColor/setBgColor/etc.) to the replacement text. With
-     * `keepcolor=true`, the replacement inherits the selection's existing
-     * format — same as our previous behavior.
+     * `keepcolor=true`, the replacement takes the colours of the selection's
+     * first character and the rest of the pen.
      */
     replace(newText: string, windowName?: string, keepColor = false): void {
         const sel = this.selectionOf(windowName);
@@ -6483,7 +6559,16 @@ export class ScriptingAPI {
         // TBuffer::replaceInLine refuses a selection that no longer fits the
         // line rather than trimming it.
         if (sel.start < 0 || sel.start + sel.length > buf.length) return;
-        const state = keepColor ? undefined : this.outputConsole(targetWin).format.toSnapshot();
+        // TConsoleModel::replace writes with a copy of the pen; keepColor only
+        // takes the colours of the selection's first character into it, so the
+        // pen's own attributes still apply and the pen itself is left as the
+        // script set it for whatever is written next.
+        const pen = this.outputConsole(targetWin).format.toSnapshot();
+        let state: FormatStateSnapshot = pen;
+        if (keepColor && sel.start < buf.length) {
+            const kept = buf.getStateAt(sel.start);
+            state = { ...pen, foreground: kept?.foreground, background: kept?.background };
+        }
         buf.replace([sel.start, sel.start + sel.length], newText, state);
         if (this.inTriggerProcessing && this.getConsole(targetWin) === this.mainConsole) {
             // TConsole::replace moves every capture after the start of the
@@ -6497,7 +6582,7 @@ export class ScriptingAPI {
             // replacement wears whatever the snapshot already had at that
             // offset, which is what "keep" means here.
             this.spliceLineColorSnapshot(sel.start, sel.length, newText ? {
-                ...(state ? this.stateColorKeys(state) : this.snapshotColorAt(sel.start)),
+                ...(keepColor ? this.snapshotColorAt(sel.start) : this.stateColorKeys(state)),
                 text: newText,
             } : undefined);
         }
@@ -8647,6 +8732,7 @@ export class ScriptingAPI {
 
     destroy(): void {
         this.destroyed = true;
+        this.session.windows.onConsoleGeometryChanged = undefined;
         for (const unsub of this.apiUnsubs) unsub();
         this.apiUnsubs.length = 0;
         // Script-installed CSS is profile-local (see styleTag): a closed

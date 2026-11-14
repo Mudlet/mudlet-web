@@ -1,8 +1,8 @@
 import { FormatState } from './FormatState';
 import { AnsiAwareBuffer } from './FormatState';
 import type { FormatStateSnapshot } from './FormatState';
-import { concealDelayedReveals } from './hyperlinkVisibility';
-import { codePointWidth, graphemeEnds, isPlainAscii } from './wcwidth';
+import { concealDelayedReveals, maskSpoilers } from './hyperlinkVisibility';
+import { clusterWidth, graphemeEnds, isPlainAscii } from './wcwidth';
 import { lineBreakOpportunities } from './lineBreak';
 
 /** Longest run of characters one echo or insert may add to a line. Mudlet's
@@ -332,10 +332,12 @@ export class Console {
      * itself after a delay is written into the buffer as spaces here and gets
      * its text back when the delay is up — Mudlet does the same, so that a
      * script reading the line back sees what the player can see rather than the
-     * secret behind it.
+     * secret behind it. A spoiler is masked here the same way until it is
+     * clicked.
      */
     private store(line: AnsiAwareBuffer): void {
         concealDelayedReveals(line);
+        maskSpoilers(line);
         this.history.push(line);
         // Writing re-opens a buffer that deleteLine() had left with no current
         // line: Mudlet has one again the moment anything is appended.
@@ -1306,7 +1308,7 @@ function wrapInfo(text: string, isNewline: boolean, startsIndented: boolean, max
                 next = index + 1;
                 while (next < text.length && cellEnd[next] < 0) next++;
             }
-            charWidth = codePointWidth(text.codePointAt(index)!);
+            charWidth = clusterWidth(text.slice(index, next));
         }
         const indentationHere = isNewline ? indent : hangingIndent;
         if (xPos + charWidth > maxWidth - (needsIndent ? indentationHere : 0)) {
@@ -1349,7 +1351,7 @@ function wrapInfo(text: string, isNewline: boolean, startsIndented: boolean, max
                     next = position + 1;
                     while (next < text.length && cellEnd[next] < 0) next++;
                 }
-                width += codePointWidth(text.codePointAt(position)!);
+                width += clusterWidth(text.slice(position, next));
                 position = next;
             }
         }

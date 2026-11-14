@@ -189,6 +189,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `getGridMode(areaID)` | ✅ | Bridge.lua → `__getGridMode`; `(false, errMsg)` when area missing |
 | `getHiddenMapMenuItems()` | ✅ | (Mudlet 5.1) Sorted list of the built-in map menu items `hideMapMenuItem` hid |
 | `getHiddenRooms(areaID)` | ✅ | Bridge.lua — 1-indexed array of room ids in the area whose hidden flag is set; `(false, errMsg)` when the area is missing |
+| `getMapEnvColor(envID)` | ✅ | → r, g, b, a and whether the map gives the environment a colour; follows map-file `envToColorMapping` remaps, and an undefined environment reads as the mapper's red (`MapStore.getMapEnvColor`) |
 | `getMapEnvironmentKit(envID)` | ✅ | (Mudlet 5.1) → kit name, and whether the map names it (`true`) rather than it being guessed from the environment's colour (`map/environmentKit.ts`) |
 | `getMapEnvironmentKits()` | ✅ | (Mudlet 5.1) `{ [envID] = kit }` for the kits the map names, keyed by number |
 | `getMapEvents()` | ✅ | Bridge.lua |
@@ -277,6 +278,7 @@ Transactions are driven through the Luasql connection (`conn:commit()`/`conn:rol
 | `speedwalk(roomID [, walkcmd, delay])` | ✅ | Pure Lua via Other.lua (`send` + `tempTimer`) |
 | `stopSpeedwalk()` | ✅ | Other.lua |
 | `unHighlightRoom(roomID)` | ✅ | JS-exposed |
+| `unsetCustomEnvColor(envID)` | ✅ | → true; (nil, errMsg) for the 16 defaults (257-272), an environment with no custom colour, or a colour a room (after remaps) is still drawn in (`MapStore.unsetCustomEnvColor`) |
 | `unsetRoomCharColor(roomID)` | ✅ | Drops the side-table entry; false when the room is missing or had no override |
 | `updateMap()` | ✅ | Forces the map panel to re-read MapStore and redraw |
 
@@ -382,6 +384,7 @@ Mudlet Web-specific extras (not on the wiki): `getMapMode`/`setMapMode("viewing"
 | `uninstallPackage(name)` | ✅ | JS-exposed |
 | `unzipAsync(zipPath, destDir)` | ✅ | Creates `destDir` before returning, then fires `sysUnzipDone`/`sysUnzipError` after the call has returned — a missing or invalid zip included |
 | `updateSounds({name\|key\|tag, volume, pan, direction, duration})` | ✅ | (Mudlet 5.1) Moves the sounds a key/name/tag picks out to a new volume, pan or direction, gliding over `duration` ms. Naming nothing to pick by is (nil, errMsg); matching nothing is not an error |
+| `updateMusic({name\|key\|tag, volume, duration})` | ✅ | Moves the music a key/name/tag picks out to a new volume, gliding over `duration` ms. Music is never placed, so a pan or direction is ignored. Naming nothing to pick by, or giving no volume, is (nil, errMsg); matching nothing is not an error |
 | `waitForEvent(eventName [, timeoutMs])` | ✅ | (Mudlet 5.0) Test mode only. Desktop blocks in a nested event loop; a browser can't re-enter its own, so Mudlet Web pumps its timer queue by hand until the event arrives → eventName, args… or (nil, errMsg) on timeout (default 3000ms, max 30000). Can't observe an event raised from inside an event dispatch already in progress |
 | `yajl.to_string` / `yajl.to_value` / `yajl.generator` / `yajl.parser` / `yajl.null` | ✅ | Matches desktop lua-yajl (`lua_yajl.c`). `Yajl.lua`: a port of yajl_gen (sparse arrays with null holes, `indent`, depth-128 limit, `__gen_json`) and of yajl's push parser (streaming `yajl.parser`, yajl's error text). `yajl.ts`: the `JSON.parse` fast path behind `to_value` (Lua source, or an iterative raw-API build for deep documents, capped where lua_yajl's stack check is), and `yajl.null` as a userdata. Loaded at startup via `setupYajl` |
 

@@ -351,6 +351,11 @@ export class MudClient {
      *  IAC, an option command missing its option byte, or a subnegotiation
      *  without its closing IAC SE — until the next frame completes it. */
     private pendingTelnet = "";
+    /** The marker (IAC GA or IAC EOR) that ended the last prompt, while no
+     *  text has followed it — cTelnet's mPromptEndedBy. A game that ends each
+     *  prompt with both EOR and GA ends it once: the second marker of the pair
+     *  ends nothing. 0 when no marker is waiting for its partner. */
+    private promptEndedBy = 0;
     /** True once the WebSocket handshake has completed; used to differentiate
      *  "failed to connect" from "connection lost mid-session" in close events. */
     private opened = false;
@@ -512,13 +517,16 @@ export class MudClient {
         this.viaProxy = /[?&]host=/.test(url) && /[?&]port=/.test(url);
 
         this.gmcpStream = createGmcpStream({
-            onEnvelope: ({ path, value }) => {
+            onEnvelope: ({ path, value, text }) => {
                 this.handleCharLogin(path, value);
                 (this.eventBus.emit as (event: string, ...args: unknown[]) => void)(`gmcp.${path}`, value);
-                this.eventBus.emit('gmcp', { path, value });
+                this.eventBus.emit('gmcp', { path, value, text });
             },
             onClientGui: (payload) => {
                 this.eventBus.emit('clientGui', payload);
+            },
+            onUndecoded: (payload) => {
+                this.eventBus.emit('gmcpUndecoded', payload);
             },
         });
 
@@ -679,6 +687,12 @@ export class MudClient {
         this.assembler.setUndoServerWrapWidth(width);
     }
 
+    /** The game's unfinished line, taken out of the line assembler — see
+     *  {@link LineAssembler.takePendingLine}. */
+    takePendingLine(): string {
+        return this.assembler.takePendingLine();
+    }
+
     /** Commit a line held for a wrap continuation whose flush delay has passed.
      *  See {@link LineAssembler.pumpServerWrapDue}. */
     pumpServerWrapDue(now?: number): boolean {
@@ -822,6 +836,7 @@ export class MudClient {
                 this.mccpHandler.reset();
                 this.echoHandler.reset();
                 this.pendingTelnet = "";
+                this.promptEndedBy = 0;
                 this.negotiator.clearMspNegotiated();
                 this.cancelCharacterModeDetection();
                 this.stopIdleProbe();
@@ -1038,6 +1053,7 @@ export class MudClient {
         this.mccpHandler.reset();
         this.echoHandler.reset();
         this.pendingTelnet = '';
+        this.promptEndedBy = 0;
         this.negotiator.clearMspNegotiated();
         this.cancelCharacterModeDetection();
         this.stopIdleProbe();
@@ -1796,18 +1812,48 @@ export class MudClient {
         // sanitized text (see createTelnetOptionParser), matching the `'\n'`
         // Mudlet pushes in the else branch of its GA handling.
         if (this.forceGaOff || markers.length === 0) {
-            this.processSegment(processable, false, ts);
+            if (runHasText(processable)) this.promptEndedBy = 0;
+            this.postSegment(processable, false, ts);
             return;
         }
         // Every GA/EOR ends the line it follows, wherever it falls in the
         // frame: a prompt bundled with the next output (or two prompts in one
-        // read) are separate lines, the way Mudlet's gotPrompt cuts them.
+        // read) are separate lines, the way Mudlet's gotPrompt cuts them —
+        // except that the second marker of an EOR + GA pair, with no text
+        // between them, ends nothing (cTelnet::processTelnetCommand).
         let start = 0;
-        for (const end of markers) {
-            this.processSegment(processable.substring(start, end), true, ts);
+        for (const { end, kind } of markers) {
+            const run = processable.substring(start, end);
+            if (runHasText(run)) this.promptEndedBy = 0;
+            let endsPrompt = true;
+            if (this.promptEndedBy !== 0 && this.promptEndedBy !== kind) {
+                this.promptEndedBy = 0;
+                endsPrompt = false;
+            } else {
+                this.promptEndedBy = kind;
+            }
+            this.postSegment(run, endsPrompt, ts);
             start = end;
         }
-        if (start < processable.length) this.processSegment(processable.substring(start), false, ts);
+        if (start < processable.length) {
+            const rest = processable.substring(start);
+            if (runHasText(rest)) this.promptEndedBy = 0;
+            this.postSegment(rest, false, ts);
+        }
+    }
+
+    /** {@link processSegment}, with the marker a prompt ended on set aside
+     *  meanwhile: what a trigger feedTelnet()s from in there is not this
+     *  stream's text, so it must not part this stream's EOR from the GA that
+     *  follows it (cTelnet::gotPrompt around printOnDisplay). */
+    private postSegment(processable: string, hasPrompt: boolean, ts: number): void {
+        const promptEndedBy = this.promptEndedBy;
+        this.promptEndedBy = 0;
+        try {
+            this.processSegment(processable, hasPrompt, ts);
+        } finally {
+            this.promptEndedBy = promptEndedBy;
+        }
     }
 
     /** Negotiate, strip, decode and assemble one run of a frame. `hasPrompt`
@@ -2029,15 +2075,15 @@ export function formatCloseError(event: CloseEvent, wasOpened: boolean, viaProxy
  *   ends a line in Mudlet (cTelnet::processSocketData calls gotPrompt right
  *   where the marker sits), so a frame is cut at every one of them rather than
  *   treated as one "has a prompt" blob. Markers inside a subnegotiation
- *   payload are skipped along with it.
+ *   payload are skipped along with it. `kind` is the marker's command byte.
  */
-function scanTelnetFrame(data: string): { complete: number; markers: number[] } {
+function scanTelnetFrame(data: string): { complete: number; markers: { end: number; kind: number }[] } {
     const SB = 0xFA;
     const WILL = 0xFB;
     const DONT = 0xFE;
     const GA = 0xF9;
     const EOR = 0xEF;
-    const markers: number[] = [];
+    const markers: { end: number; kind: number }[] = [];
     let i = data.indexOf('\xFF');
     while (i !== -1) {
         if (i + 1 >= data.length) return { complete: i, markers };
@@ -2053,9 +2099,40 @@ function scanTelnetFrame(data: string): { complete: number; markers: number[] } 
             next = i + 3;
         } else {
             next = i + 2;
-            if (cmd === GA || cmd === EOR) markers.push(next);
+            if (cmd === GA || cmd === EOR) markers.push({ end: next, kind: cmd });
         }
         i = data.indexOf('\xFF', next);
     }
     return { complete: data.length, markers };
+}
+
+/**
+ * Whether a run of complete telnet sequences carries any text — anything but a
+ * carriage return or a NUL outside a command, or an escaped IAC IAC. Text is
+ * what parts a prompt's EOR from a GA after it (cTelnet's forgetPromptEnd);
+ * option negotiation and subnegotiations do not.
+ */
+function runHasText(run: string): boolean {
+    const SB = 0xFA;
+    const WILL = 0xFB;
+    const DONT = 0xFE;
+    for (let i = 0; i < run.length; i++) {
+        const c = run.charCodeAt(i);
+        if (c === 0xFF) {
+            const cmd = run.charCodeAt(i + 1);
+            if (cmd === 0xFF) return true;
+            if (cmd === SB) {
+                const se = run.indexOf('\xFF\xF0', i + 2);
+                if (se === -1) return false;
+                i = se + 1;
+            } else if (cmd >= WILL && cmd <= DONT) {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else if (c !== 0x0D && c !== 0x00) {
+            return true;
+        }
+    }
+    return false;
 }

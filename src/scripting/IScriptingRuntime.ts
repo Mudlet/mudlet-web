@@ -70,8 +70,11 @@ export interface IScriptingRuntime {
     /**
      * Write a single GMCP message into the runtime's `gmcp` table. The leaf
      * at `path` is replaced; sibling subtrees are preserved (Mudlet parity).
+     * `text` is the JSON body the game sent, which the runtime decodes itself
+     * when given (Lua: with json_to_value, as desktop does). False when nothing
+     * was stored, in which case the message raises no event.
      */
-    setGmcpValue(path: string, value: unknown): void;
+    setGmcpValue(path: string, value: unknown, text?: string): boolean;
     /**
      * Write a single MSDP variable into the runtime's `msdp` table. `path` is
      * the flat top-level variable name; the top-level key is replaced.

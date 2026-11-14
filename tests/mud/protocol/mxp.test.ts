@@ -3,6 +3,23 @@ import { describe, it, expect } from 'vitest';
 import { MxpParser } from '../../../src/mud/protocol/mxp';
 import type { BufferSegment } from '../../../src/mud/text/FormatState';
 
+describe('MxpParser NOBR', () => {
+  it('joins a game line a NOBR ends to the next, once', () => {
+    const parser = new MxpParser({ send: () => {} });
+    expect(parser.parseLine('first<NOBR>').joined).toBe(true);
+    expect(parser.parseLine('second').joined).toBeUndefined();
+  });
+
+  it('is used up by a prompt, ignored in fed text, and dropped by a reset', () => {
+    const parser = new MxpParser({ send: () => {} });
+    expect(parser.parseLine('p<NOBR>', undefined, true, 'prompt').joined).toBeUndefined();
+    expect(parser.parseLine('next').joined).toBeUndefined();
+    expect(parser.parseLine('fed<NOBR>', undefined, false).joined).toBeUndefined();
+    expect(parser.parseLine('game').joined).toBeUndefined();
+    expect(parser.parseLine('r<NOBR>\x1b[3z').joined).toBeUndefined();
+  });
+});
+
 const ESC = '\x1b';
 const SECURE = `${ESC}[1z`; // switch the current line into SECURE mode
 

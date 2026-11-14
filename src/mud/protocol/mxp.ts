@@ -133,7 +133,23 @@ export interface MxpLineResult {
      *  {@link MspCommand} so the consumer can route them through the same
      *  SoundManager path as MSP. Omitted when none. */
     sounds?: MspCommand[];
+    /** The newline ending this line was ignored, as a `<NOBR>` asked: the
+     *  line's last visual line is not complete yet, and the next line carries
+     *  it on. Omitted otherwise. */
+    joined?: true;
 }
+
+/**
+ * How the line handed to {@link MxpParser.parseLine} ended:
+ * - `newline` — a newline (from the game, or in fed text);
+ * - `prompt` — a prompt marker (IAC GA/EOR), which uses up a `<NOBR>` but is
+ *   never ignored;
+ * - `flush` — the idle flush of a line the game has not finished, cTelnet's
+ *   `\r` posting: it neither uses up a `<NOBR>` nor is ignored;
+ * - `none` — not ended at all: the game's unfinished line, which more text
+ *   carries on, so its line mode is left as it is.
+ */
+export type MxpLineEnd = "newline" | "prompt" | "flush" | "none";
 
 type MxpMode = "open" | "secure" | "locked";
 /** The mode in force right now: one of the three, or TEMP SECURE (`ESC[4z`),
@@ -376,6 +392,10 @@ export class MxpParser {
     private mxpColorStack: { fg: FormatColor | null; bg: FormatColor | null }[] = [];
     /** Partial tag/entity held from the end of the previous line. */
     private pendingTag = "";
+    /** A `<NOBR>` from the game asked for its next newline to be ignored —
+     *  TMxpProcessor's mIgnoreNextNewline. Taken by the next line end the game
+     *  sends, which only a newline is then ignored for. */
+    private ignoreNextNewline = false;
     /** Whether the line being parsed came off the socket — see {@link parseLine}. */
     private fromServer = true;
     /** Active `<DEST>` target frame (persists across lines until `</DEST>`), or
@@ -489,6 +509,7 @@ export class MxpParser {
         this.stack = [];
         this.mxpColorStack = [];
         this.pendingTag = "";
+        this.ignoreNextNewline = false;
         this.destName = null;
         this.destEol = false;
         this.destEof = false;
@@ -515,8 +536,12 @@ export class MxpParser {
      *  Mudlet's `isFromServer` gate on `mMxpProcessor.setMode` — otherwise a
      *  script feeding a captured game line would leave the parser in whatever
      *  mode that capture ended on, and the next real tag would be discarded as
-     *  unsafe. */
-    parseLine(rawLine: string, baseSnapshot?: FormatStateSnapshot, fromServer = true): MxpLineResult {
+     *  unsafe.
+     *
+     *  `lineEnd` is what ended the line — see {@link MxpLineEnd}. */
+    parseLine(
+        rawLine: string, baseSnapshot?: FormatStateSnapshot, fromServer = true, lineEnd: MxpLineEnd = "newline",
+    ): MxpLineResult {
         this.fromServer = fromServer;
         const input = this.pendingTag + rawLine;
         this.pendingTag = "";
@@ -537,6 +562,18 @@ export class MxpParser {
 
         this.parseFragment(input, 0);
         this.flushRun();
+        // The line end, unless a tag is still being read across it (TBuffer
+        // leaves the line modes alone then). Any line end the game sends but
+        // the idle flush uses up a <NOBR>, and only a newline is then ignored;
+        // the line still ends for the line modes, so a secure line cannot run
+        // on into the next one — but the tags an open line left open stay open.
+        let joined = false;
+        if (this.pendingTag === "" && lineEnd !== "none") {
+            const noBreak = fromServer && lineEnd !== "flush" && this.ignoreNextNewline;
+            if (noBreak) this.ignoreNextNewline = false;
+            joined = noBreak && lineEnd === "newline";
+            this.resetTransientMode(!joined);
+        }
         // A still-open <DEST> at end of line: the network line break is a real
         // line break inside the frame, so emit this line's redirected run with
         // eol=true. destName stays set so the next line keeps redirecting.
@@ -544,7 +581,7 @@ export class MxpParser {
             this.redirects.push({
                 frame: this.destName, segments: this.destOut, plain: this.destPlain,
                 links: this.destLinks,
-                eol: true, eof: this.destEof,
+                eol: !joined && lineEnd !== "none", eof: this.destEof,
             });
             this.destOut = [];
             this.destPlain = "";
@@ -552,13 +589,9 @@ export class MxpParser {
             // EOF clears once, on the first write of the block.
             this.destEof = false;
         }
-        // A held partial escape means we're logically mid-line, so the
-        // transient line mode (and temp-secure) must survive into the
-        // continuation.
-        if (this.pendingTag === "") this.resetTransientMode();
-
         const trailing = this.fmt.toSnapshot();
         const result: MxpLineResult = { segments: this.out, plain: this.plain, trailingSnapshot: trailing, links: this.links };
+        if (joined) result.joined = true;
         if (this.frames.length > 0) result.frames = this.frames;
         if (this.redirects.length > 0) result.redirects = this.redirects;
         if (this.sounds.length > 0) result.sounds = this.sounds;
@@ -605,11 +638,12 @@ export class MxpParser {
         return this.lineMode;
     }
 
-    private resetTransientMode(): void {
+    private resetTransientMode(closeOpenTags = true): void {
         // A line that ends in OPEN mode takes the tags it left open with it:
         // only a secure line's tags are the game's to close
-        // (TMxpProcessor::resetToDefaultMode).
-        if (this.lineMode === "open") this.closeOpenModeTags();
+        // (TMxpProcessor::resetToDefaultMode). A newline a <NOBR> ignores
+        // leaves them open.
+        if (closeOpenTags && this.lineMode === "open") this.closeOpenModeTags();
         // Transient OPEN/SECURE/LOCKED (modes 0/1/2) last only for the current
         // line; at the newline we revert to the locked mode, or OPEN by default.
         this.lineMode = this.lockedMode ?? "open";
@@ -867,6 +901,7 @@ export class MxpParser {
                 // line use secure tags. The default applies again at the newline.
                 this.closeAllTags();
                 this.fmt.reset();
+                this.ignoreNextNewline = false;
                 this.lineMode = "open";
                 break;
             case 4:
@@ -1051,6 +1086,12 @@ export class MxpParser {
                 this.appendText("\n"); break;
             case "sbr":
                 this.appendText(" "); break;
+            case "nobr":
+                // The game's next newline is ignored, joining this line to the
+                // next. Locally fed text may not join a line onto the game's
+                // with one (TMxpProcessor's mReadingLocalText).
+                if (this.fromServer) this.ignoreNextNewline = true;
+                break;
             case "hr":
                 // Mudlet's TMxpHRTagHandler: the rule is not drawn, it is fed
                 // back through the parser as text — a newline to commit
