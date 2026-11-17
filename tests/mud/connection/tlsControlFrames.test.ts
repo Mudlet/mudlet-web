@@ -41,6 +41,10 @@ class MockWebSocket {
 
 const TLS_URL = 'ws://proxy.invalid/?host=mud.example.org&port=4443&tls=1';
 const PLAIN_URL = 'ws://proxy.invalid/?host=mud.example.org&port=23';
+const OFFER = { type: 'session.offer', offerId: 'offer-1' };
+/** A session the mock relay took over from cursors (0, 0). */
+const MARKER = { type: 'session.enabled', sessionId: 'session-1', secret: 'c2VjcmV0', input: '0', output: '0' };
+const RESUMED = { type: 'session.resumed', input: '0', backendConnected: false };
 
 describe('proxy TLS control frames', () => {
     let realWebSocket: unknown;
@@ -67,6 +71,19 @@ describe('proxy TLS control frames', () => {
         const sock = MockWebSocket.instances[0];
         sock.onopen?.({});
         return { client, sock, bus };
+    }
+
+    function retain(sock: MockWebSocket): void {
+        sock.deliverControl(OFFER);
+        sock.deliverControl(MARKER);
+    }
+
+    function resume(client: MudClient): MockWebSocket {
+        client.resumeTransport();
+        const dial = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+        dial.onopen?.({});
+        dial.deliverControl(RESUMED);
+        return dial;
     }
 
     it('emits tls.established from a control frame, with the cert details', () => {
@@ -172,6 +189,39 @@ describe('proxy TLS control frames', () => {
             vi.advanceTimersByTime(2_000);
 
             expect(timeouts).toEqual([{ host: 'mud.example.org', port: 4443 }]);
+        });
+
+        it('policing survives a detached transport and restarts its standard grace on resume', () => {
+            const { client, sock, bus } = connected();
+            const timeouts: unknown[] = [];
+            bus.on('tls.timeout', (i) => timeouts.push(i));
+
+            retain(sock);                        // the session is retained; the handshake is still open
+            sock.closeWith({ code: 1006 });                     // the phone loses its network
+            vi.advanceTimersByTime(120_000);
+            expect(timeouts).toHaveLength(0);                   // nothing is policed while away — and the deadline was not lost with the transport
+
+            resume(client);
+            vi.advanceTimersByTime(11_000);
+            expect(timeouts).toHaveLength(0);                   // still within the standard grace
+            vi.advanceTimersByTime(1_000);
+            expect(timeouts).toEqual([{ host: 'mud.example.org', port: 4443 }]);   // said once, as an attached silent handshake always was
+        });
+
+        it('restored policing settles on a verdict seen during the catch-up, with no late warning', () => {
+            const { client, sock, bus } = connected();
+            const timeouts: unknown[] = [];
+            bus.on('tls.timeout', (i) => timeouts.push(i));
+
+            retain(sock);
+            sock.closeWith({ code: 1006 });
+            const dial = resume(client);
+            dial.deliverControl({ type: 'tls.established', cert: null });   // the verdict replays, mid catch-up
+            vi.advanceTimersByTime(120_000);
+            expect(timeouts).toHaveLength(0);
+            dial.deliverControl({ type: 'tls.established', cert: null });   // a repeated verdict is idempotent
+            vi.advanceTimersByTime(120_000);
+            expect(timeouts).toHaveLength(0);
         });
 
         it('does not arm the deadline when TLS was never requested', () => {

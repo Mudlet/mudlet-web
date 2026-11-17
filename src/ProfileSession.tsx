@@ -867,7 +867,8 @@ export function ProfileSession({ connection, autoConnect, vfs, settingsOpen, onT
         // dial rather than on `client.connect`, which an attempt that never
         // reaches the game — a rejected certificate, say — never raises.
         const t5 = session.events.on('status', (status) => {
-            if (status !== 'connecting') return;
+            // (Not a lost transport reattaching to the same, still-secure link.)
+            if (status !== 'connecting' || session.transportDetached()) return;
             msspTlsFacts.current = emptyMsspTlsFacts();
             setTlsStatus(null);
         });
