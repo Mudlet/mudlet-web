@@ -30,7 +30,7 @@ bundled unless `src/import/defaultPackages.ts` imports it. That file alone decid
 what a profile gets.
 
 - Upstream: https://github.com/Mudlet/Mudlet/tree/development/src/mudlet-lua/lua
-- Synced from commit: `6d49337bb0a76b6488bb11a810b21cbde1d33f92` (2026-11-17)
+- Synced from commit: `c895dce7bc5877d6e6edb7b5b03bcf6685ea4ceb` (2026-11-20)
 - Vendored files: 83 (plus 2 Mudlet Web-only)
 
 **Keep this commit and `../specs/SYNCED.md`'s in step.** The specs are Mudlet's
