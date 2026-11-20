@@ -689,6 +689,43 @@ export function parseConfigLuaText(text: string): Partial<PackageManifest> {
     return out;
 }
 
+const LUA_KEYWORDS = new Set([
+    'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function', 'if', 'in',
+    'local', 'nil', 'not', 'or', 'repeat', 'return', 'then', 'true', 'until', 'while',
+]);
+
+/** `s` as a Lua string literal that reads back as exactly `s`. */
+function luaQuoted(s: string): string {
+    return '"' + s.replace(/[\\"\x00-\x1f\x7f]/g, c => {
+        switch (c) {
+            case '\\': return '\\\\';
+            case '"': return '\\"';
+            case '\n': return '\\n';
+            case '\r': return '\\r';
+            case '\t': return '\\t';
+            default: return '\\' + String(c.charCodeAt(0)).padStart(3, '0');
+        }
+    }) + '"';
+}
+
+/**
+ * A config.lua holding `details`, as setPackageInfo saves them: one global
+ * per detail, read back the way every config.lua is — by running it and
+ * collecting the strings it set. A name that is not a Lua identifier is set
+ * through `_G`, and a detail called `_G` comes last, so that setting it cannot
+ * take the table away from the lines that need it.
+ */
+export function packageConfigSource(name: string, details: Record<string, string>): string {
+    const lines = [`-- The details of package ${name.replace(/[\r\n]/g, ' ')}, as setPackageInfo saved them`];
+    const keys = Object.keys(details).sort().filter(k => k !== '_G');
+    if ('_G' in details) keys.push('_G');
+    for (const key of keys) {
+        const plain = /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !LUA_KEYWORDS.has(key);
+        lines.push(`${plain ? key : `_G[${luaQuoted(key)}]`} = ${luaQuoted(details[key])}`);
+    }
+    return lines.join('\n') + '\n';
+}
+
 /**
  * Remove a package's on-disk files. The store handles tag-based node removal
  * separately. Modules are exempt: they unlink only — the underlying XML (and any

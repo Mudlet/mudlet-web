@@ -141,15 +141,17 @@ export class MspParser {
 function parseBody(kind: MspKind, body: string): MspCommand | null {
     const trimmed = body.trim();
     if (trimmed.length === 0) return null;
-    const tokens = trimmed.split(/\s+/);
-    const file = tokens[0];
+    // Parameters are separated by one or more spaces; a value may be quoted
+    // (the spec's own U="..." form), and its quotes are not part of it.
+    const tokens = trimmed.match(/(?:[^\s"']+|"[^"]*"?|'[^']*'?)+/g) ?? [];
+    const file = unquote(tokens[0] ?? "");
     if (!file) return null;
     const cmd: MspCommand = { kind, file };
     for (let i = 1; i < tokens.length; i++) {
         const eq = tokens[i].indexOf("=");
         if (eq <= 0) continue;
         const key = tokens[i].substring(0, eq).toUpperCase();
-        const value = tokens[i].substring(eq + 1);
+        const value = unquote(tokens[i].substring(eq + 1));
         switch (key) {
             case "U": cmd.url = value; break;
             case "V": {
@@ -172,6 +174,15 @@ function parseBody(kind: MspKind, body: string): MspCommand | null {
         }
     }
     return cmd;
+}
+
+/** A value without the quotes around it, if it has them. */
+function unquote(value: string): string {
+    const q = value[0];
+    if ((q === '"' || q === "'") && value.length >= 2 && value[value.length - 1] === q) {
+        return value.substring(1, value.length - 1);
+    }
+    return value;
 }
 
 function clamp(n: number, lo: number, hi: number): number {

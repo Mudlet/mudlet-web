@@ -98,3 +98,17 @@ describe('isPlainAscii', () => {
     expect(isPlainAscii('a\tb')).toBe(false);
   });
 });
+
+describe('clusterWidth with VS16 (graphemeInfo::withPresentation)', () => {
+  it('draws a one column symbol VS16 selects the emoji form of as two columns', () => {
+    expect(clusterWidth('☠')).toBe(1);
+    expect(clusterWidth('☠️')).toBe(2);
+    expect(clusterWidth('\u{1F56F}️')).toBe(2);
+    expect(clusterWidth('#️⃣')).toBe(2);
+  });
+
+  it('leaves a keycap base without U+20E3, or a letter, one column', () => {
+    expect(clusterWidth('#️')).toBe(1);
+    expect(clusterWidth('é️')).toBe(1);
+  });
+});

@@ -16,6 +16,13 @@ matches = {}; multimatches = {}
 local __mudlet_INTERNAL = '=[C]'
 local __mudlet_rawGetinfo = debug.getinfo
 local __mudlet_rawRunning = coroutine.running
+-- Chunk names of Mudlet Web frames a script never sees at all, and that split
+-- the run of Mudlet Web frames around them in two, as a lua_pcall from C into
+-- a C function shows desktop two C frames: the filter a script's debug hook
+-- runs under, and __mudlet_cpcall, which hides the pcall it makes as well.
+local __mudlet_HIDDEN = '=[C] hidden'
+local __mudlet_CPCALL = '=[C] cpcall'
+local __mudlet_hookVisible
 
 do
     local raw = {
@@ -25,6 +32,7 @@ do
     local rawGetinfo, rawRunning, INTERNAL = __mudlet_rawGetinfo, __mudlet_rawRunning, __mudlet_INTERNAL
     local floor = math.floor
 
+    local HIDDEN, CPCALL = __mudlet_HIDDEN, __mudlet_CPCALL
     local function internal(info)
         return info ~= nil and info.source == INTERNAL and info.what ~= 'C'
     end
@@ -63,6 +71,19 @@ do
             n = n + 1
             infos[n] = info
         end
+        -- Hidden frames are left out, and so is the pcall a __mudlet_cpcall
+        -- frame makes; neither joins a run, so the frames either side of them
+        -- stay apart.
+        local hidden = {}
+        for k = 1, n do
+            local source = infos[k].source
+            if source == HIDDEN then
+                hidden[k] = true
+            elseif source == CPCALL then
+                hidden[k] = true
+                if k > 1 and infos[k - 1].what == 'C' then hidden[k - 1] = true end
+            end
+        end
         -- Tail-call placeholders join a run too: desktop's C never tail-calls,
         -- and __exec is reached by one.
         local function joins(info)
@@ -71,9 +92,11 @@ do
         local out, i = {}, 1
         while i <= n do
             local info = infos[i]
-            if joins(info) then
+            if hidden[i] then
+                i = i + 1
+            elseif joins(info) then
                 local j, sawInternal = i, internal(info)
-                while j < n and joins(infos[j + 1]) do
+                while j < n and not hidden[j + 1] and joins(infos[j + 1]) do
                     j = j + 1
                     if internal(infos[j]) then sawInternal = true end
                 end
@@ -88,7 +111,7 @@ do
                 end
                 i = j + 1
             else
-                local blank = i < n and internal(infos[i + 1])
+                local blank = i < n and (internal(infos[i + 1]) or hidden[i + 1])
                 if blank then info.namewhat, info.name = '', nil end
                 out[#out + 1] = { idx = i, blank = blank, info = info }
                 i = i + 1
@@ -100,6 +123,27 @@ do
     local function isCurrent(co)
         return co == nil or co == rawRunning()
     end
+
+    -- Whether the frame a debug hook fired in (level 2 of the hook) is one a
+    -- script sees: a frame of its own, or the outermost of a run of Mudlet Web
+    -- frames, which stands for the C function desktop would have run there.
+    -- The frames inside such a run are C on desktop, where no hook fires.
+    -- Called by that filter, so the event's frame is level 4 of virtualStack.
+    __mudlet_hookVisible = function()
+        local stack = virtualStack(nil, 4)
+        return stack[1] ~= nil and stack[1].idx == 1
+    end
+
+    -- pcall(f, ...) as desktop's C makes a lua_pcall: f runs as a frame of its
+    -- own under the C function that called it, rather than inside the run of
+    -- Mudlet Web frames that called it. Two results at most.
+    __mudlet_cpcall = loadstring([[
+        local pcall = ...
+        return function(f, ...)
+            local ok, v = pcall(f, ...)
+            return ok, v
+        end
+    ]], CPCALL)(pcall)
 
     local function toLevel(v)
         if type(v) == 'number' then return v end
@@ -897,9 +941,9 @@ end
 
 -- Mudlet setConsoleBufferSize([consoleName,] linesLimit, sizeOfBatchDeletion
 -- [, useMaximum]). Desktop takes argument 1 for the name whenever there are
--- three arguments or more (lua_gettop), so the four-argument form only lines up
--- when a name was actually given — without one the useMaximum flag would land
--- where the batch size goes — and two arguments are never a name and a limit.
+-- three arguments or more (lua_gettop) — except three that end in a boolean,
+-- which are (linesLimit, sizeOfBatchDeletion, useMaximum) for the main console
+-- — and two arguments are never a name and a limit.
 --
 -- The numeric arguments go through __mudlet_int rather than a bare type() test:
 -- Mudlet vets them with getVerifiedInt, which is lua_isnumber + lua_tointeger,
@@ -912,7 +956,11 @@ function setConsoleBufferSize(...)
     local n = select('#', ...)
     local a, b, c, d = ...
     local name, lines, batch, useMaximum
-    if n >= 3 then
+    if n == 3 and type(c) == 'boolean' then
+        -- (linesLimit, sizeOfBatchDeletion, useMaximum) for the main console:
+        -- three arguments ending in a boolean carry no name.
+        lines, batch, useMaximum = a, b, c
+    elseif n >= 3 then
         name, lines, batch, useMaximum = a, b, c, d
         if __mudlet_str(name) == nil then
             error("setConsoleBufferSize: bad argument #1 type (window name as string expected, got "
@@ -2392,6 +2440,22 @@ end
 function getMapEnvironmentKit(environmentId)
     local r = __getMapEnvironmentKit(environmentId)
     return r[0], r[1]
+end
+
+-- Mudlet getMapEnvColor(envID) → r, g, b, a, and whether the map gives the
+-- environment a colour rather than the mapper falling back to its red.
+function getMapEnvColor(environmentId)
+    local c = __getMapEnvColor(environmentId)
+    return c[0], c[1], c[2], c[3], c[4]
+end
+
+-- Mudlet unsetCustomEnvColor(envID) → true, or (nil, errMsg) when the
+-- environment is one of the 16 defaults, has no custom colour, or a room is
+-- still drawn in it.
+function unsetCustomEnvColor(environmentId)
+    local r = __unsetCustomEnvColor(environmentId)
+    if r ~= true then return nil, r end
+    return true
 end
 
 -- Mudlet getMapEnvironmentKits() → { [envID] = kit } for the kits the map
@@ -4662,13 +4726,54 @@ do
     local function applyHook(t, hook)
         if hook then rawSethook(t, hook[1], hook[2], hook[3]) else rawSethook(t) end
     end
+    -- A hook runs under a filter that leaves out the events of the frames a
+    -- script cannot see (__mudlet_hookVisible): inside Mudlet Web's own Lua,
+    -- which on desktop is C that fires no hook, and whose plumbing would hand
+    -- the hook a stack with nothing at the level it asks for. Count events all
+    -- go through, so a hook set as a watchdog still stops a loop wherever it
+    -- runs. debug.gethook hands back the function the script gave.
+    local filtered = setmetatable({}, { __mode = 'k' })
+    local unfiltered = setmetatable({}, { __mode = 'k' })
+    local makeFilter = loadstring([[
+        local visible = ...
+        return function(f)
+            return function(event, line)
+                if event == 'count' or visible() then f(event, line) end
+            end
+        end
+    ]], __mudlet_HIDDEN)(__mudlet_hookVisible)
+    local function filterHook(f)
+        if type(f) ~= 'function' or unfiltered[f] then return f end
+        local wrapper = filtered[f]
+        if wrapper == nil then
+            wrapper = makeFilter(f)
+            filtered[f] = wrapper
+            unfiltered[wrapper] = f
+        end
+        return wrapper
+    end
+    local function unfilterHook(f, ...)
+        if f ~= nil and unfiltered[f] then return unfiltered[f], ... end
+        return f, ...
+    end
     function debug.sethook(...)
         if type((...)) == 'thread' or not onMainState(rawRunning()) then
-            return rawSethook(...)
+            rawSethook(...)
+            local co = type((...)) == 'thread' and (...) or nil
+            local f, mask, count
+            if co then f, mask, count = rawGethook(co) else f, mask, count = rawGethook() end
+            if type(f) == 'function' and not unfiltered[f] then
+                if co then rawSethook(co, filterHook(f), mask, count) else rawSethook(filterHook(f), mask, count) end
+            end
+            return
         end
         -- The stock function checks the arguments and hooks the running thread.
         rawSethook(...)
         local f, mask, count = rawGethook()
+        if type(f) == 'function' and not unfiltered[f] then
+            f = filterHook(f)
+            rawSethook(f, mask, count)
+        end
         local hook = nil
         if f ~= nil then hook = { f, mask, count } end
         registry['mudlet.hook'] = hook
@@ -4681,11 +4786,11 @@ do
     end
     function debug.gethook(...)
         if type((...)) == 'thread' or not onMainState(rawRunning()) then
-            return rawGethook(...)
+            return unfilterHook(rawGethook(...))
         end
         local hook = registry['mudlet.hook']
-        if hook then return hook[1], hook[2], hook[3] end
-        return rawGethook()
+        if hook then return unfilterHook(hook[1], hook[2], hook[3]) end
+        return unfilterHook(rawGethook())
     end
     local function inheritHook(co)
         local hook = registry['mudlet.hook']
@@ -4834,6 +4939,17 @@ function __mudlet_set_gmcp(key, value)
         for k, v in pairs(value) do node[leaf][k] = v end
     else
         node[leaf] = value
+    end
+end
+
+-- A GMCP message's JSON body, decoded as desktop's parseJSON decodes it
+-- (Yajl.lua's __mudlet_json_decode) and stored when that succeeds; LuaRuntime
+-- reads __mudlet_gmcp_ok to know whether to raise the message's events.
+function __mudlet_set_gmcp_text(key, text)
+    local ok, value = __mudlet_json_decode(text)
+    if ok then
+        __mudlet_set_gmcp(key, value)
+        __mudlet_gmcp_ok = true
     end
 end
 
@@ -6364,7 +6480,8 @@ do
     end
 
     -- replace([window,] text) — desktop's, which answers true once the
-    -- selection is replaced. GUIUtils.lua wraps it to add the keepcolor argument.
+    -- selection is replaced. GUIUtils.lua wraps it to add the keepcolor argument,
+    -- which it hands on as the third, so that has to reach the binding too.
     local _rawReplace = replace
     function replace(...)
         local n = select('#', ...)
@@ -6373,7 +6490,7 @@ do
             local text = __mudlet_check_string((select(2, ...)), "replace", 2, "with")
             local err = __mudlet_console_refusal(win)
             if err then return nil, err end
-            _rawReplace(__mudlet_console_key(win), text)
+            _rawReplace(__mudlet_console_key(win), text, (select(3, ...)) and true or false)
             return true
         end
         _rawReplace(__mudlet_check_string((...), "replace", 1, "with", n >= 1))
@@ -6841,19 +6958,24 @@ end
 -- tag picks out to a new volume, pan or direction, gliding over `duration`
 -- milliseconds. Naming nothing to choose them by is (nil, message); finding
 -- nothing to move is not an error, as stopping nothing is not.
-function updateSounds(t)
+--
+-- Mudlet `updateMusic({name|key|tag, volume, duration})`
+-- (TLuaInterpreter::updateMusic) is the same for the script's music. Music is
+-- never placed, so a pan or direction is a key it does not take and is not
+-- checked, and a call with no volume has nothing to change: (nil, message).
+local function __mudlet_update_media(t, funcName, music)
     if type(t) ~= 'table' then
-        error("updateSounds: needs to be a table", 2)
+        error(funcName .. ": needs to be a table", 3)
     end
-    __mudlet_check_media_table_keys(t, "updateSounds")
+    __mudlet_check_media_table_keys(t, funcName)
     local req = {}
     for k, v in pairs(t) do
         local key = tostring(k):lower()
         if key == 'name' or key == 'key' or key == 'tag' then
             local str = __mudlet_str(v)
             if str == nil then
-                error("updateSounds: bad argument #1 type (value for " .. key .. " as string expected, got "
-                    .. type(v) .. "!)", 2)
+                error(funcName .. ": bad argument #1 type (value for " .. key .. " as string expected, got "
+                    .. type(v) .. "!)", 3)
             end
             if str ~= '' then
                 req[key] = key == 'name' and (str:gsub('\\', '/')) or str
@@ -6861,29 +6983,48 @@ function updateSounds(t)
         elseif key == 'volume' or key == 'duration' then
             local n = tonumber(v)
             if n == nil or (type(v) ~= 'number' and type(v) ~= 'string') then
-                error("updateSounds: bad argument #1 type (value for " .. key .. " as number expected, got "
-                    .. type(v) .. "!)", 2)
+                error(funcName .. ": bad argument #1 type (value for " .. key .. " as number expected, got "
+                    .. type(v) .. "!)", 3)
             end
             n = n >= 0 and math.floor(n) or math.ceil(n)
             if key == 'volume' then
                 req.volume = math.max(1, math.min(100, n))
             elseif n < 0 then
-                error("updateSounds: bad argument range for duration (values must be greater than or equal to 0, got value: "
-                    .. string.format("%d", n) .. ")", 2)
+                error(funcName .. ": bad argument range for duration (values must be greater than or equal to 0, got value: "
+                    .. string.format("%d", n) .. ")", 3)
             else
                 req.duration = n
             end
-        elseif key == 'pan' then
-            req.pan = __mudlet_media_pan(v, "updateSounds")
-        elseif key == 'direction' then
-            req.direction = __mudlet_media_direction(v, "updateSounds")
+        elseif not music and key == 'pan' then
+            req.pan = __mudlet_media_pan(v, funcName)
+        elseif not music and key == 'direction' then
+            req.direction = __mudlet_media_direction(v, funcName)
         end
     end
     if not (req.name or req.key or req.tag) then
-        return nil, "no key, name or tag to choose the sounds to update by"
+        return nil, "no key, name or tag to choose the " .. (music and "music" or "sounds") .. " to update by"
     end
-    __updateSounds(req)
+    if music then
+        if req.volume == nil then
+            return nil, "nothing to change (give a volume)"
+        end
+        __updateMusic(req)
+    else
+        __updateSounds(req)
+    end
     return true
+end
+
+function updateSounds(t)
+    -- not a tail call, so the error levels above still reach the caller
+    local ok, err = __mudlet_update_media(t, "updateSounds", false)
+    return ok, err
+end
+
+function updateMusic(t)
+    -- not a tail call, so the error levels above still reach the caller
+    local ok, err = __mudlet_update_media(t, "updateMusic", true)
+    return ok, err
 end
 
 -- Mudlet `setMediaListener({facing = ...})`: the way the player faces, which
@@ -8939,7 +9080,7 @@ do
     end
 
     -- createRoomID answers with a number, or the refusal message when the
-    -- optional minimum is below one.
+    -- optional minimum is below one or no id is free at or above it.
     do
         local _raw = createRoomID
         function createRoomID(minimum)
@@ -11339,11 +11480,18 @@ do
             if not __mudlet_is_console((...)) then return -1 end
             return lastLine(...)
         end
+        -- getCurrentLine([window] [, enableFullErrorReporting]): a boolean
+        -- first argument is the flag, for the main console. With the flag set
+        -- a missing console answers the usual (nil, message) pair.
         local currentLine = guard(getCurrentLine)
-        function getCurrentLine(...)
-            local err = __mudlet_console_missing((...))
-            if err then return "ERROR: mini console does not exist", err end
-            return currentLine(...)
+        function getCurrentLine(name, fullErrors)
+            if type(name) == 'boolean' then name, fullErrors = nil, name end
+            local err = __mudlet_console_missing(name)
+            if err then
+                if fullErrors then return nil, err end
+                return "ERROR: mini console does not exist", err
+            end
+            return currentLine(name)
         end
     end
 

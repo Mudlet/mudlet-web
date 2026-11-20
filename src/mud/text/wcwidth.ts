@@ -72,16 +72,32 @@ export function effectiveAmbiguousWidthWide(choice: boolean | undefined, encodin
 }
 
 /**
+ * Whether a character has an emoji form VS16 can select — graphemeInfo::
+ * hasEmojiForm. Every base in Unicode's emoji-variation-sequences.txt lies in
+ * one of these ranges or is a keycap base (# * 0-9), which also needs U+20E3.
+ */
+function hasEmojiForm(base: number): boolean {
+    return base === 0xa9 || base === 0xae || (base >= 0x2000 && base <= 0x2bff)
+        || base === 0x3030 || base === 0x303d || base === 0x3297 || base === 0x3299 || base >= 0x1f000;
+}
+
+/**
  * Display width of a grapheme cluster (base + any combining marks, variation
  * selectors, ZWJ sequence): the width of its base character, the way Mudlet
- * measures every grapheme. So an emoji ZWJ sequence takes its first emoji's 2,
- * a letter with diacritics its letter's 1, and U+2764 + VS16 the 2 Mudlet
- * gives the heart itself. A cluster that starts with an unpaired surrogate
- * measures that surrogate, which is nonprinting.
+ * measures every grapheme (graphemeInfo::getGraphemeWidth). So an emoji ZWJ
+ * sequence takes its first emoji's 2 and a letter with diacritics its
+ * letter's 1 — except that a one column symbol followed by VS16 (U+FE0F) is
+ * drawn as a colour emoji and takes two (graphemeInfo::withPresentation):
+ * U+2620 + VS16, or a keycap such as `#` VS16 U+20E3, but not `#` + VS16
+ * alone or a letter such as U+00E9 with VS16. A cluster that starts with an
+ * unpaired surrogate measures that surrogate, which is nonprinting.
  */
 export function clusterWidth(cluster: string): 0 | 1 | 2 {
     if (cluster.length === 0) return 0;
-    return codePointWidth(cluster.codePointAt(0)!);
+    const base = cluster.codePointAt(0)!;
+    const width = codePointWidth(base);
+    if (width !== 1 || cluster.length < 2 || !cluster.includes('️')) return width;
+    return hasEmojiForm(base) || cluster.includes('⃣') ? 2 : width;
 }
 
 /** Total display width of a string, in monospace cells. */

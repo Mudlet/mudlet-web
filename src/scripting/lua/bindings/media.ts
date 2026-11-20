@@ -78,6 +78,17 @@ export function installSoundBindings(ctx: BindingContext): void {
         );
         return true;
     });
+    // updateMusic({name|key|tag, volume, duration}) — the same for the
+    // script's music, which is never placed; Bridge.lua has checked a volume
+    // was given.
+    lua.global.set('__updateMusic', (t: unknown) => {
+        const o = detachOpts(t);
+        sounds.updateSounds(
+            { name: strOpt(o.name), key: strOpt(o.key), tag: strOpt(o.tag), origin: 'api', kinds: ['music'] },
+            { volume: numOpt(o.volume), glideMs: numOpt(o.duration) },
+        );
+        return true;
+    });
     // setMediaListener / getMediaListener — the way the player faces, which
     // turns every placed sound. A canonical facing in, false when refused.
     lua.global.set('__canonicalMediaDirection', (v: unknown) =>

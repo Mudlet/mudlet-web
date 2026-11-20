@@ -11,11 +11,13 @@ import {
 import { TextAnalyzerModal } from './TextAnalyzerModal';
 import { useProfileField } from '../../storage';
 import { resolveSearchEngine } from '../../storage/schema';
-import { isClearSplitClick, DEFAULT_SPLIT_PANE_HEIGHT } from './clearSplit';
+import { isClearSplitClick, splitUpperPaneHeight } from './clearSplit';
 import { clickMadeSelection } from './selectionGesture';
 
-const DEFAULT_STICKY_HEIGHT = DEFAULT_SPLIT_PANE_HEIGHT;
 const MIN_STICKY_HEIGHT = 40;
+/** The drag handle's CSS height: it is drawn over the top of the lower pane,
+ *  whose height counts it. */
+const SPLIT_HANDLE_PX = 4;
 
 interface StickyOutputPanelProps {
     outputRef: React.RefObject<HTMLDivElement | null>;
@@ -75,7 +77,22 @@ export function StickyOutputPanel({
     // on-screen keyboard for focus to summon over the output? A narrow
     // container on a desktop - the 563px hero on mudlet.org - is not that.
     const keyboardWouldCover = isMobile && isTouch;
-    const [stickyHeight, setStickyHeight] = useState(DEFAULT_STICKY_HEIGHT);
+    // The lower pane, handle included, opens at what desktop's split leaves
+    // under its upper pane (splitUpperPaneHeight), following the console's
+    // height until the player drags the handle; WindowManager counts the rows
+    // above it the same way.
+    const [consoleHeight, setConsoleHeight] = useState(0);
+    const [draggedHeight, setDraggedHeight] = useState<number | null>(null);
+    const stickyHeight = draggedHeight ?? Math.max(0, consoleHeight - splitUpperPaneHeight(consoleHeight));
+    useEffect(() => {
+        const output = outputRef.current;
+        if (!output) return;
+        setConsoleHeight(output.clientHeight);
+        if (typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(() => setConsoleHeight(output.clientHeight));
+        observer.observe(output);
+        return () => observer.disconnect();
+    }, [outputRef]);
     const [contextMenu, setContextMenu] =
         useState<{ x: number; y: number; hasSelection: boolean; hasContent: boolean; extraItems: OutputMenuExtraItem[] } | null>(null);
     const stickyOuterRef = useRef<HTMLDivElement>(null);
@@ -215,7 +232,7 @@ export function StickyOutputPanel({
         const maxHeight = Math.floor((stickyOuterRef.current?.parentElement?.clientHeight ?? 600) * 0.8);
         const onMove = (ev: MouseEvent) => {
             const delta = startY - ev.clientY;
-            setStickyHeight(Math.max(MIN_STICKY_HEIGHT, Math.min(startHeight + delta, maxHeight)));
+            setDraggedHeight(Math.max(MIN_STICKY_HEIGHT, Math.min(startHeight + delta, maxHeight)));
         };
         const onUp = () => {
             document.removeEventListener('mousemove', onMove);
@@ -287,7 +304,7 @@ export function StickyOutputPanel({
             {isSplitView && (
                 <div
                     className="output-sticky-handle"
-                    style={{ bottom: stickyHeight }}
+                    style={{ bottom: Math.max(0, stickyHeight - SPLIT_HANDLE_PX) }}
                     onMouseDown={handleResizeStart}
                 />
             )}
@@ -295,6 +312,7 @@ export function StickyOutputPanel({
             <div
                 className={`output-sticky${isSplitView ? ' output-sticky--active' : ''}`}
                 ref={stickyOuterRef}
+                data-dragged={draggedHeight !== null ? 'true' : undefined}
                 style={{
                     height: stickyHeight,
                     ...(background ? { background } : {}),

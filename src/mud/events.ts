@@ -169,7 +169,14 @@ export type MudClientEvents = {
      *  no `message` carries it (TBuffer::commitLine's gagged branch). */
     'line.gagged': [];
     'flushLines': [groups: { text: string; type: string }[]];
-    'gmcp': [payload: { path: string; value: unknown }];
+    /** A GMCP message: `value` is its body as JSON.parse read it, `text` the
+     *  body itself, which the Lua `gmcp` table is filled from by
+     *  json_to_value, as desktop fills it. */
+    'gmcp': [payload: { path: string; value: unknown; text?: string }];
+    /** A GMCP message whose body JSON.parse rejected. Nothing JS-side reads
+     *  it; it is there for the Lua `gmcp` table, whose json_to_value a script
+     *  may have replaced with a decoder that takes it. */
+    'gmcpUndecoded': [payload: { path: string; text: string }];
     /** A `Client.GUI` server package-install request, in either wire format:
      *  the parsed `{url, version}` object, or the legacy raw `<version>\n<url>`
      *  string. Carried separately from `gmcp` because the legacy form never

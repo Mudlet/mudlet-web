@@ -16,6 +16,8 @@ function makeHost(area = { x: 0, y: 0, width: 1000, height: 600 }) {
     const shown: string[] = [];
     const raised: string[] = [];
     const scrolling = new Map<string, boolean>();
+    /** Consoles a script moved out of their frame, as setWindow() would. */
+    const movedOut = new Set<string>();
     let borders: MxpBorders = { top: 0, right: 0, bottom: 0, left: 0 };
 
     const host: MxpFrameHost = {
@@ -27,6 +29,8 @@ function makeHost(area = { x: 0, y: 0, width: 1000, height: 600 }) {
         openExternalFrame: (name, title, width, height) => { external.push({ name, title, width, height }); },
         destroyFrameConsole: (name) => { destroyed.push(name); placed.delete(name); },
         nameTakenByScript: (name) => name.startsWith('script'),
+        frameConsoleInPlace: (name, parent) =>
+            !movedOut.has(name) && placed.has(name) && placed.get(name)!.parent === parent,
         showFrameConsole: (name) => { shown.push(name); },
         raiseFrameConsole: (name) => { raised.push(name); },
         setFrameScrolling: (name, enabled) => { scrolling.set(name, enabled); },
@@ -36,7 +40,7 @@ function makeHost(area = { x: 0, y: 0, width: 1000, height: 600 }) {
         },
         setMxpBorders: (b) => { borders = b; },
     };
-    return { host, placed, tabs, external, destroyed, shown, raised, scrolling, getBorders: () => borders };
+    return { host, placed, tabs, external, destroyed, shown, raised, scrolling, movedOut, getBorders: () => borders };
 }
 
 describe('MxpFrameManager — edge tiling', () => {
@@ -110,13 +114,52 @@ describe('MxpFrameManager — edge tiling', () => {
         expect(mgr.frameNames()).toEqual(['B']);
     });
 
-    it('re-shows an existing frame on ACTION=open without moving it', () => {
+    // What ACTION=open shows is the frame's widget: an internal frame's console
+    // sits in a container of the frame's, so one a script hid stays hidden.
+    it('re-opens an existing frame on ACTION=open without moving it or showing an internal console', () => {
         mgr.createFrame('A', { NAME: 'A', ALIGN: 'left', WIDTH: '200' });
         const before = { ...h.placed.get('A')! };
         expect(mgr.createFrame('A', { NAME: 'A', ALIGN: 'right', WIDTH: '500' })).toBe(true);
         expect(h.placed.get('A')).toEqual(before);
-        expect(h.shown).toEqual(['A']);
+        expect(h.shown).toEqual([]);
         expect(h.getBorders().left).toBe(200);
+    });
+
+    it('shows an EXTERNAL frame\'s console when it is opened again', () => {
+        mgr.createFrame('Chat', { NAME: 'Chat', EXTERNAL: 'true', WIDTH: '300', HEIGHT: '200' });
+        expect(mgr.createFrame('Chat', { NAME: 'Chat', EXTERNAL: 'true' })).toBe(true);
+        expect(h.shown).toEqual(['Chat']);
+    });
+
+    it('lays the frames that are left out again when one closes', () => {
+        mgr.createFrame('A', { NAME: 'A', ALIGN: 'left', WIDTH: '200' });
+        mgr.createFrame('B', { NAME: 'B', ALIGN: 'left', WIDTH: '150' });
+        mgr.createFrame('Bar', { NAME: 'Bar', ALIGN: 'top', HEIGHT: '40' });
+        mgr.closeFrame('A');
+        expect(h.placed.get('B')).toMatchObject({ x: 0, width: 150 });
+        expect(h.placed.get('Bar')).toMatchObject({ x: 150, width: 850 });
+        expect(h.getBorders()).toEqual({ top: 40, right: 0, bottom: 0, left: 150 });
+    });
+
+    // Only a console whose frame changes is placed again: a script's own size
+    // survives while the frame keeps its geometry
+    it('leaves a console alone when its frame keeps its geometry', () => {
+        mgr.createFrame('A', { NAME: 'A', ALIGN: 'left', WIDTH: '200' });
+        mgr.createFrame('B', { NAME: 'B', ALIGN: 'right', WIDTH: '100' });
+        h.placed.set('A', { x: 0, y: 0, width: 50, height: 50 });
+        mgr.closeFrame('B');
+        expect(h.placed.get('A')).toEqual({ x: 0, y: 0, width: 50, height: 50 });
+    });
+
+    it('leaves a console a script moved out of its frame where the script put it', () => {
+        mgr.createFrame('A', { NAME: 'A', ALIGN: 'left', WIDTH: '200' });
+        mgr.createFrame('Bar', { NAME: 'Bar', ALIGN: 'top', HEIGHT: '40' });
+        const before = { ...h.placed.get('Bar')! };
+        h.movedOut.add('Bar');
+        mgr.closeFrame('A');
+        expect(h.placed.get('Bar')).toEqual(before);
+        // …though the frame itself has taken the space
+        expect(h.getBorders()).toEqual({ top: 40, right: 0, bottom: 0, left: 0 });
     });
 
     it('raises on ACTION=focus and reports failure for an unknown frame', () => {
@@ -198,6 +241,14 @@ describe('MxpFrameManager — nesting inside <DEST>', () => {
         expect(h.placed.get('Rest')).toMatchObject({ y: 150, height: 450 });
     });
 
+    it('lays the frames nested in an EXTERNAL frame out again when it is resized', () => {
+        mgr.createFrame('Outer', { NAME: 'Outer', EXTERNAL: 'true', WIDTH: '300', HEIGHT: '200' });
+        mgr.createFrame('Inner', { NAME: 'Inner', ALIGN: 'top', HEIGHT: '50%' }, 'Outer');
+        expect(h.placed.get('Inner')).toMatchObject({ width: 300, height: 100, parent: 'Outer' });
+        mgr.setWindowSize('Outer', 300, 400);
+        expect(h.placed.get('Inner')).toMatchObject({ width: 300, height: 200, parent: 'Outer' });
+    });
+
     it('closes nested children along with their parent', () => {
         mgr.createFrame('Col', { NAME: 'Col', ALIGN: 'left', WIDTH: '200' });
         mgr.createFrame('Map', { NAME: 'Map', ALIGN: 'top', HEIGHT: '150' }, 'Col');
@@ -264,6 +315,27 @@ describe('MxpFrameManager — titles and tabs', () => {
         mgr.createFrame('Host', { NAME: 'Host', ALIGN: 'top', HEIGHT: '120' });
         mgr.createFrame('Room', { NAME: 'Room', ALIGN: 'client', DOCK: 'Host', TITLE: 'Room' });
         expect(h.tabs.get('Host')?.pages.map(p => p.id)).toEqual(['Host', 'Room']);
+    });
+
+    it('keeps every tab page filling its host as the host is laid out again', () => {
+        mgr.createFrame('Left', { NAME: 'Left', ALIGN: 'left', WIDTH: '200' });
+        mgr.createFrame('Chat', { NAME: 'Chat', ALIGN: 'right', WIDTH: '30%', TITLE: 'Channels' });
+        mgr.createFrame('Room', { NAME: 'Room', ALIGN: 'client', DOCK: 'Chat', TITLE: 'Room' });
+        mgr.createFrame('Tells', { NAME: 'Tells', ALIGN: 'client', DOCK: 'Chat', WIDTH: '10%', HEIGHT: '10%', TITLE: 'Tells' });
+        expect(h.placed.get('Tells')).toMatchObject({ width: 240, height: 600 - MXP_TAB_BAR_HEIGHT });
+        mgr.closeFrame('Left');
+        expect(h.placed.get('Chat')).toMatchObject({ x: 700, width: 300 });
+        expect(h.placed.get('Room')).toMatchObject({ width: 300, height: 600 - MXP_TAB_BAR_HEIGHT });
+        expect(h.placed.get('Tells')).toMatchObject({ width: 300, height: 600 - MXP_TAB_BAR_HEIGHT });
+    });
+
+    it('does not count a tab a script moved out of its frame as hidden behind another', () => {
+        mgr.createFrame('Chat', { NAME: 'Chat', ALIGN: 'top', HEIGHT: '120', TITLE: 'Channels' });
+        mgr.createFrame('Room', { NAME: 'Room', ALIGN: 'client', DOCK: 'Chat', TITLE: 'Room' });
+        mgr.createFrame('Tells', { NAME: 'Tells', ALIGN: 'client', DOCK: 'Chat', TITLE: 'Tells' });
+        expect(mgr.isBehindTab('Tells')).toBe(true);
+        h.movedOut.add('Tells');
+        expect(mgr.isBehindTab('Tells')).toBe(false);
     });
 
     it('drops a closed tab from its host strip', () => {

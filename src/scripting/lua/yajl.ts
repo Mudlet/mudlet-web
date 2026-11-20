@@ -39,6 +39,13 @@ const NULL_REGISTRY_KEY = 'yajl.null';
  */
 export const MAX_DECODE_DEPTH = 2665;
 
+/**
+ * The deepest nesting desktop's GMCP decoder (TLuaInterpreter::parseJSON)
+ * builds itself; a document nested deeper, or one it rejects, goes to
+ * yajl.to_value instead, which is what a script can see of it.
+ */
+export const GMCP_FAST_DEPTH = 64;
+
 /** The error lua_yajl raises past MAX_DECODE_DEPTH (luaL_error from a C frame: no position). */
 export const DECODE_DEPTH_ERROR = 'lua stack overflow';
 
@@ -326,6 +333,22 @@ export function setupYajl(
         if (jsonDepth(r.v) > MAX_DECODE_DEPTH) return DECODE_DEPTH_ERROR;
         pending = {s: text, v: r.v};
         return null;
+    });
+
+    // The fast path of GMCP decoding (Yajl.lua's __mudlet_json_decode): the
+    // chunk source to_value would build, or false when it takes the raw path,
+    // or nil — leaving it to yajl.to_value itself — for a document JSON.parse
+    // rejects or one nested past GMCP_FAST_DEPTH, as desktop's parseJSON hands
+    // those to yajl.
+    lua.global.set('__yajl_gmcp_src__', (s: unknown): string | false | null => {
+        pending = null;
+        const text = String(s ?? '');
+        const r = parse(text);
+        if ('err' in r || jsonDepth(r.v) > GMCP_FAST_DEPTH) return null;
+        const chunk = luaChunkForValue(r.v);
+        if (chunk !== null) return chunk;
+        pending = {s: text, v: r.v};
+        return false;
     });
 
     // Raw path: returns the value, or nil plus an error message. A raw binding

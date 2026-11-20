@@ -342,15 +342,16 @@ export function pickCharsetFromRequest(
     current?: string,
 ): { original: string; canonical: string } | null {
     if (subneg.length < 4) return null;
-    const i = 2; // skip option code (42) + subcommand (REQUEST = 1)
-    // The byte after REQUEST is taken as the separator, always. A request
-    // opening with RFC 2066's `[TTABLE]<version>` prefix (an offer to use
-    // translation tables, which this client does not support) therefore splits
-    // on '[' and offers nothing recognisable, so it is REJECTED — which is what
-    // Mudlet answers it with: its `[TTABLE]1` strip compares against a payload
-    // that still starts with the REQUEST byte, so it never fires, and the
-    // request is split on '[' exactly as here. Accepting a name out of such a
-    // request would leave a server expecting a translation table we never use.
+    let i = 2; // skip option code (42) + subcommand (REQUEST = 1)
+    // RFC 2066 lets a REQUEST open with `[TTABLE]<version>`, an offer of
+    // translation tables. The version is one binary octet, not a digit, and a
+    // value above 1 is just the highest version the server has. This client
+    // has no translation tables, so — as Mudlet does — it skips the prefix and
+    // its version octet and reads the character set list behind it as a plain
+    // request; the separator is the byte after them.
+    const TTABLE = '[TTABLE]';
+    if (subneg.startsWith(TTABLE, i)) i += TTABLE.length + 1;
+    if (i >= subneg.length) return null;
     const sep = subneg[i];
     const list = subneg.substring(i).split(sep).filter(name => name.length > 0);
     if (list.length === 0) return null;
