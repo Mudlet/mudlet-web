@@ -159,9 +159,10 @@ export function installTextEditBindings({ lua, api, channel, emitEvent }: Bindin
             api.windows.resize(name, wn, hn);
             // The size it settles at is owed a sysUserWindowResizeEvent, which
             // the panel's ResizeObserver would only report on a later turn —
-            // one a script blocking the event loop never lets come. Queued the
-            // way a new window's first report is.
-            api.windows.announceCreatedSize(name);
+            // one a script blocking the event loop never lets come. Desktop's
+            // dock resizes, and reports, before resizeWindow() returns, after
+            // the console's sysConsoleSizeChanged (raised by the resize above).
+            api.windows.reportSizeNow(name);
         }
     });
     // Window state getters. Each returns null for "no such widget" so the

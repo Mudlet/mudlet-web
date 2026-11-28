@@ -75,8 +75,10 @@ export interface EngineHost {
     /** Run a synthetic batch of lines through the same pipeline as network
      *  output, so `feedTriggers` shares ordering semantics with real data. */
     /** `fromServer` distinguishes a batch that came off the socket from one a
-     *  script synthesised (feedTriggers). Absent means the socket. */
-    processFlushBatch(groups: { text: string; type: string; fromServer?: boolean }[]): void;
+     *  script synthesised (feedTriggers). Absent means the socket. `unended`
+     *  marks text whose last line has not ended yet — the game's unfinished
+     *  line, which the next line carries on. */
+    processFlushBatch(groups: { text: string; type: string; fromServer?: boolean; unended?: boolean }[]): void;
 
     /** Apply any coalesced trigger/alias reloads immediately instead of on the
      *  scheduled microtask. The Mudlet `perm…`, `enableTrigger` and

@@ -99,6 +99,25 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'is its own tab, and closing one takes its whole page with it.',
         },
     ],
+    GMCP: [
+        {
+            name: 'Tests that GMCP data decodes as json_to_value decodes it / keeps the previous value when a Lua error is raised while decoding',
+            reason:
+                'The behaviour is implemented: GMCP is decoded under a protected call (__mudlet_cpcall in '
+                + 'Bridge.lua), so an error raised while decoding leaves the previous value and raises no event — '
+                + 'tests/scripting/gmcpJsonToValue.test.ts pins it with a decoder that raises. What cannot happen here '
+                + 'is the spec\'s way of raising one: a finaliser that throws only once it sees, through '
+                + 'debug.getinfo, a C decoder called straight from feedTelnet. On desktop every script entry runs '
+                + 'on the one main Lua state, so the GMCP a feedTelnet() call delivers is decoded on the stack of '
+                + 'the script that called it. Here each JS→Lua entry runs on a Lua thread of its own (LuaRuntime\'s '
+                + 'runChunk), and feedTelnet reaches the decoder through JS, which cannot tell which Lua thread '
+                + 'called it — so the decoder\'s stack ends at that entry and feedTelnet is never its caller, the '
+                + 'finaliser never raises, and the spec reports "raised" false. Closing it means stitching each '
+                + 'entry thread\'s stack onto the thread that called into JS for every debug.getinfo and traceback '
+                + 'in the client, tracked through every coroutine resume, which is a change to how every nested '
+                + 'callback\'s stack reads rather than to GMCP.',
+        },
+    ],
     Media: (() => {
         // Three specs that need an utterance to FINISH. Everything up to that
         // point works and is asserted by the specs around these — the state goes
@@ -288,6 +307,35 @@ export const KNOWN_DIVERGENCES: Record<string, KnownDivergence[]> = {
                 + 'siblings is what the mount exists to prevent, and opening it to satisfy a test would hand every '
                 + 'script in every profile the run of the others. The refusal itself is covered by a unit test '
                 + 'instead (tests/import/packageConfigRename.test.ts), which can assert it directly.',
+        },
+    ],
+    ProfileFocus: [
+        'setActiveProfile / tells the profile it leaves and the one it brings forward, and neither when nothing changes',
+        'setActiveProfile / switches once when the profile it leaves asks for the same switch again',
+    ].map(name => ({
+        name,
+        reason:
+            SECOND_PROFILE_FROM_A_FOLDER
+            + 'What the spec guards is sysProfileFocusChangeEvent reaching both profiles of one window as '
+            + 'setActiveProfile() moves the front between them. A page cannot bring another browser tab forward, '
+            + 'so here setActiveProfile() of the profile this tab runs is answered true with no event, and of a '
+            + 'profile open in another tab is answered false with a message while that tab flashes its title '
+            + '(ScriptingAPI.setActiveProfile) — there is no second profile in this window for focus to move to.',
+    })),
+    Regex: [
+        {
+            name: 'PCRE regex cases with tempRegexTrigger / fixed text a match has to contain / does not take a non-atomic lookbehind for a named group',
+            reason:
+                'The patterns are (?<*ab)… and (?<*[>]xy)…: a non-atomic positive lookbehind, syntax PCRE2 added in '
+                + '10.43. The pcre2-wasm-universal build every trigger, alias and rex pattern compiles with here is '
+                + 'PCRE2 10.34, which reads (?< as the start of a named group and refuses the * with "subpattern '
+                + 'name expected" — so the triggers never exist, rather than (as the spec guards against on '
+                + 'desktop) Mudlet\'s own fixed-text pre-scan mistaking the lookbehind for a group name. Closing '
+                + 'it means a newer PCRE2 wasm build: rewriting (?<* to the atomic (?<= would compile, but '
+                + 'changes what the pattern matches whenever the lookbehind could backtrack into another '
+                + 'alternative, which is the one thing the non-atomic form exists for. Bumping the package also '
+                + 'means re-deriving the wasm patch in vite-plugin/pcre2Wasm.ts; this entry turns red the day the '
+                + 'bundled engine understands the syntax.',
         },
     ],
     Telnet: (() => {

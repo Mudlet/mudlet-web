@@ -1046,6 +1046,12 @@ export class MudSession {
         return this.client?.pumpServerWrapDue() ?? false;
     }
 
+    /** The game's unfinished line, taken from the client so text fed locally
+     *  can carry it on (see LineAssembler.takePendingLine). */
+    takePendingServerLine(): string {
+        return this.client?.takePendingLine() ?? '';
+    }
+
     /** Mudlet `setConfig("inputLineStrictUnixEndings", …)`. Live — the next
      *  command submitted uses the new line terminator. */
     setInputLineStrictUnixEndings(enabled: boolean): void {

@@ -16,7 +16,7 @@ import {
     type LinkStateStyle,
     type UnderlineStyle,
 } from "./hyperlinkConfig";
-import { applyVisibility } from "./hyperlinkVisibility";
+import { applyVisibility, revealSpoiler, spoilerHidden } from "./hyperlinkVisibility";
 import { detachRow, detachRows } from "../../ui/output/outputRows";
 import { appendCells, cellsToHtml, columnAfter } from "./cellRender";
 import { getControlCharacterMode } from "./controlCharacterMode";
@@ -1298,6 +1298,38 @@ export class AnsiAwareBuffer {
     /** Whether any segment carries an OSC 8 link with `visibility` settings.
      *  A cheap pre-check (no cloning, no grouping) for the concealment pass,
      *  which every stored line goes through. */
+    /** Whether any character carries an OSC 8 spoiler link. */
+    hasSpoilerLink(): boolean {
+        return this.segments.some(s => s.state?.hyperlink?.config?.spoiler === true);
+    }
+
+    /** Write `text` over the characters from `start` on, one for one, each
+     *  keeping the format it had — TBuffer masking a spoiler space for space
+     *  and putting its text back. Nothing past the end of the line is written. */
+    overwrite(start: number, text: string): this {
+        let pos = 0;
+        let changed = false;
+        for (let k = 0; k < this.segments.length; k++) {
+            const segment = this.segments[k];
+            const segEnd = pos + segment.text.length;
+            const from = Math.max(start, pos);
+            const to = Math.min(start + text.length, segEnd);
+            if (from < to) {
+                // A fresh segment: another buffer may share this one's object.
+                this.segments[k] = {
+                    ...segment,
+                    text: segment.text.slice(0, from - pos) + text.slice(from - start, to - start)
+                        + segment.text.slice(to - pos),
+                };
+                changed = true;
+            }
+            pos = segEnd;
+            if (pos >= start + text.length) break;
+        }
+        if (changed) this._textCache = null;
+        return this;
+    }
+
     hasVisibilityLink(): boolean {
         return this.segments.some(s => s.state?.hyperlink?.config?.visibility !== undefined);
     }
@@ -1879,7 +1911,11 @@ export class AnsiAwareBuffer {
                 // interaction reveals it. The reveal click is swallowed (capture
                 // phase, before the activate handler); once revealed, clicks fall
                 // through to the link's primary action. Keyboard-safe via Enter/Space.
-                if (link.config?.spoiler) {
+                // A stored line holds a spoiler's text as spaces until then
+                // (maskSpoilers); the reveal writes it back and redraws the
+                // line, which then finds the spoiler revealed.
+                const spoilerConfig = link.config;
+                if (spoilerConfig?.spoiler && spoilerHidden(spoilerConfig)) {
                     const fgSrc = linkStyle?.foreground ?? (state.inverse ? state.background : state.foreground);
                     const block = fgSrc ? this.colorToHex(fgSrc) : "#888888";
                     initialCss = `${baseCss}; color: transparent; background-color: ${block}`;
@@ -1889,6 +1925,7 @@ export class AnsiAwareBuffer {
                         revealed = true;
                         element.style.cssText = baseCss;
                         element.dataset.spoiler = "shown";
+                        revealSpoiler(spoilerConfig);
                     };
                     element.addEventListener("click", (e) => {
                         if (!revealed) { e.preventDefault(); e.stopImmediatePropagation(); reveal(); }

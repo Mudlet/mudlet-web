@@ -44,10 +44,10 @@ describe('parseMssp', () => {
     ]);
   });
 
-  it('keeps only the first value of a list-valued variable (Mudlet parity)', () => {
+  it('keeps the last value of a list-valued variable, MSSP\'s default (Mudlet parity)', () => {
     expect(
-      parseMssp(MSSP_VAR + 'FAMILY' + MSSP_VAL + 'DikuMUD' + MSSP_VAL + 'Custom'),
-    ).toEqual([{ name: 'FAMILY', value: 'DikuMUD' }]);
+      parseMssp(MSSP_VAR + 'PORT' + MSSP_VAL + '80' + MSSP_VAL + '23' + MSSP_VAL + '3000' + MSSP_VAR + 'NEXT' + MSSP_VAL + 'x'),
+    ).toEqual([{ name: 'PORT', value: '3000' }, { name: 'NEXT', value: 'x' }]);
   });
 
   it('decodes UTF-8 in values', () => {

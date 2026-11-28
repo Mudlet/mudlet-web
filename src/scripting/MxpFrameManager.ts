@@ -63,6 +63,12 @@ export interface MxpFrameHost {
     /** Whether a script's own window holds `name`, which a frame must not
      *  take over: closing the frame would leave the window unreachable. */
     nameTakenByScript(name: string): boolean;
+    /** Whether a frame's console still sits where the frame put it — inside
+     *  `parent`'s viewport, or the main window's when `parent` is undefined.
+     *  A script that moved it elsewhere with setWindow() has taken it out of
+     *  the frame: the layout no longer places it, and the tab page it was on
+     *  no longer hides it. */
+    frameConsoleInPlace(name: string, parent?: string): boolean;
     showFrameConsole(name: string): void;
     raiseFrameConsole(name: string): void;
     setFrameScrolling(name: string, enabled: boolean): void;
@@ -102,11 +108,11 @@ interface MxpFrame {
     activeTab: string;
     /** Height already consumed by `ALIGN=TOP` children — Mudlet's VBox stacking. */
     usedHeight: number;
-    /** Border this frame claimed from the main console, so closing it gives back
-     *  exactly what it took. (Mudlet re-derives the size from the raw spec on
-     *  close, which reads percentages against a different container than the
-     *  layout did and so hands back the wrong number.) */
-    claimedBorder: { side: keyof MxpBorders; px: number } | null;
+    /** How the frame is shown — Mudlet's `TMxpFrame::Shown`. Only a `placed`
+     *  frame (edge-tiled, absolutely placed or nested) is laid out again when
+     *  the frames around it change; a `tab` page fills its host's area under
+     *  the strip; a `window` (EXTERNAL) keeps whatever size it is given. */
+    shown: 'placed' | 'tab' | 'window';
 }
 
 const NO_BORDERS: MxpBorders = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -159,7 +165,7 @@ export class MxpFrameManager {
             tabs: [],
             activeTab: name,
             usedHeight: 0,
-            claimedBorder: null,
+            shown: 'placed',
         };
 
         this.frames.set(name, frame);
@@ -202,8 +208,8 @@ export class MxpFrameManager {
         frame.parent = null;
         this.frames.delete(name);
         this.host.destroyFrameConsole(name);
-        // Reclaim the space an edge-aligned frame was holding.
-        this.recalculateBorders();
+        // Reposition what is left so it reclaims the space the frame gave up.
+        this.relayoutFrames();
         return true;
     }
 
@@ -215,10 +221,14 @@ export class MxpFrameManager {
         return true;
     }
 
-    /** `ACTION=open` on a frame that already exists: show and raise, no re-layout. */
+    /** `ACTION=open` on a frame that already exists: show and raise, no re-layout.
+     *  What is shown is the frame's widget, which only for an EXTERNAL frame is
+     *  the console itself: an internal frame's console lives in a container of
+     *  the frame's, so one a script hid with hideWindow() stays hidden. */
     showFrame(name: string): boolean {
-        if (!this.frames.has(name)) return false;
-        this.host.showFrameConsole(name);
+        const frame = this.frames.get(name);
+        if (!frame) return false;
+        if (frame.shown === 'window') this.host.showFrameConsole(name);
         this.host.raiseFrameConsole(name);
         this.selectTabFor(name);
         return true;
@@ -254,6 +264,35 @@ export class MxpFrameManager {
      * when declared inside an open `<DEST>` — stacked inside that frame.
      */
     private layoutInternalFrame(frame: MxpFrame, parent: MxpFrame | null): void {
+        const { rect, isCharHeight } = this.calculateFrameGeometry(frame, parent);
+        if (!parent) this.host.setMxpBorders(this.getBorders());
+
+        // A very short frame has no room for a header, however the server asked.
+        // Decided here only, as in Mudlet: a later relayout never adds or drops one.
+        const wantsHeader = !frame.floating && frame.hasExplicitTitle;
+        const showHeader = wantsHeader && (rect.height >= 50 || isCharHeight);
+        frame.tabBarHeight = showHeader ? MXP_TAB_BAR_HEIGHT : 0;
+        frame.rect = rect;
+        frame.shown = 'placed';
+        if (parent) {
+            frame.parent = parent;
+            parent.children.push(frame);
+        }
+
+        this.host.placeFrameConsole(frame.name, rect.x, rect.y, rect.width, rect.height, parent?.name);
+        if (showHeader) {
+            frame.tabs = [frame.name];
+            this.publishTabs(frame);
+        }
+    }
+
+    /**
+     * Where a placed frame goes — Mudlet's `calculateFrameGeometry`. An edge
+     * aligned top level frame consumes the space it takes from the MXP borders
+     * and a nested one advances its parent's `usedHeight`; an absolutely
+     * positioned frame consumes neither. The caller publishes the borders.
+     */
+    private calculateFrameGeometry(frame: MxpFrame, parent: MxpFrame | null): { rect: MxpFrame['rect']; isCharHeight: boolean } {
         const area = this.host.consoleArea();
 
         // Container the frame is measured and positioned against. Nested frames
@@ -335,43 +374,24 @@ export class MxpFrameManager {
             x = area.x + this.borders.left;
             y = area.y;
             height = area.height;
-            frame.claimedBorder = { side: 'left', px: width };
             this.borders.left += width;
         } else if (frame.align === 'right') {
             x = area.x + area.width - this.borders.right - width;
             y = area.y;
             height = area.height;
-            frame.claimedBorder = { side: 'right', px: width };
             this.borders.right += width;
         } else if (frame.align === 'top') {
             x = area.x + this.borders.left;
             y = area.y + this.borders.top;
             width = area.width - this.borders.left - this.borders.right;
-            frame.claimedBorder = { side: 'top', px: height };
             this.borders.top += height;
         } else if (frame.align === 'bottom') {
             x = area.x + this.borders.left;
             y = area.y + area.height - this.borders.bottom - height;
             width = area.width - this.borders.left - this.borders.right;
-            frame.claimedBorder = { side: 'bottom', px: height };
             this.borders.bottom += height;
         }
-        if (!parent) this.host.setMxpBorders(this.getBorders());
-
-        // A very short frame has no room for a header, however the server asked.
-        const showHeader = wantsHeader && (height >= 50 || isCharHeight);
-        frame.tabBarHeight = showHeader ? MXP_TAB_BAR_HEIGHT : 0;
-        frame.rect = { x, y, width, height };
-        if (parent) {
-            frame.parent = parent;
-            parent.children.push(frame);
-        }
-
-        this.host.placeFrameConsole(frame.name, x, y, width, height, parent?.name);
-        if (showHeader) {
-            frame.tabs = [frame.name];
-            this.publishTabs(frame);
-        }
+        return { rect: { x, y, width, height }, isCharHeight };
     }
 
     /** `EXTERNAL` — a window of its own. The browser has no OS child windows,
@@ -381,7 +401,21 @@ export class MxpFrameManager {
         const width = Math.max(150, this.calcSize(frame.width, area.width, false));
         const height = Math.max(80, this.calcSize(frame.height, area.height, true));
         frame.rect = { x: 0, y: 0, width, height };
+        frame.shown = 'window';
         this.host.openExternalFrame(frame.name, frame.title, width, height);
+    }
+
+    /**
+     * An EXTERNAL frame's window was resized — by a script's resizeWindow() or
+     * by the player dragging it. The frames nested in it are laid out against
+     * its size, so they are laid out again (Mudlet's `setWindowSize`).
+     */
+    setWindowSize(name: string, width: number, height: number): void {
+        const frame = this.frames.get(name);
+        if (!frame || frame.shown !== 'window') return;
+        if (frame.rect.width === width && frame.rect.height === height) return;
+        frame.rect = { x: 0, y: 0, width, height };
+        if (frame.children.length > 0) this.relayoutFrames();
     }
 
     /** `DOCK=other ALIGN=CLIENT` — join `other`'s tab strip as another page. */
@@ -401,8 +435,11 @@ export class MxpFrameManager {
             parent.tabBarHeight = MXP_TAB_BAR_HEIGHT;
         }
 
+        // A tab's page lays its console out over all the space under the tabs,
+        // whatever WIDTH/HEIGHT the tag asked for.
         const [width, height] = this.contentSize(parent);
         frame.rect = { x: 0, y: 0, width, height };
+        frame.shown = 'tab';
         frame.parent = parent;
         parent.children.push(frame);
         parent.tabs.push(frame.name);
@@ -444,7 +481,9 @@ export class MxpFrameManager {
         const host = frame.parent && frame.parent.tabs.includes(name) ? frame.parent
                    : frame.tabs.includes(name) ? frame
                    : null;
-        return !!host && host.activeTab !== name;
+        if (!host || host.activeTab === name) return false;
+        // A console a script moved out of its frame has left the tab page with it.
+        return this.host.frameConsoleInPlace(name, frame.parent?.name);
     }
 
     /** Bring `name` to the front of whichever tab strip holds it, if any. */
@@ -486,18 +525,38 @@ export class MxpFrameManager {
     }
 
     /**
-     * Rebuild the borders from the frames that are left. Called after a close so
-     * the main console reclaims the space; surviving frames keep the geometry
-     * they were given (Mudlet does not re-tile them either).
+     * Lay every frame out again — Mudlet's `relayoutFrames`, run when a frame
+     * closes and when an EXTERNAL frame that holds nested ones is resized. The
+     * frames are walked in the order they opened, so each is measured against
+     * the same container it was first: the borders the edge frames before it
+     * claim, the space its parent's earlier ALIGN=TOP children used. A tab page
+     * follows its host's area under the strip.
+     *
+     * Only a console whose frame changes size or place is touched, and only
+     * while it is still in its frame: a script that resized it keeps its size
+     * as long as the frame keeps its own, and one a script moved elsewhere with
+     * setWindow() stays where the script put it.
      */
-    private recalculateBorders(): void {
-        const next: MxpBorders = { ...NO_BORDERS };
-        // Nested and absolutely-positioned frames never claimed a border, so
-        // they carry no claim and drop out here.
+    private relayoutFrames(): void {
+        this.borders = { ...NO_BORDERS };
+        for (const frame of this.frames.values()) frame.usedHeight = 0;
         for (const frame of this.frames.values()) {
-            if (frame.claimedBorder) next[frame.claimedBorder.side] += frame.claimedBorder.px;
+            if (frame.shown === 'placed') {
+                this.applyRect(frame, this.calculateFrameGeometry(frame, frame.parent).rect);
+            } else if (frame.shown === 'tab' && frame.parent) {
+                const [width, height] = this.contentSize(frame.parent);
+                this.applyRect(frame, { x: 0, y: 0, width, height });
+            }
         }
-        this.borders = next;
         this.host.setMxpBorders(this.getBorders());
+    }
+
+    private applyRect(frame: MxpFrame, rect: MxpFrame['rect']): void {
+        const old = frame.rect;
+        frame.rect = rect;
+        if (old.x === rect.x && old.y === rect.y && old.width === rect.width && old.height === rect.height) return;
+        const parent = frame.parent?.name;
+        if (!this.host.frameConsoleInPlace(frame.name, parent)) return;
+        this.host.placeFrameConsole(frame.name, rect.x, rect.y, rect.width, rect.height, parent);
     }
 }

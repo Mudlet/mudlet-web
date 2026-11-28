@@ -9,7 +9,7 @@ export { MccpHandler } from "./mccp";
 export { parseAtcpMessage, type AtcpMessage } from "./atcp";
 export { EchoHandler } from "./echo";
 export { MspParser, type MspCommand, type MspKind } from "./msp";
-export { MxpParser, splitMxpResultLines, type MxpLink, type MxpLineResult } from "./mxp";
+export { MxpParser, splitMxpResultLines, type MxpLink, type MxpLineResult, type MxpLineEnd } from "./mxp";
 export { encodeMnesIs, newEnvironIsReply, mnesIsReplies, MNES_VARIABLES, buildNewEnvironVars, CLIENT_NAME, CLIENT_VERSION, TERMINAL_TYPE, type MnesVar, type NewEnvironState } from "./mnes";
 export { encodeNaws } from "./naws";
 export { SessionCodec, CharsetHandler, normalizeCharsetName, pickCharsetFromRequest, SUPPORTED_SERVER_ENCODINGS, DEFAULT_SERVER_ENCODING, canonicalServerEncoding, savedServerEncoding, canEncodeForServer, type CharsetHandlerHooks } from "./charset";

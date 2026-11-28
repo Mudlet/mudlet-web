@@ -4,6 +4,9 @@ import { GMCP_COMMAND_CODE, GMCP_IAC, GMCP_SB, GMCP_SE, TELNET_EOR, TELNET_GA } 
 export interface GmcpEnvelope {
     path: string;
     value: unknown;
+    /** The JSON body `value` was parsed from, as json_to_value is handed it
+     *  ("{}" for a message with no body, as desktop hands it). */
+    text?: string;
 }
 
 /** GMCP module carrying a server package-install request. Both of its wire
@@ -137,9 +140,10 @@ export const stripTelnetSequences = (data: string, handler: TelnetOptionHandler,
 
 const parseGmcpPayload = (
     data: string,
-    onMessage: (type: string, payload: unknown) => void,
+    onMessage: (type: string, payload: unknown, text: string) => void,
     onRawClientGui?: (payload: string) => void,
     onMalformedEncoding?: (type: string, rawBody: string) => void,
+    onUndecoded?: (type: string, text: string) => void,
 ): void => {
     if (data.length === 0) return;
 
@@ -187,9 +191,10 @@ const parseGmcpPayload = (
     // The data part is optional per the GMCP spec — a message may be just a
     // module name with no body (`Core.Ping` is the one every game sends). An
     // empty object, not an empty string: a script reading gmcp.Core.Ping is
-    // reading a table, and Mudlet hands it `{}`.
+    // reading a table, and Mudlet hands it `{}` — json_to_value is handed
+    // the text "{}" (cTelnet::setGMCPVariables).
     if (payload.trim() === "") {
-        onMessage(type, {});
+        onMessage(type, {}, "{}");
         return;
     }
 
@@ -235,6 +240,7 @@ const parseGmcpPayload = (
             `raw bytes: ${toHex(rawBody)}`,
             error,
         );
+        onUndecoded?.(type, payload);
         return;
     }
 
@@ -243,7 +249,7 @@ const parseGmcpPayload = (
     // caught here and reported as the server sending bad JSON — blaming the
     // wrong party for a bug of ours, and demoting it to a warn for the same
     // reason.
-    onMessage(type, gmcp);
+    onMessage(type, gmcp, payload);
 };
 
 export const encodeGmcp = (path: string, payload: unknown): string => {
@@ -283,11 +289,16 @@ export interface GmcpStreamOptions {
      *  table-populating path. The JSON form still emits its envelope as well,
      *  and does so first, so scripts observe it before the install runs. */
     onClientGui?: (payload: unknown) => void;
+    /** A message whose body is not JSON that JSON.parse reads (Client.GUI's
+     *  line-based form aside, which goes to `onClientGui`): the module and the
+     *  body, for a decoder of a script's own to try. */
+    onUndecoded?: (payload: { path: string; text: string }) => void;
 }
 
 export const createGmcpStream = ({
     onEnvelope,
     onClientGui,
+    onUndecoded,
 }: GmcpStreamOptions) => {
     // Once per module rather than once per message, mirroring Mudlet's
     // `mEncodingWarningIssued`: a server that mis-encodes every `Room.Info`
@@ -298,8 +309,8 @@ export const createGmcpStream = ({
     return (data: string) => {
         parseGmcpPayload(
             data,
-            (type, payload) => {
-                onEnvelope({ path: type, value: payload });
+            (type, payload, text) => {
+                onEnvelope({ path: type, value: payload, text });
                 if (type.toLowerCase() === CLIENT_GUI_MODULE) onClientGui?.(payload);
             },
             raw => onClientGui?.(raw),
@@ -312,6 +323,7 @@ export const createGmcpStream = ({
                     `raw bytes: ${toHex(rawBody)}`,
                 );
             },
+            (type, text) => onUndecoded?.({ path: type, text }),
         );
     };
 };

@@ -270,10 +270,23 @@ export async function bootProfile(page: Page, timeout?: number): Promise<void> {
 export const READY_TIMEOUT_MS = 45_000;
 export const RETRY_READY_TIMEOUT_MS = 90_000;
 
+// What a spec is owed by the files that run before it. Mudlet runs the whole
+// corpus in one profile, in sorted file order, and a few specs say outright that
+// they rely on state an earlier file leaves behind; this harness gives every
+// spec a fresh page instead, so that state is put back here, as Lua run in the
+// profile just before the spec. Each entry names the file that leaves it.
+export const SPEC_PRELUDES: Record<string, string> = {
+    // GenericMapperMapLoad_spec ends with openMapWidget("r"): "the specs that run
+    // after this file are entitled to an open, right-docked widget". The map
+    // window spec's "hides the map it already has" closes that widget through
+    // the generic mapper, and expects closeMapWidget() to have had one to close.
+    GenericMapperMapWindow: 'openMapWidget("r")',
+};
+
 export function runSpec(page: Page, spec: string): Promise<BustedResults> {
     return page.evaluate(
-        (s) => (window as unknown as { __runBusted: (p: string) => BustedResults }).__runBusted(s),
-        spec,
+        ([s, prelude]) => (window as unknown as { __runBusted: (p: string, prelude?: string) => BustedResults }).__runBusted(s, prelude),
+        [spec, SPEC_PRELUDES[spec]] as const,
     );
 }
 

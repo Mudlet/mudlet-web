@@ -184,6 +184,25 @@ export class LineAssembler {
         return this.pendingLineTail.length === 0 && this.serverWrapPending === null;
     }
 
+    /** Hand over the partial line held back — the text after the last `\n`,
+     *  less an escape sequence it ends in the middle of, which stays held for
+     *  the next frame — so text fed locally can carry it on. Mudlet keeps the
+     *  game's unfinished line in TBuffer's mMudLine, and a feedTriggers() line
+     *  is appended to it there rather than committed above it. */
+    takePendingLine(): string {
+        let tail = this.pendingLineTail;
+        if (tail.length === 0) return "";
+        let held = "";
+        const cut = incompleteEscapeTailStart(tail);
+        if (cut !== -1) {
+            held = tail.slice(cut);
+            tail = tail.slice(0, cut);
+        }
+        this.pendingLineTail = held;
+        if (held.length === 0) this.clearTailTimer();
+        return tail;
+    }
+
     /** Drop all held state (call on connect and after close). */
     reset(): void {
         this.pendingLineTail = "";
